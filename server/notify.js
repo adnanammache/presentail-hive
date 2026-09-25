@@ -92,7 +92,9 @@ export function notifyRun(runId, kind, extra = {}) {
   if (!r) return;
   const agent = get('SELECT id, name, title, color FROM agents WHERE id = ?', r.agent_id);
   const task = r.task_id ? get('SELECT id, title FROM tasks WHERE id = ?', r.task_id) : null;
-  const thread = taskThread(task?.id);
+  // Updates go back to the Slack conversation the work came from, if any.
+  const origin = String(r.origin ?? '');
+  const thread = taskThread(task?.id) ?? (origin.startsWith('slack:') ? { channel: origin.split(':')[1], thread_ts: origin.split(':')[2] } : null);
   const via = thread ? { thread, as: agent } : {};
   const where = task ? `*${esc(task.title)}*` : 'a chat';
   const link = task ? `${baseUrl()}/#/tasks/${task.id}` : `${baseUrl()}/#/inbox/${r.agent_id}`;
@@ -108,14 +110,20 @@ export function notifyRun(runId, kind, extra = {}) {
   if (push) pushToAll({ ...push, url, tag: `run-${runId}` }).catch((err) => console.error('[push]', err.message));
   if (kind === 'approval') {
     const pending = extra.pending ?? [];
-    const lines = pending
-      .map((p) => `\`${esc(clip(`${p.name} ${p.detail || ''}`.trim(), 280))}\`${p.reason ? `\n${esc(clip(p.reason, 200))}` : ''}`)
+    // Show everything that will run, in full. If that doesn't fit in a Slack message, there are no
+    // buttons: approving something you couldn't see isn't approval.
+    const full = pending
+      .map((p) => {
+        const body = [p.detail, p.preview && p.preview !== '{}' ? p.preview : null].filter(Boolean).join('\n');
+        return `*${esc(p.name)}*${p.reason ? `: ${esc(p.reason)}` : ''}\n\`\`\`${esc(body).replace(/```/g, "'''")}\`\`\``;
+      })
       .join('\n');
-    // The buttons carry the exact calls shown, so a click never approves something newer.
+    const fits = full.length <= 2800;
+    const lines = fits ? full : `${clip(full, 600)}\n_Too long to review in Slack. Open it in Hive to see everything and approve there._`;
     const value = `${runId}:${pending.map((p) => p.event_id).join(',')}`;
     const n = pending.length > 1 ? ` all ${pending.length}` : '';
     const buttons =
-      slackButtonsEnabled() && value.length < 2000
+      fits && slackButtonsEnabled() && value.length < 2000
         ? [
             { type: 'button', style: 'primary', text: { type: 'plain_text', text: `Approve${n}` }, action_id: 'hive_approve', value,
               confirm: { title: { type: 'plain_text', text: 'Approve?' }, text: { type: 'mrkdwn', text: `Let ${who} go ahead with${n || ' this'}?` }, confirm: { type: 'plain_text', text: 'Approve' }, deny: { type: 'plain_text', text: 'Cancel' } } },

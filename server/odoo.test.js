@@ -7,7 +7,7 @@ delete process.env.WAFEQ_API_KEY;
 
 const { get, run, all } = await import('./db.js');
 const managed = await import('./managed.js');
-const { classify, odooCall, ODOO_TOOL } = await import('./odoo.js');
+const { classify, odooCall, ODOO_TOOL, cleanContext, checkAgentCall, describeCall } = await import('./odoo.js');
 const { fakeAnthropic } = await import('./testing/fake-anthropic.js');
 
 // A stand-in Odoo: records every JSON-2 call and answers by method.
@@ -30,6 +30,21 @@ const waitFor = async (fn, what) => {
   }
   throw new Error(`Timed out waiting for ${what}`);
 };
+
+test('secrets and admin models are off-limits even to read; configuration is read-only', () => {
+  for (const m of ['ir.config_parameter', 'ir.mail_server', 'fetchmail.server', 'payment.provider', 'auth.oauth.provider', 'res.users', 'res.users.apikeys', 'res.groups', 'base_import.import', 'res.config.settings', 'mail.mail', 'mail.compose.message', 'iap.account'])
+    assert.equal(classify(m, 'search_read'), 'forbidden', m);
+  for (const m of ['account.tax.repartition.line', 'account.fiscal.position', 'account.reconcile.model', 'res.currency.rate', 'res.company', 'account.change.lock.date', 'account.journal.group']) {
+    assert.equal(classify(m, 'search_read'), 'read', m);
+    assert.equal(classify(m, 'write'), 'forbidden', m);
+  }
+  assert.equal(classify('ir.attachment', 'create'), 'write', 'attaching documents is allowed');
+  assert.equal(classify('res.partner.bank', 'write'), 'write');
+  assert.deepEqual(cleanContext({ check_move_validity: false, tracking_disable: true, lang: 'en_US', default_move_type: 'in_invoice' }), { lang: 'en_US', default_move_type: 'in_invoice' });
+  assert.match(checkAgentCall({ model: 'account.move', method: 'create', company_id: 6 }), /company_id must be one of 1, 2, 3/);
+  assert.equal(checkAgentCall({ model: 'account.move', method: 'create', company_id: 2 }), null);
+  assert.match(describeCall({ model: 'account.move', method: 'unlink', company_id: 1, params: { ids: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] } }), /\[1, 2, 3, 4, 5, 6, 7, 8, … 10 records\]/);
+});
 
 test('classify: reads run, changes need approval, configuration is off-limits', () => {
   assert.equal(classify('account.move', 'search_read'), 'read');
@@ -146,4 +161,28 @@ test('rejecting a change tells the agent and changes nothing', async () => {
   assert.match(ev.content[0].text, /Rejected by Adnan: Never delete posted entries/);
   assert.equal(odoo.length, before);
   assert.equal(get("SELECT status FROM odoo_actions WHERE event_id = 'sevt_unlink'").status, 'rejected');
+});
+
+test('after a restart, unanswered calls are answered and finished Odoo changes are never run again', async () => {
+  const fake = fakeAnthropic();
+  managed.setManagedClient(fake);
+  for (let i = 0; i < 2; i++) fake.script.push(() => [{ type: 'session.status_idle', stop_reason: { type: 'end_turn' } }]);
+  const session = await fake.beta.sessions.create({});
+  const agentId = Number(run("INSERT INTO agents (name, title, platform, api_token) VALUES ('Recover', 'X', 'managed', 'rc')").lastInsertRowid);
+  const runId = Number(run("INSERT INTO runs (kind, agent_id, status, session_id) VALUES ('task', ?, 'running', ?)", agentId, session.id).lastInsertRowid);
+  const call = (id, input) => {
+    run("INSERT INTO run_events (run_id, event_id, type, data) VALUES (?, ?, 'agent.custom_tool_use', ?)", runId, id, JSON.stringify({ name: 'odoo', kind: 'x' }));
+    run("INSERT INTO odoo_actions (run_id, agent_id, event_id, model, method, company_id, input, kind, status) VALUES (?, ?, ?, ?, ?, 2, ?, ?, 'queued')", runId, agentId, id, input.model, input.method, JSON.stringify(input), input.kind);
+  };
+  call('done_before', { model: 'account.move', method: 'create', company_id: 2, kind: 'write' });
+  run("UPDATE odoo_actions SET status = 'executed', result = '[777]' WHERE event_id = 'done_before'");
+  call('never_run', { model: 'account.move', method: 'search_read', company_id: 2, kind: 'read' });
+  const before = odoo.length;
+
+  await managed.recoverToolCalls(runId);
+  const sent = fake.calls.sent.flatMap((s) => s.events);
+  const byId = Object.fromEntries(sent.map((e) => [e.custom_tool_use_id, e]));
+  assert.equal(byId.done_before.content[0].text, '[777]', 'the earlier result is reported');
+  assert.match(byId.never_run.content[0].text, /Toters/, 'the read runs now');
+  assert.equal(odoo.slice(before).filter((c) => c.method === 'create').length, 0, 'the create is not run twice');
 });

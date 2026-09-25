@@ -66,12 +66,16 @@ export function postAsAgent(agent, { channel, thread_ts, text, blocks }) {
   });
 }
 
-// Slack's markdown is not Markdown: bold is *x*, links are <url|text>.
+// Slack's markdown is not Markdown: bold is *x*, links are <url|text>. Agent text is escaped first,
+// so it can't @channel people or dress up a link; Markdown links are shown with their real address.
 export const toSlack = (md) =>
   String(md ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
     .replace(/\*\*(.+?)\*\*/g, '*$1*')
     .replace(/^#{1,6}\s+(.+)$/gm, '*$1*')
-    .replace(/\[([^\]]+)\]\((https?:[^)]+)\)/g, '<$2|$1>');
+    .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '$1 ($2)');
 
 // ---------------------------------------------------------------- threads ↔ agents / tasks
 
@@ -91,14 +95,18 @@ const lastAgentIn = (channel) => get('SELECT agent_id FROM slack_threads WHERE c
 const people = new Map(); // slack user id → { ok, name, email, at }
 export async function slackPerson(userId) {
   const hit = people.get(userId);
-  if (hit && Date.now() - hit.at < 60 * 60 * 1000) return hit;
+  // Known people for 10 minutes; refusals only for 1, so fixing access takes effect quickly.
+  if (hit && Date.now() - hit.at < (hit.ok ? 10 : 1) * 60 * 1000) return hit;
   const res = await slackApi('users.info', { user: userId });
   const u = res?.user;
   const email = u?.profile?.email ?? '';
+  const guest = Boolean(u?.is_restricted || u?.is_ultra_restricted || u?.is_stranger);
   const person = {
-    ok: Boolean(res?.ok && !u?.is_bot && !u?.deleted && email && isAllowed(email)),
+    ok: Boolean(res?.ok && !u?.is_bot && !u?.deleted && !guest && email && isAllowed(email)),
     name: u?.profile?.display_name || u?.real_name || u?.name || 'Someone',
     email,
+    // Without the users:read.email scope Slack hides everyone's email: say so rather than refuse silently.
+    why: res?.ok && !email && !u?.is_bot ? 'no-email' : null,
     at: Date.now(),
   };
   people.set(userId, person);
@@ -108,13 +116,21 @@ export const forgetPeople = () => people.clear(); // tests
 
 // ---------------------------------------------------------------- files
 
+const MAX_FILE = 50 * 1024 * 1024;
 async function downloadSlackFile(f) {
-  const res = await fetch(f.url_private_download || f.url_private, {
-    headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` },
-    signal: AbortSignal.timeout(60_000),
-  });
+  const url = new URL(f.url_private_download || f.url_private || 'https://invalid.');
+  // The bot token only ever goes to Slack's own file host.
+  if (url.protocol !== 'https:' || !/^files(-[a-z]+)?\.slack\.com$/.test(url.hostname)) throw new Error(`${f.name} isn't a Slack file`);
+  if (f.size > MAX_FILE) throw new Error(`${f.name} is larger than 50 MB`);
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }, redirect: 'error', signal: AbortSignal.timeout(60_000) });
   if (!res.ok) throw new Error(`Could not download ${f.name} from Slack (${res.status})`);
-  return Buffer.from(await res.arrayBuffer());
+  // Without the files:read scope Slack answers with its login page instead of the file.
+  if (/text\/html/.test(res.headers.get('content-type') || '') && !/\.html?$/i.test(f.name)) {
+    throw new Error(`Slack wouldn't hand over ${f.name}. The Hive app needs the files:read scope`);
+  }
+  const body = Buffer.from(await res.arrayBuffer());
+  if (body.length > MAX_FILE) throw new Error(`${f.name} is larger than 50 MB`);
+  return body;
 }
 
 export function attachFile(taskId, filename, body) {
@@ -138,7 +154,10 @@ export async function handleSlackMessage(event) {
   const channel = event.channel;
   const reply = (agent, text, extra = {}) => postAsAgent(agent, { channel, thread_ts: event.thread_ts || event.ts, text, ...extra });
   const person = await slackPerson(event.user);
-  if (!person.ok) return reply(null, 'Sorry, Hive only works with Presentail accounts.');
+  if (!person.ok) {
+    if (person.why === 'no-email') return reply(null, "Hive can't see your email in Slack, so it can't check you're from Presentail. An admin needs to add the users:read.email scope to the Hive app and reinstall it.");
+    return reply(null, 'Sorry, Hive only works with Presentail accounts.');
+  }
 
   const text = String(event.text ?? '').replace(/<@[A-Z0-9]+>/g, '').trim();
   const thread = event.thread_ts ? threadFor(channel, event.thread_ts) : null;
@@ -171,7 +190,11 @@ export async function handleSlackMessage(event) {
     const r = get("SELECT * FROM runs WHERE task_id = ? AND kind = 'task' ORDER BY id DESC LIMIT 1", thread.task_id);
     if (task && r && agent.id === task.agent_id && !['failed', 'ended'].includes(r.status)) {
       const { replyToRun } = await import('./managed.js');
-      await replyToRun(r.id, `${person.name} (via Slack): ${rest}`);
+      try {
+        await replyToRun(r.id, `${person.name} (via Slack): ${rest}`);
+      } catch (err) {
+        return reply(agent, `⚠️ ${err.message}`);
+      }
       return reply(agent, '👍 Got it, carrying on.');
     }
   }
@@ -203,16 +226,16 @@ export async function handleSlackMessage(event) {
   await sendToAgent(agent.id, rest || text, via);
 }
 
-// Forward an agent's chat reply to the Slack thread the question came from.
+// Forward an agent's chat reply to the Slack thread its conversation lives in.
 onEvent((type, data) => {
-  if (type !== 'message' || !data?.message || !slackConfigured()) return;
+  if (type !== 'message' || !data?.message || !process.env.SLACK_BOT_TOKEN) return;
   const m = data.message;
-  if (m.sender === 'user' || (m.meta && JSON.parse(m.meta).type)) return; // briefs, approvals: not replies
-  const q = get("SELECT meta FROM messages WHERE agent_id = ? AND sender = 'user' AND id < ? ORDER BY id DESC LIMIT 1", m.agent_id, m.id);
-  const meta = q?.meta ? JSON.parse(q.meta) : null;
-  if (meta?.via !== 'slack') return;
-  const agent = get('SELECT * FROM agents WHERE id = ?', m.agent_id);
-  postAsAgent(m.sender === 'agent' ? agent : null, { channel: meta.channel, thread_ts: meta.thread_ts, text: toSlack(m.body) });
+  if (m.sender === 'user' || !m.meta) return;
+  const meta = JSON.parse(m.meta);
+  if (meta.type || !String(meta.origin ?? '').startsWith('slack:')) return; // briefs, approvals, Hive chats
+  const [, channel, thread_ts] = meta.origin.split(':');
+  const agent = m.sender === 'agent' ? get('SELECT * FROM agents WHERE id = ?', m.agent_id) : null;
+  postAsAgent(agent, { channel, thread_ts, text: toSlack(m.body) });
 });
 
 // ---------------------------------------------------------------- agents → agents
@@ -252,6 +275,10 @@ export async function askAgent(fromId, toName, message, { runId } = {}) {
   if (to.id === fromId) return { text: "That's you.", is_error: true };
   if (!String(message ?? '').trim()) return { text: 'The message is empty.', is_error: true };
   if (to.status === 'paused') return { text: `${to.name} (${to.title}) isn't set up yet. Ask the user instead.`, is_error: true };
+
+  // Asked again after a restart: reuse the answer rather than asking twice.
+  const earlier = runId ? get("SELECT reply FROM agent_dms WHERE run_id = ? AND to_agent_id = ? AND message = ? AND status = 'answered' ORDER BY id DESC LIMIT 1", runId, to.id, message) : null;
+  if (earlier) return { text: `${to.name} replied:\n\n${earlier.reply}` };
 
   const dmId = Number(run('INSERT INTO agent_dms (from_agent_id, to_agent_id, message, run_id) VALUES (?, ?, ?, ?)', fromId, to.id, message, runId ?? null).lastInsertRowid);
   logActivity(fromId, 'agent', `${from.name} asked ${to.name}: ${message.slice(0, 140)}`);
