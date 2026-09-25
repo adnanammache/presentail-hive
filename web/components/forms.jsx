@@ -300,6 +300,7 @@ export function TaskForm({ task, defaults = {}, onClose }) {
           </Field>
         )}
         {task && <HandoffBar taskId={task.id} />}
+        {task && agent && <TeachBar agent={agent} taskId={task.id} />}
         {task && (
           <Field label="Result / agent report">
             <textarea rows={4} value={values.result} onChange={set('result')} placeholder="The agent's output lands here." />
@@ -333,6 +334,32 @@ export function TaskForm({ task, defaults = {}, onClose }) {
       </form>
       {task && managed && Number(task.agent_id) === agent.id && <TaskRun task={task} agentName={agent.name} />}
     </Modal>
+  );
+}
+
+/** Turn a correction on this task into something the agent remembers. */
+function TeachBar({ agent, taskId }) {
+  const [text, setText] = useState('');
+  const [saved, setSaved] = useState('');
+  const teach = async () => {
+    await api(`/agents/${agent.id}/lessons`, { method: 'POST', body: { text, task_id: taskId } });
+    setSaved(text);
+    setText('');
+  };
+  return (
+    <div className="handoff-bar teach-bar">
+      <span>🧠</span>
+      <input
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), text.trim() && teach())}
+        placeholder={saved ? `${agent.name} will remember: "${saved}"` : `Something ${agent.name} should remember next time?`}
+        aria-label={`Teach ${agent.name}`}
+      />
+      <button type="button" className="btn btn-sm" disabled={!text.trim()} onClick={teach}>
+        Teach
+      </button>
+    </div>
   );
 }
 

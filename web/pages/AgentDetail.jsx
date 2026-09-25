@@ -72,6 +72,80 @@ function Connect({ agent, onRotate }) {
   );
 }
 
+const SOURCE = { manual: 'Added here', rejection: 'From a rejection', slack: 'From Slack', task: 'From a task' };
+
+/** What this agent has learned from corrections; all of it goes into its instructions. */
+function Lessons({ agent }) {
+  const { data, reload } = useApi(`/agents/${agent.id}/lessons`, ['lesson']);
+  const [text, setText] = useState('');
+  const [error, setError] = useState('');
+  const add = async (e) => {
+    e.preventDefault();
+    try {
+      await api(`/agents/${agent.id}/lessons`, { method: 'POST', body: { text } });
+      setText('');
+      setError('');
+      reload();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+  const edit = async (l) => {
+    const next = prompt('Edit the lesson', l.text);
+    if (next != null && next.trim() && next !== l.text) await api(`/lessons/${l.id}`, { method: 'PATCH', body: { text: next } });
+    reload();
+  };
+  if (!data) return <Loading />;
+  return (
+    <>
+      <form className="lesson-add" onSubmit={add}>
+        <input value={text} onChange={(e) => setText(e.target.value)} placeholder={`Teach ${agent.name} something, e.g. "Abu Dhabi fees always go to account 5104"`} aria-label="New lesson" />
+        <button className="btn btn-primary" disabled={!text.trim()}>
+          Teach
+        </button>
+      </form>
+      {error && <div className="form-error">{error}</div>}
+      <p className="muted small">
+        {agent.name} follows these on every task and chat. Lessons are also saved when you reject something with a reason, or DM {agent.name} in Slack starting with “remember:”
+      </p>
+      {data.length === 0 ? (
+        <Empty title="Nothing learned yet" />
+      ) : (
+        <ul className="lesson-list">
+          {data.map((l) => (
+            <li key={l.id} className={l.active ? '' : 'off'}>
+              <div className="grow">
+                <div>{l.text}</div>
+                <div className="muted small">
+                  {SOURCE[l.source] ?? l.source}
+                  {l.created_by && ` by ${l.created_by}`}
+                  {l.task_title && (
+                    <>
+                      {' · '}
+                      <a href={`#/tasks/${l.task_id}`}>{l.task_title}</a>
+                    </>
+                  )}
+                  {' · '}
+                  {ago(l.created_at)}
+                </div>
+              </div>
+              <button className="btn btn-sm" onClick={() => edit(l)}>
+                Edit
+              </button>
+              <button className="btn btn-sm" onClick={() => api(`/lessons/${l.id}`, { method: 'PATCH', body: { active: !l.active } }).then(reload)}>
+                {l.active ? 'Pause' : 'Use again'}
+              </button>
+              <button className="icon-btn" aria-label="Delete lesson" onClick={() => confirm('Delete this lesson?') && api(`/lessons/${l.id}`, { method: 'DELETE' }).then(reload)}>
+                <Icon name="trash" size={16} />
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </>
+  );
+}
+
 /** Messages between this agent and other agents (the message_agent tool). */
 function Colleagues({ agent }) {
   const { data } = useApi(`/agents/${agent.id}/dms`, ['agent_dm']);
@@ -125,6 +199,7 @@ export default function AgentDetail({ id, meta }) {
     ['skills', 'Skills & tools'],
     ['tasks', `Tasks (${openTasks.length})`],
     ['workflows', `Workflows (${workflows.length})`],
+    ['lessons', 'Lessons'],
     ['colleagues', 'Colleagues'],
     ['connect', 'Connect'],
   ];
@@ -225,6 +300,12 @@ export default function AgentDetail({ id, meta }) {
           ) : (
             <WorkflowList workflows={workflows} onEdit={(w) => setModal({ kind: 'workflow', workflow: w })} onRuns={() => (location.hash = '#/workflows')} />
           )}
+        </div>
+      )}
+
+      {tab === 'lessons' && (
+        <div className="tab-body">
+          <Lessons agent={agent} />
         </div>
       )}
 

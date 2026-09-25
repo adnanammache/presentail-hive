@@ -111,6 +111,11 @@ test('a DM to an agent is answered in the thread, as the agent', async () => {
   await new Promise((r) => setTimeout(r, 50));
   assert.equal(posts.length, before);
 
+  // "remember:" teaches the agent instead of chatting.
+  await handleEvent(dm('Ledger: remember: Careem Dubai orders use place of supply Dubai, never Abu Dhabi.'));
+  assert.match(posts.at(-1).text, /Noted/);
+  assert.equal(get("SELECT text FROM agent_lessons WHERE agent_id = ?", ledger).text, 'Careem Dubai orders use place of supply Dubai, never Abu Dhabi.');
+
   // No name: the last agent in this DM. Paused agents say so.
   await handleEvent(dm('Vera: can you check August?'));
   assert.match(posts.at(-1).text, /not set up yet/);

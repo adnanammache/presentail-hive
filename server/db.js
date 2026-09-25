@@ -224,6 +224,17 @@ CREATE TABLE IF NOT EXISTS slack_threads (
 );
 -- Slack retries events; each is handled once
 CREATE TABLE IF NOT EXISTS slack_events (event_id TEXT PRIMARY KEY, created_at TEXT NOT NULL DEFAULT (datetime('now')));
+-- What each agent should remember from people's corrections
+CREATE TABLE IF NOT EXISTS agent_lessons (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  agent_id    INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  text        TEXT NOT NULL,
+  source      TEXT NOT NULL DEFAULT 'manual',   -- manual | rejection | slack | task
+  task_id     INTEGER REFERENCES tasks(id) ON DELETE SET NULL,
+  created_by  TEXT,
+  active      INTEGER NOT NULL DEFAULT 1,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
 -- Agents messaging each other
 CREATE TABLE IF NOT EXISTS agent_dms (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
