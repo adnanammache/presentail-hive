@@ -157,6 +157,16 @@ CREATE TABLE IF NOT EXISTS run_events (
   created_at  TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE (run_id, event_id)
 );
+CREATE TABLE IF NOT EXISTS run_outputs (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id      INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+  file_id     TEXT NOT NULL,
+  filename    TEXT NOT NULL,
+  mime_type   TEXT NOT NULL DEFAULT 'application/octet-stream',
+  size        INTEGER NOT NULL DEFAULT 0,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (run_id, file_id)
+);
 CREATE INDEX IF NOT EXISTS idx_runs_task ON runs(task_id, id);
 CREATE INDEX IF NOT EXISTS idx_run_events_run ON run_events(run_id, id);
 `);

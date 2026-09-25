@@ -149,6 +149,19 @@ export default function TaskRun({ task, agentName }) {
           <Timeline events={current.events} agentName={agentName} />
           {current.error && <div className="form-error">{current.error}</div>}
 
+          {current.outputs?.length > 0 && (
+            <div className="run-outputs">
+              <span className="small strong">Files from {agentName}</span>
+              <div className="run-files">
+                {current.outputs.map((o) => (
+                  <a key={o.id} className="file-chip out" href={`/api/runs/${current.id}/outputs/${o.id}`} download={o.filename}>
+                    ⬇ {o.filename} <span className="muted">{Math.max(1, Math.round(o.size / 1024))} KB</span>
+                  </a>
+                ))}
+              </div>
+            </div>
+          )}
+
           {current.pending.map((p) => (
             <div key={p.event_id} className="approval">
               <div className="small strong">

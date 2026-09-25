@@ -26,6 +26,12 @@ app.get('/healthz', (req, res) => res.json({ ok: true }));
 // Agents authenticate with their own bearer tokens, so this router sits before the dashboard sign-in.
 app.use('/api/agent', agentRouter());
 
+// App icons, manifest and service worker must load before sign-in so phones can install Hive.
+const dist = join(process.cwd(), 'dist');
+for (const file of ['manifest.webmanifest', 'sw.js', 'icon.svg', 'icon-192.png', 'icon-512.png', 'apple-touch-icon.png']) {
+  app.get(`/${file}`, (req, res, next) => (existsSync(join(dist, file)) ? res.sendFile(join(dist, file)) : next()));
+}
+
 // Sign-in pages (/login, /auth/*) are public; everything after requireAuth needs a signed-in user.
 app.use(authRouter());
 app.use(requireAuth);
@@ -35,7 +41,6 @@ app.use('/api', dashboardRouter());
 app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));
 app.use(errorHandler);
 
-const dist = join(process.cwd(), 'dist');
 if (existsSync(dist)) {
   app.use(express.static(dist));
   app.get(/^(?!\/api).*/, (req, res) => res.sendFile(join(dist, 'index.html')));

@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { ago, api, fmtDateTime, until, useApi } from '../api.js';
 import { Avatar, Badge, Empty, Icon, Loading, PageHeader, agentTone, runTone, statusLabel } from '../components/ui.jsx';
 import { TaskForm } from '../components/forms.jsx';
+import SpendCard from '../components/Spend.jsx';
 
 function Stat({ label, value, sub, tone, href }) {
   return (
@@ -33,6 +34,7 @@ export default function Dashboard() {
       </div>
 
       <div className="dash-grid">
+        <SpendCard />
         <section className="card">
           <header className="card-head">
             <h2>Needs your attention</h2>

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ago, api, toDate, useApi } from '../api.js';
 import { Avatar, Badge, Icon, Loading, PageHeader, TASK_COLUMNS, priorityTone } from '../components/ui.jsx';
 import { TaskForm } from '../components/forms.jsx';
@@ -29,13 +29,24 @@ export function TaskCard({ task, onOpen, draggable }) {
   );
 }
 
-export default function Tasks() {
+export default function Tasks({ openId }) {
   const [agentFilter, setAgentFilter] = useState('');
   const { data: tasks, setData } = useApi(`/tasks${agentFilter ? `?agent_id=${agentFilter}` : ''}`, ['task']);
   const { data: agents } = useApi('/agents', ['agent']);
   const [editing, setEditing] = useState(null);
   const [creating, setCreating] = useState(null);
   const [over, setOver] = useState(null);
+
+  // Deep links (#/tasks/42), e.g. from a Slack alert, open that task.
+  useEffect(() => {
+    if (!openId || !tasks) return;
+    const t = tasks.find((x) => x.id === Number(openId));
+    if (t) setEditing(t);
+  }, [openId, tasks === null]);
+  const closeTask = () => {
+    setEditing(null);
+    if (openId) history.replaceState(null, '', '#/tasks');
+  };
 
   const move = async (id, status) => {
     setData((ts) => ts.map((t) => (t.id === id ? { ...t, status } : t)));
@@ -95,7 +106,7 @@ export default function Tasks() {
           })}
         </div>
       )}
-      {editing && <TaskForm task={editing} onClose={() => setEditing(null)} />}
+      {editing && <TaskForm task={editing} onClose={closeTask} />}
       {creating && <TaskForm defaults={creating} onClose={() => setCreating(null)} />}
     </>
   );

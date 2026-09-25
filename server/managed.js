@@ -14,6 +14,7 @@ import { emit } from './events.js';
 import { logActivity } from './activity.js';
 import { INTEGRATIONS, parseList, skillFiles, skillHash, skillLibrary } from './capabilities.js';
 import { postMessage } from './dispatch.js';
+import { notifyRun } from './notify.js';
 
 const DEFAULT_MODEL = process.env.DEFAULT_CLAUDE_MODEL || 'claude-opus-5';
 const ENV_NAME = process.env.HIVE_ENVIRONMENT_NAME || (process.env.NODE_ENV === 'production' ? 'presentail-hive' : 'presentail-hive-dev');
@@ -222,6 +223,7 @@ function failRun(runId, err) {
   const r = setRun(runId, { status: 'failed', error: err.message || String(err) });
   setTask(r.task_id, 'blocked', `Could not run: ${err.message || err}`);
   logActivity(r.agent_id, 'error', `Run #${runId} failed: ${err.message || err}`);
+  notifyRun(runId, 'failed');
 }
 
 async function uploadTaskFiles(taskId) {
@@ -437,6 +439,7 @@ export function handleEvent(runId, ev) {
         });
         setRun(runId, { status: 'needs_approval', pending: JSON.stringify(pending) });
         setTask(r.task_id, 'review');
+        notifyRun(runId, 'approval', { pending });
         if (r.kind === 'chat') {
           for (const p of pending) {
             postMessage(r.agent_id, 'system', `Approval needed: ${p.name}${p.detail ? `\n${p.detail}` : ''}`, { type: 'approval', run_id: runId, event_id: p.event_id });
@@ -445,6 +448,8 @@ export function handleEvent(runId, ev) {
       } else {
         const latest = getRun(runId);
         setRun(runId, { status: 'waiting', pending: '[]', error: reason === 'budget_reached' ? 'Budget reached' : latest.error });
+        syncOutputs(runId).catch(() => {});
+        if (r.kind === 'task') notifyRun(runId, 'done');
         setTask(r.task_id, 'review', latest.last_message || undefined);
         if (r.task_id) logActivity(r.agent_id, 'task', `Run #${runId} is waiting for your review`);
       }
@@ -464,6 +469,36 @@ export function handleEvent(runId, ev) {
   }
 }
 
+/** Collect files the agent saved to /mnt/session/outputs/ (they appear a moment after the turn ends). */
+export async function syncOutputs(runId, delays = [1500, 4000, 8000]) {
+  const r = getRun(runId);
+  if (!r?.session_id) return [];
+  const inputs = new Set(all('SELECT anthropic_file_id FROM task_files WHERE task_id = ?', r.task_id ?? -1).map((f) => f.anthropic_file_id));
+  for (const delay of delays) {
+    await new Promise((res) => setTimeout(res, delay));
+    let added = 0;
+    for await (const f of api().beta.files.list({ scope_id: r.session_id, betas: ['managed-agents-2026-04-01'] })) {
+      if (inputs.has(f.id) || f.downloadable === false) continue;
+      added += run(
+        'INSERT OR IGNORE INTO run_outputs (run_id, file_id, filename, mime_type, size) VALUES (?, ?, ?, ?, ?)',
+        runId, f.id, f.filename, f.mime_type || 'application/octet-stream', f.size_bytes || 0,
+      ).changes;
+    }
+    if (added) {
+      emit('run', { run_id: runId, task_id: r.task_id, agent_id: r.agent_id });
+      break;
+    }
+  }
+  return all('SELECT * FROM run_outputs WHERE run_id = ? ORDER BY id', runId);
+}
+
+export async function downloadOutput(runId, outputId) {
+  const out = get('SELECT * FROM run_outputs WHERE id = ? AND run_id = ?', outputId, runId);
+  if (!out) return null;
+  const response = await api().beta.files.download(out.file_id);
+  return { ...out, body: Buffer.from(await response.arrayBuffer()) };
+}
+
 /** After a restart, pick up runs that were mid-flight. */
 export function resumeRuns() {
   if (!managedReady()) return;
@@ -480,5 +515,6 @@ export function runWithEvents(runId) {
   const r = getRun(runId);
   if (!r) return null;
   const events = all('SELECT event_id, type, data, created_at FROM run_events WHERE run_id = ? ORDER BY id', runId).map((e) => ({ ...e, data: JSON.parse(e.data) }));
-  return { ...r, pending: parseList(r.pending), events };
+  const outputs = all('SELECT id, filename, mime_type, size, created_at FROM run_outputs WHERE run_id = ? ORDER BY id', runId);
+  return { ...r, pending: parseList(r.pending), events, outputs };
 }

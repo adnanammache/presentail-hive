@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { ago, useApi } from '../api.js';
 import { Avatar, Badge, Empty, Icon, Loading, PLATFORM_LABELS, PageHeader, agentTone } from '../components/ui.jsx';
 import { AgentForm, TeamForm } from '../components/forms.jsx';
+import { money } from '../components/Spend.jsx';
 
 function AgentCard({ a }) {
   return (
@@ -24,7 +25,7 @@ function AgentCard({ a }) {
           <strong>{a.workflows}</strong> workflows
         </span>
         <span className="spacer" />
-        <span className="muted small">seen {ago(a.last_seen_at)}</span>
+        {a.month_cents > 0 ? <span className="muted small" title="AI spend this month">{money(a.month_cents)} this month</span> : <span className="muted small">seen {ago(a.last_seen_at)}</span>}
       </footer>
     </a>
   );
@@ -65,6 +66,7 @@ export default function Agents() {
             </div>
             <span className="muted small nowrap">
               {members.length} {members.length === 1 ? 'agent' : 'agents'}
+              {members.some((m) => m.month_cents) && ` · ${money(members.reduce((t, m) => t + m.month_cents, 0))} this month`}
             </span>
             <button className="btn btn-sm btn-ghost" onClick={() => setModal({ kind: 'team', team })}>
               <Icon name="edit" size={14} /> Edit
