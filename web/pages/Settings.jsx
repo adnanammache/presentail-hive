@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { ago, api, useApi } from '../api.js';
 import { Badge, Loading, PageHeader } from '../components/ui.jsx';
+import { BriefSettings, NotificationSettings } from '../components/Notifications.jsx';
 
 const HOW = {
   anthropic: 'Create a key at console.anthropic.com (a workspace with Managed Agents access) and add it in Railway as ANTHROPIC_API_KEY.',
@@ -122,6 +123,8 @@ export default function Settings() {
           </section>
         ))}
       </div>
+      <NotificationSettings />
+      <BriefSettings />
       <section className="card settings-note">
         <h2>Odoo changes by agents</h2>
         <p className="muted small">Reads aren't listed. Hover a row to see what Odoo returned.</p>
@@ -136,6 +139,22 @@ export default function Settings() {
           <li>🔴 an agent gets stuck, or a scheduled workflow fails</li>
         </ul>
         <p className="muted small">Each alert has a button that opens the task in Hive.</p>
+        <h3>Approve from Slack</h3>
+        {data.slack?.buttons && data.slack.approvers > 0 ? (
+          <p className="muted">✅ On. Approval alerts have Approve and Reject buttons; the alert updates to show who decided.</p>
+        ) : (
+          <ol className="muted small">
+            <li>
+              In your Slack app: <b>Interactivity &amp; Shortcuts</b> → turn on → Request URL <code>{data.slack?.interactivity_url}</code> → Save.
+            </li>
+            <li>
+              <b>Basic Information</b> → copy the <b>Signing Secret</b> into Railway as <code>SLACK_SIGNING_SECRET</code>.
+            </li>
+            <li>
+              If alerts go to a channel, set <code>SLACK_APPROVERS</code> to the member IDs allowed to approve (comma-separated). If they go to your DMs, you're the approver automatically.
+            </li>
+          </ol>
+        )}
       </section>
     </>
   );

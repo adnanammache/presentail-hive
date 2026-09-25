@@ -189,6 +189,23 @@ CREATE INDEX IF NOT EXISTS idx_run_events_run ON run_events(run_id, id);
 `);
 
 addColumn('runs', 'auto_approve', 'INTEGER NOT NULL DEFAULT 0'); // "approve the rest of this run"
+addColumn('runs', 'slack_ts', 'TEXT'); // the approval alert in Slack, updated once someone decides
+
+db.exec(`
+CREATE TABLE IF NOT EXISTS briefs (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  data        TEXT NOT NULL,                     -- the brief as JSON (see brief.js)
+  trigger     TEXT NOT NULL DEFAULT 'schedule',  -- schedule | manual
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  endpoint    TEXT NOT NULL UNIQUE,
+  keys        TEXT NOT NULL,
+  user        TEXT,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+`);
 
 export const DATA_DIR = DB_PATH === ':memory:' ? './data' : dirname(DB_PATH);
 

@@ -3,7 +3,9 @@
 import { all, get, run } from './db.js';
 import { managedReady } from './managed.js';
 import { integrationList } from './capabilities.js';
-import { slackConfigured } from './notify.js';
+import { slackButtonsEnabled, slackConfigured } from './notify.js';
+import { approvers } from './slack.js';
+import { subscriptionCount } from './push.js';
 import { authMode } from './auth.js';
 
 const DONE_KEY = 'setup-done';
@@ -67,7 +69,13 @@ export function setupChecklist() {
     },
     { key: 'backups', title: 'Check daily backups', detail: 'Confirm backups are on for the Railway volume that holds Hive’s database.', manual: true },
     { key: 'make-webhook', title: 'Regenerate the old Make webhook', detail: 'Its URL was in the skills you shared. Make → the webhook → regenerate.', manual: true },
-    { key: 'phone', title: 'Add Hive to your phone', detail: 'Open hive.presentail.com → Share → Add to Home Screen.', manual: true },
+    {
+      key: 'phone',
+      title: 'Hive on your phone, with notifications',
+      detail: 'Open hive.presentail.com → Share → Add to Home Screen, open it from there, then Settings → Turn on notifications.',
+      done: subscriptionCount() > 0,
+      href: '#/settings',
+    },
   ].map((i) => (i.manual ? { ...i, done: manual.has(i.key) } : i));
 
   return { items, hidden: Boolean(meta(HIDDEN_KEY)), done: items.filter((i) => i.done).length, total: items.length };

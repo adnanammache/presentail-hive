@@ -4,7 +4,10 @@ import { emit, subscribe } from './events.js';
 import { logActivity } from './activity.js';
 import { claudeConfigured, dispatchTask, postMessage, sendToAgent } from './dispatch.js';
 import { integrationList, skillLibrary } from './capabilities.js';
-import { sendSlack, slackConfigured } from './notify.js';
+import { sendSlack, slackButtonsEnabled, slackConfigured } from './notify.js';
+import { approvers } from './slack.js';
+import { briefConfig, latestBrief, nextBriefAt, sendBrief, setBriefConfig } from './brief.js';
+import { pushToAll, removeSubscription, saveSubscription, subscriptionCount, vapidKeys } from './push.js';
 import { COMPANIES, testOdoo } from './odoo.js';
 import { authMode } from './auth.js';
 import { markVerified, setHidden, setManualDone, setupChecklist } from './setup.js';
@@ -278,14 +281,39 @@ export function dashboardRouter() {
   }));
 
   // Settings: what's connected
-  r.get('/settings', wrap(() => ({
+  r.get('/settings', wrap((req) => ({
     connections: [
       { key: 'anthropic', name: 'Anthropic (Claude)', connected: managedReady(), env: 'ANTHROPIC_API_KEY', purpose: 'Powers every agent.' },
       ...integrationList().map((i) => ({ key: i.key, name: i.name, connected: i.configured, env: i.env, purpose: i.description })),
       { key: 'slack', name: 'Slack alerts', connected: slackConfigured(), env: 'SLACK_BOT_TOKEN + SLACK_ALERT_CHANNEL', purpose: 'Pings you when an agent needs approval, finishes, or gets stuck.' },
       { key: 'google', name: 'Google sign-in', connected: authMode() === 'google', env: 'GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET', purpose: 'Continue with Google for @presentail.com accounts.' },
     ],
+    slack: { buttons: slackButtonsEnabled(), interactivity_url: `${req.protocol}://${req.get('host')}/slack/interactions`, approvers: approvers().length },
   })));
+  // Daily brief
+  r.get('/brief', wrap(() => ({ brief: latestBrief(), config: briefConfig(), next_at: nextBriefAt() })));
+  r.post('/brief', wrap(async () => sendBrief({ trigger: 'manual' })));
+  r.put('/brief/config', wrap((req) => {
+    try {
+      return { config: setBriefConfig(req.body || {}), next_at: nextBriefAt() };
+    } catch (err) {
+      throw bad(err.message);
+    }
+  }));
+
+  // Push notifications on this device
+  r.get('/push', wrap(() => ({ public_key: vapidKeys().publicKey, devices: subscriptionCount() })));
+  r.post('/push/subscribe', wrap((req) => {
+    try {
+      saveSubscription(req.body?.subscription, req.user?.email ?? req.user?.name);
+    } catch (err) {
+      throw bad(err.message);
+    }
+    return { ok: true, devices: subscriptionCount() };
+  }));
+  r.post('/push/unsubscribe', wrap((req) => (removeSubscription(String(req.body?.endpoint || '')), { ok: true, devices: subscriptionCount() })));
+  r.post('/push/test', wrap(async () => pushToAll({ title: 'Presentail Hive', body: 'Notifications are working on this device.', url: '/#/settings' })));
+
   r.get('/setup', wrap(() => setupChecklist()));
   r.post('/setup', wrap((req) => {
     const { key, done, hidden } = req.body || {};
