@@ -62,3 +62,16 @@ test('the first person becomes owner; later people are members until promoted', 
   // There's always an owner, and owners can't demote themselves.
   assert.match((await call('adnan@presentail.com', 'PATCH', '/users/adnan@presentail.com', { role: 'member' })).body.error, /at least one owner|own owner role/);
 });
+
+test('in production, webhooks must be public https addresses', async () => {
+  const { checkWebhookUrl } = await import('./app.js');
+  const env = process.env.NODE_ENV;
+  process.env.NODE_ENV = 'production';
+  try {
+    checkWebhookUrl('https://hook.eu1.make.com/abc');
+    for (const bad of ['http://hook.eu1.make.com/abc', 'https://localhost/x', 'https://10.0.0.5/x', 'https://postgres.railway.internal/x', 'https://169.254.169.254/latest', 'https://[::1]/x'])
+      assert.throws(() => checkWebhookUrl(bad), /public https/, bad);
+  } finally {
+    process.env.NODE_ENV = env;
+  }
+});

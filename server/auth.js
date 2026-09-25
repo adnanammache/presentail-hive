@@ -129,6 +129,12 @@ export function authRouter() {
 
       if (!user.email_verified) return fail('Your Google email is not verified.');
       if (!isAllowed(user.email)) return fail(`${user.email} is not allowed to access Presentail Hive.`);
+      // Domain sign-ins must come from the company's Google Workspace (the hd claim), not a personal
+      // Google account that happens to be registered with a company address.
+      const { emails, domains } = env();
+      if (!emails.includes(user.email.toLowerCase()) && !domains.includes(String(user.hd || '').toLowerCase())) {
+        return fail('Please sign in with your Presentail Google Workspace account.');
+      }
 
       const session = { email: user.email, name: user.name || user.email, picture: user.picture || '', exp: Date.now() + SESSION_DAYS * 864e5 };
       setCookie(req, res, COOKIE, sign(session), SESSION_DAYS * 86400);

@@ -26,15 +26,36 @@ const READ_METHODS = new Set([
   'formatted_read_group', 'web_search_read', 'web_read', 'default_get', 'has_access', 'check_access_rights',
   'get_views', 'context_get',
 ]);
-// Never allowed through the agent tool, even with approval.
-const FORBIDDEN_MODELS = /^(ir\.|res\.users|res\.groups|base\.|auth_|mail\.template|account\.(journal|account|tax)$)/;
+
+// No access at all, not even reads: secrets (system parameters, mail/SSO/payment credentials,
+// API keys), user and access management, imports that can write anywhere, email sending, settings.
+// ir.attachment is the one ir.* model agents need (to read and attach documents).
+const SECRET_OR_ADMIN =
+  /^(ir\.(?!attachment$)|base\.|base_import\.|auth\.|auth_|iap\.|payment\.provider|fetchmail\.|res\.users\.apikeys|res\.users$|res\.groups|res\.config|change\.password|portal\.wizard|mail\.(mail|template|compose\.message)$)/;
+
+// Configuration: agents may read it (to find ids) but never change it.
+const CONFIG = /^(account\.(account|journal|tax|fiscal\.position|reconcile\.model|group|chart\.template|report|change\.lock\.date|lock_exception)|account\.account\.tag|res\.company|res\.currency)/;
 
 /** read: run now · write: needs approval · forbidden: refuse */
 export function classify(model, method) {
   if (!/^[a-z][a-z0-9_.]*$/.test(model || '') || !/^[a-z][a-z0-9_]*$/.test(method || '')) return 'forbidden';
+  if (SECRET_OR_ADMIN.test(model)) return 'forbidden';
   if (READ_METHODS.has(method)) return 'read';
-  if (FORBIDDEN_MODELS.test(model)) return 'forbidden';
+  if (CONFIG.test(model)) return 'forbidden';
   return 'write';
+}
+
+// Context keys an agent may pass. Others can switch off Odoo's own safety checks
+// (e.g. check_move_validity) or its audit trail (tracking_disable, mail_notrack).
+const SAFE_CONTEXT = /^(lang|tz|active_test|default_[a-z0-9_]+)$/;
+export const cleanContext = (ctx) =>
+  Object.fromEntries(Object.entries(ctx && typeof ctx === 'object' ? ctx : {}).filter(([k]) => SAFE_CONTEXT.test(k)));
+
+/** Problems with an agent's call before it runs (null when fine). */
+export function checkAgentCall(input) {
+  if (!COMPANIES[input?.company_id]) return `company_id must be one of ${Object.keys(COMPANIES).join(', ')} (${Object.values(COMPANIES).join('; ')}).`;
+  if (input.params != null && (typeof input.params !== 'object' || Array.isArray(input.params))) return 'params must be an object of named arguments.';
+  return null;
 }
 
 export const ODOO_TOOL = {
@@ -73,7 +94,8 @@ export async function odooCall({ model, method, ids, params = {}, company_id }) 
   if (classify(model, method) === 'forbidden') throw new Error(`${model}.${method} is not allowed through Hive`);
   const body = { ...(params || {}) };
   if (Array.isArray(ids)) body.ids = ids;
-  if (company_id) body.context = { ...(body.context || {}), allowed_company_ids: [company_id] };
+  body.context = cleanContext(body.context);
+  if (company_id) body.context.allowed_company_ids = [company_id];
   let res;
   try {
     res = await fetch(`${odooUrl()}/json/2/${model}/${method}`, {
@@ -121,6 +143,8 @@ export async function testOdoo() {
 
 export function describeCall(input) {
   const company = input.company_id ? ` · ${COMPANIES[input.company_id]?.split(' (')[0] ?? `company ${input.company_id}`}` : '';
-  const ids = input.ids?.length ? ` [${input.ids.slice(0, 8).join(', ')}${input.ids.length > 8 ? ', …' : ''}]` : '';
+  // Record ids can arrive as `ids` or inside params: show whichever the call will actually use.
+  const all = Array.isArray(input.ids) ? input.ids : Array.isArray(input.params?.ids) ? input.params.ids : [];
+  const ids = all.length ? ` [${all.slice(0, 8).join(', ')}${all.length > 8 ? `, … ${all.length} records` : ''}]` : '';
   return `${input.model}.${input.method}${ids}${company}`;
 }

@@ -64,7 +64,10 @@ test('a Talabat task runs on Managed Agents: skills, vault, files, approval, res
   assert.deepEqual(agentConfig.skills.map((s) => s.type), ['custom', 'anthropic']);
   assert.match(agentConfig.system, /Ledger, UAE Accountant on Presentail's Accounting team/);
   assert.match(agentConfig.system, /\$WAFEQ_API_KEY/);
-  assert.deepEqual(agentConfig.tools[0].configs.map((c) => [c.name, c.permission_policy.type]), [['bash', 'always_ask'], ['write', 'always_ask'], ['edit', 'always_ask']]);
+  assert.deepEqual(agentConfig.tools[0].configs.map((c) => [c.name, c.permission_policy?.type ?? (c.enabled === false ? 'off' : '?')]), [
+    ['bash', 'always_ask'], ['write', 'always_ask'], ['edit', 'always_ask'], ['web_fetch', 'off'], ['web_search', 'off'],
+  ]);
+  assert.equal(fake.calls.environments[0].config.networking.allow_mcp_servers, false);
 
   // Secret goes to the vault (never the prompt), limited to Wafeq's host, header-only.
   const cred = fake.calls.credentials[0];
@@ -133,6 +136,18 @@ test('a Talabat task runs on Managed Agents: skills, vault, files, approval, res
   assert.equal(fake.calls.agentsUpdate.length, 1);
   assert.equal(fake.calls.agentsUpdate[0].version, 1);
   assert.equal(fake.calls.skills.length, 2, 'only the new skill is uploaded');
+});
+
+test('an agent holding a Wafeq credential must ask before every command, whatever its setting', async () => {
+  const fake = fakeAnthropic();
+  managed.setManagedClient(fake);
+  const id = Number(run("INSERT INTO agents (name, title, platform, approval, integrations, api_token) VALUES ('Wafeq bot', 'X', 'managed', 'agent_asks', '[\"wafeq\"]', 'w')").lastInsertRowid);
+  const plain = Number(run("INSERT INTO agents (name, title, platform, approval, api_token) VALUES ('Writer', 'Y', 'managed', 'agent_asks', 'p')").lastInsertRowid);
+  await managed.syncAgent(id);
+  await managed.syncAgent(plain);
+  const asks = (i) => fake.calls.agentsCreate[i].tools[0].configs.filter((c) => c.permission_policy?.type === 'always_ask').map((c) => c.name);
+  assert.deepEqual(asks(0), ['bash', 'write', 'edit']);
+  assert.deepEqual(asks(1), []);
 });
 
 test('runs refuse to start for agents that are not Claude Managed Agents', () => {

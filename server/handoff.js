@@ -16,6 +16,8 @@ import { downloadOutput, syncOutputs } from './managed.js';
 import { pushToAll } from './push.js';
 import { sendSlack, baseUrl } from './notify.js';
 
+const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
 export const TASK_TOOL = {
   type: 'custom',
   name: 'task_complete',
@@ -129,6 +131,7 @@ export async function finishTask(taskId, { summary = '', check = '' } = {}) {
 
   // A review is done: add the verdict to the original work, which comes back to you.
   if (task.parent_task_id) {
+    if (task.status === 'done') return 'Your review was already recorded.';
     const parent = get('SELECT * FROM tasks WHERE id = ?', task.parent_task_id);
     run("UPDATE tasks SET status = 'done', result = ?, completed_at = datetime('now'), updated_at = datetime('now') WHERE id = ?", summary, task.id);
     if (parent) {
@@ -137,7 +140,7 @@ export async function finishTask(taskId, { summary = '', check = '' } = {}) {
       emit('task', { task_id: parent.id });
       const url = `/#/tasks/${parent.id}`;
       pushToAll({ title: `${author?.name ?? 'Reviewer'} reviewed "${parent.title}"`, body: summary.slice(0, 200), url, tag: `task-${parent.id}` }).catch(() => {});
-      sendSlack({ text: `🔎 *${author?.name ?? 'Reviewer'}* reviewed *${parent.title}*, ready for your final say`, detail: `>${summary.slice(0, 600).replace(/\n/g, '\n>')}`, link: `${baseUrl()}${url}` });
+      sendSlack({ text: `🔎 *${esc(author?.name ?? 'Reviewer')}* reviewed *${esc(parent.title)}*, ready for your final say`, detail: `>${esc(summary.slice(0, 600)).replace(/\n/g, '\n>')}`, link: `${baseUrl()}${url}` });
     }
     logActivity(task.agent_id, 'task', `${author?.name ?? 'Reviewer'} finished reviewing "${parent?.title ?? task.title}"`);
     emit('task', { task_id: task.id });

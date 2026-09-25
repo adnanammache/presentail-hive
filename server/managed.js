@@ -20,7 +20,7 @@ import { AGENT_DM_TOOL, askAgent } from './conversations.js';
 import { lessonsBlock } from './lessons.js';
 import { checkBudget, checkThresholds } from './budget.js';
 import { recordHealth } from './health.js';
-import { ODOO_TOOL, classify, describeCall, formatResult, odooCall } from './odoo.js';
+import { ODOO_TOOL, checkAgentCall, classify, describeCall, formatResult, odooCall } from './odoo.js';
 
 const DEFAULT_MODEL = process.env.DEFAULT_CLAUDE_MODEL || 'claude-opus-5';
 const ENV_NAME = process.env.HIVE_ENVIRONMENT_NAME || (process.env.NODE_ENV === 'production' ? 'presentail-hive' : 'presentail-hive-dev');
@@ -50,7 +50,7 @@ export async function ensureEnvironment() {
   const hosts = [...new Set(configuredIntegrations().flatMap(([, i]) => i.hosts))].sort();
   const config = {
     type: 'cloud',
-    networking: { type: 'limited', allowed_hosts: hosts, allow_package_managers: true, allow_mcp_servers: true },
+    networking: { type: 'limited', allowed_hosts: hosts, allow_package_managers: true, allow_mcp_servers: false },
     packages: { apt: ['poppler-utils'], pip: ['openpyxl', 'pdfplumber'] },
   };
   const h = hash(config);
@@ -164,6 +164,10 @@ async function buildAgentConfig(agent) {
     if (item) skills.push(await ensureSkill(item));
   }
   const ask = { type: 'always_ask' };
+  // Agents holding a credential for a system Hive doesn't broker (e.g. Wafeq, used from bash) must
+  // have every command approved, whatever their approval setting: that's the only gate on writes.
+  const vaulted = parseList(agent.integrations).some((k) => INTEGRATIONS[k] && INTEGRATIONS[k].via !== 'hive');
+  const askEveryCommand = agent.approval === 'every_command' || vaulted;
   return {
     name: `${agent.name} · ${agent.title || 'Agent'}`.slice(0, 200),
     model: agent.model || DEFAULT_MODEL,
@@ -173,8 +177,14 @@ async function buildAgentConfig(agent) {
       {
         type: 'agent_toolset_20260401',
         default_config: { enabled: true, permission_policy: { type: 'always_allow' } },
-        // "Ask before every command": anything that can change state waits for a click in Hive.
-        configs: agent.approval === 'every_command' ? ['bash', 'write', 'edit'].map((name) => ({ name, permission_policy: ask })) : [],
+        configs: [
+          // "Ask before every command": anything that can change state waits for a click in Hive.
+          ...(askEveryCommand ? ['bash', 'write', 'edit'].map((name) => ({ name, permission_policy: ask })) : []),
+          // Web tools run on Anthropic's servers, outside the sandbox's network limits: a way for
+          // injected instructions to send data out. Presentail's agents don't need them.
+          { name: 'web_fetch', enabled: false },
+          { name: 'web_search', enabled: false },
+        ],
       },
       ...(parseList(agent.integrations).includes('odoo') ? [ODOO_TOOL] : []),
       TASK_TOOL,
@@ -312,25 +322,31 @@ export function startTaskRun(taskId) {
 }
 
 /** Chat with a managed agent: one long-lived session per agent. */
-export async function chatWithManagedAgent(agentId, text) {
+/**
+ * Chat with a managed agent. Each conversation has its own session: Hive's chat is one, and every
+ * Slack thread is another, so people never see each other's conversations or get each other's answers.
+ */
+export async function chatWithManagedAgent(agentId, text, { origin = 'hive' } = {}) {
   const agent = get('SELECT * FROM agents WHERE id = ?', agentId);
-  let r = get("SELECT * FROM runs WHERE kind = 'chat' AND agent_id = ? AND status NOT IN ('failed', 'ended') ORDER BY id DESC LIMIT 1", agentId);
+  const say = (msg) => postMessage(agentId, 'system', msg, { origin });
+  let r = get("SELECT * FROM runs WHERE kind = 'chat' AND agent_id = ? AND COALESCE(origin, 'hive') = ? AND status NOT IN ('failed', 'ended') ORDER BY id DESC LIMIT 1", agentId, origin);
   try {
     checkBudget(agentId);
   } catch (err) {
-    postMessage(agentId, 'system', err.message);
-    return;
+    return say(err.message);
   }
+  if (r && parseList(r.pending).length) return say(`${agent.name} is waiting for an approval first. Approve or reject it, then send your message again.`);
   try {
     if (!r) {
-      const runId = Number(run("INSERT INTO runs (kind, agent_id, status) VALUES ('chat', ?, 'starting')", agentId).lastInsertRowid);
+      const runId = Number(run("INSERT INTO runs (kind, agent_id, status, origin) VALUES ('chat', ?, 'starting', ?)", agentId, origin).lastInsertRowid);
       const session = await createSession(agent, { title: `Chat with ${agent.name}`, metadata: { hive_chat_agent_id: String(agentId) } });
       r = setRun(runId, { session_id: session.id, status: 'running' });
     }
+    run('UPDATE runs SET auto_approve = 0 WHERE id = ?', r.id);
     await sendAndFollow(r.id, [{ type: 'user.message', content: [{ type: 'text', text }] }]);
   } catch (err) {
     if (r) setRun(r.id, { status: 'failed', error: err.message });
-    postMessage(agentId, 'system', `Could not reach ${agent.name}: ${err.message}`);
+    say(`Could not reach ${agent.name}: ${err.message}`);
   }
 }
 
@@ -356,7 +372,11 @@ export async function consultManagedAgent(agentId, text, { timeoutMs = 15 * 60 *
     if (r.status === 'waiting' || r.status === 'ended') return { runId, text: r.last_message || '(no answer)' };
     if (r.status === 'failed') throw new Error(r.error || 'failed');
     if (Date.now() - started > timeoutMs) {
-      return { runId, text: r.last_message || null, timedOut: true, needsApproval: r.status === 'needs_approval' };
+      // Whoever asked has moved on: don't leave approvals behind that nobody is waiting for.
+      const pending = parseList(r.pending);
+      if (pending.length) await confirmMany(runId, pending.map((p) => p.event_id), false, { by: 'Hive (the question timed out)', denyMessage: 'The colleague who asked has moved on.' }).catch(() => {});
+      await interruptRun(runId).catch(() => {});
+      return { runId, text: r.last_message || null, timedOut: true, needsApproval: pending.length > 0 };
     }
     await new Promise((res) => setTimeout(res, 500));
   }
@@ -365,6 +385,9 @@ export async function consultManagedAgent(agentId, text, { timeoutMs = 15 * 60 *
 export async function replyToRun(runId, text) {
   const r = getRun(runId);
   if (!r?.session_id || ['failed', 'ended'].includes(r.status)) throw new Error('This run has ended; start a new one');
+  if (parseList(r.pending).length) throw new Error('The agent is waiting for an approval. Approve or reject it first, then reply.');
+  checkBudget(r.agent_id);
+  run('UPDATE runs SET auto_approve = 0 WHERE id = ?', runId);
   setRun(runId, { status: 'running' });
   setTask(r.task_id, 'in_progress');
   sendAndFollow(runId, [{ type: 'user.message', content: [{ type: 'text', text }] }]).catch((err) => failRun(runId, err));
@@ -375,8 +398,12 @@ export async function confirmTool(runId, eventId, allow, denyMessage, { by = 'Hi
   const pending = parseList(r?.pending);
   const item = pending.find((p) => p.event_id === eventId);
   if (!item) throw new Error('That approval is no longer pending');
-  // "Approve all for this run": this and every other Odoo change in the run go through without asking.
-  if (allow && approveRest) run('UPDATE runs SET auto_approve = 1 WHERE id = ?', runId);
+  // "Approve the rest of this turn": this and the agent's further Odoo changes until it next stops
+  // and hands back. Only on task runs; chats and consults are shared and long-lived.
+  if (allow && approveRest) {
+    if (r.kind !== 'task') throw new Error('"Approve the rest" is only available on tasks. Approve each change here.');
+    run('UPDATE runs SET auto_approve = 1 WHERE id = ?', runId);
+  }
   const resolving = allow && approveRest ? pending.filter((p) => p.event_id === eventId || p.kind === 'odoo') : [item];
   await resolvePending(runId, resolving, allow, denyMessage, by);
 }
@@ -456,7 +483,7 @@ function odooPendingItem(action) {
     name: 'odoo',
     detail: describeCall(input),
     reason: input.reason ?? '',
-    preview: JSON.stringify(payload, null, 2).slice(0, 4000),
+    preview: JSON.stringify(payload, null, 2), // in full: approvers see everything that will be sent
   };
 }
 
@@ -465,6 +492,8 @@ async function resolveToolCalls(runId, customIds, builtinPending) {
   const r = getRun(runId);
   const results = [];
   const waiting = [];
+  customIds = customIds.filter((id) => !resolving.has(id));
+  customIds.forEach((id) => resolving.add(id));
   for (const id of customIds) {
     const call = JSON.parse(get('SELECT data FROM run_events WHERE run_id = ? AND event_id = ?', runId, id)?.data ?? '{}');
     if (call.name === 'message_agent') {
@@ -483,8 +512,14 @@ async function resolveToolCalls(runId, customIds, builtinPending) {
     const action = get('SELECT * FROM odoo_actions WHERE event_id = ?', id);
     if (!action) {
       results.push({ type: 'user.custom_tool_result', custom_tool_use_id: id, content: [{ type: 'text', text: 'Unknown tool' }], is_error: true });
-    } else if (action.kind === 'forbidden') {
-      const msg = `${action.model}.${action.method} is not allowed through Hive (configuration, users, journals, accounts and taxes are off-limits). Ask the user to do this in Odoo.`;
+    } else if (action.kind === 'forbidden' || checkAgentCall(JSON.parse(action.input)) || (r.kind === 'consult' && action.kind === 'write')) {
+      const problem = checkAgentCall(JSON.parse(action.input));
+      const msg =
+        action.kind === 'forbidden'
+          ? `${action.model}.${action.method} is not allowed through Hive (secrets, users, settings and accounting configuration are off-limits). Ask the user to do this in Odoo.`
+          : problem
+            ? `Not run: ${problem}`
+            : 'You were asked this by another agent, so you can only read from Odoo here. Tell them what should change; they or the user will do it.';
       run("UPDATE odoo_actions SET status = 'refused', result = ?, finished_at = datetime('now') WHERE id = ?", msg, action.id);
       results.push({ type: 'user.custom_tool_result', custom_tool_use_id: id, content: [{ type: 'text', text: msg }], is_error: true });
     } else if (action.kind === 'read' || r.auto_approve) {
@@ -532,7 +567,9 @@ async function sendAndFollow(runId, events) {
 }
 
 /** Consume a session's events until it goes idle/terminates. History is replayed first and deduped, so gaps are covered. */
-export function follow(runId, attempt = 0) {
+const resolving = new Set(); // custom tool call ids being answered right now (no double answers)
+
+export function follow(runId, attempt = 0, { resume = false } = {}) {
   followers.get(runId)?.controller?.abort();
   let markOpened;
   const opened = new Promise((resolve) => (markOpened = resolve));
@@ -548,6 +585,7 @@ export function follow(runId, attempt = 0) {
     try {
       for await (const ev of api().beta.sessions.events.list(r.session_id)) handleEvent(runId, ev);
       if (!ACTIVE.includes(getRun(runId).status)) return; // it finished while we weren't listening
+      if (resume) recoverToolCalls(runId).catch((err) => failRun(runId, err));
       for await (const ev of stream) {
         handleEvent(runId, ev);
         if (ev.type === 'session.status_idle' || ev.type === 'session.status_terminated') break;
@@ -561,7 +599,7 @@ export function follow(runId, attempt = 0) {
     const current = getRun(runId);
     if (current && ACTIVE.includes(current.status) && attempt < 5) {
       await new Promise((res) => setTimeout(res, 2000 * 2 ** attempt));
-      return follow(runId, attempt + 1).done;
+      return follow(runId, attempt + 1, { resume }).done;
     }
     failRun(runId, err);
   });
@@ -573,7 +611,10 @@ const text = (content) => (Array.isArray(content) ? content.filter((b) => b.type
 function toolSummary(ev) {
   const i = ev.input || {};
   const detail = i.command ?? i.file_path ?? i.path ?? i.pattern ?? i.url ?? i.query ?? '';
-  return { name: ev.name, detail: String(detail).slice(0, 600), permission: ev.evaluated_permission ?? null };
+  // Whatever an approver is asked to approve is shown in full: the whole command, and for file
+  // writes and edits, the content itself (not just the path).
+  const preview = ['write', 'edit'].includes(ev.name) ? JSON.stringify(i, null, 2) : undefined;
+  return { name: ev.name, detail: String(detail).slice(0, 20000), ...(preview ? { preview: preview.slice(0, 50000) } : {}), permission: ev.evaluated_permission ?? null };
 }
 
 function summarize(ev) {
@@ -588,7 +629,7 @@ function summarize(ev) {
       if (ev.name === 'message_agent') return { name: 'message_agent', detail: `→ ${ev.input?.agent ?? '?'}: ${String(ev.input?.message ?? '').slice(0, 500)}`, kind: 'custom', input: ev.input ?? {} };
       return { name: ev.name, detail: ev.name === 'odoo' ? describeCall(ev.input || {}) : '', kind: ev.name === 'odoo' ? classify(ev.input?.model, ev.input?.method) : 'custom' };
     case 'user.custom_tool_result':
-      return { is_error: Boolean(ev.is_error), preview: text(ev.content).slice(0, 300) };
+      return { is_error: Boolean(ev.is_error), preview: text(ev.content).slice(0, 300), tool_use_id: ev.custom_tool_use_id };
     case 'agent.tool_result':
     case 'agent.mcp_tool_result':
       return { is_error: Boolean(ev.is_error), preview: text(ev.content).slice(0, 400) };
@@ -626,7 +667,7 @@ export function handleEvent(runId, ev) {
     case 'agent.message':
       if (!data.text) break;
       setRun(runId, { last_message: data.text });
-      if (r.kind === 'chat') postMessage(r.agent_id, 'agent', data.text);
+      if (r.kind === 'chat') postMessage(r.agent_id, 'agent', data.text, { run_id: runId, origin: r.origin ?? 'hive' });
       break;
     case 'session.status_idle': {
       const reason = ev.stop_reason?.type;
@@ -640,6 +681,7 @@ export function handleEvent(runId, ev) {
         else askForApproval(runId, builtin);
       } else {
         const latest = getRun(runId);
+        run('UPDATE runs SET auto_approve = 0 WHERE id = ?', runId); // "approve the rest" ends with the turn
         setRun(runId, { status: 'waiting', pending: '[]', error: reason === 'budget_reached' ? 'Budget reached' : latest.error });
         syncOutputs(runId).catch(() => {});
         // If the agent called task_complete since the user last spoke, that already filed the result
@@ -709,8 +751,36 @@ export function resumeRuns() {
       failRun(r.id, new Error('Interrupted by a server restart before the session started'));
       continue;
     }
-    follow(r.id).done.catch(() => {});
+    follow(r.id, 0, { resume: true }).done.catch(() => {});
   }
+}
+
+/**
+ * After a restart: the agent may be paused on tool calls Hive never answered (the process stopped
+ * mid-way). Answer them now. Odoo changes that already ran are reported, never run twice.
+ */
+export async function recoverToolCalls(runId) {
+  const r = getRun(runId);
+  if (r?.status !== 'running') return;
+  const answered = new Set(
+    all("SELECT data FROM run_events WHERE run_id = ? AND type = 'user.custom_tool_result'", runId).map((e) => JSON.parse(e.data).tool_use_id),
+  );
+  const waitingApproval = new Set(parseList(r.pending).map((p) => p.event_id));
+  const open = all("SELECT event_id FROM run_events WHERE run_id = ? AND type = 'agent.custom_tool_use' ORDER BY id", runId)
+    .map((e) => e.event_id)
+    .filter((id) => !answered.has(id) && !waitingApproval.has(id) && !resolving.has(id));
+  if (!open.length) return;
+  const toResolve = [];
+  const results = [];
+  for (const id of open) {
+    const action = get('SELECT * FROM odoo_actions WHERE event_id = ?', id);
+    if (action && !['queued', 'pending'].includes(action.status)) {
+      // Already decided before the restart: send what happened instead of running it again.
+      results.push({ type: 'user.custom_tool_result', custom_tool_use_id: id, content: [{ type: 'text', text: action.result || action.status }], ...(action.status === 'executed' ? {} : { is_error: true }) });
+    } else toResolve.push(id);
+  }
+  if (results.length) await sendAndFollow(runId, results);
+  if (toResolve.length) await resolveToolCalls(runId, toResolve, []);
 }
 
 export function runWithEvents(runId) {

@@ -129,7 +129,7 @@ export default function TaskRun({ task, agentName }) {
     setReply('');
   });
   const confirm = act((eventId, allow, approveRest = false) => {
-    if (approveRest && !window.confirm('Approve this and every further Odoo change the agent makes in this run?')) return;
+    if (approveRest && !window.confirm('Approve this and every further Odoo change the agent makes until it next stops and hands back to you?')) return;
     const deny_message = allow ? undefined : prompt('Optional: tell the agent why, or what to do instead') || undefined;
     // A reason is often a rule worth keeping ("Abu Dhabi fees go to 5104"): offer to make it a lesson.
     const remember = Boolean(deny_message) && window.confirm(`Should ${agentName} remember this for next time?\n\n"${deny_message}"`);
@@ -185,17 +185,17 @@ export default function TaskRun({ task, agentName }) {
                 </div>
                 {p.reason && <div className="small">{p.reason}</div>}
                 {p.preview && p.preview !== '{}' && (
-                  <details>
-                    <summary className="small">Show the exact change</summary>
-                    <pre className="code">{p.preview}</pre>
+                  <details open={p.preview.length < 1200}>
+                    <summary className="small">The exact change (everything that will be sent)</summary>
+                    <pre className="code approval-preview">{p.preview}</pre>
                   </details>
                 )}
                 <div className="approval-actions">
                   <button type="button" className="btn btn-sm btn-danger-ghost" onClick={() => confirm(p.event_id, false)}>
                     Reject
                   </button>
-                  <button type="button" className="btn btn-sm" onClick={() => confirm(p.event_id, true, true)} title="Approve this and every further Odoo change in this run">
-                    Approve all for this run
+                  <button type="button" className="btn btn-sm" onClick={() => confirm(p.event_id, true, true)} title="Approve this and the agent's further Odoo changes until it next stops and hands back to you">
+                    Approve the rest of this turn
                   </button>
                   <button type="button" className="btn btn-sm btn-primary" onClick={() => confirm(p.event_id, true)}>
                     <Icon name="check" size={13} /> Approve
@@ -207,7 +207,13 @@ export default function TaskRun({ task, agentName }) {
                 <div className="small strong">
                   {agentName} wants to run <code>{p.name}</code>
                 </div>
-                {p.detail && <pre className="code">{p.detail}</pre>}
+                {p.detail && <pre className="code approval-preview">{p.detail}</pre>}
+                {p.preview && (
+                  <details open={p.preview.length < 1200}>
+                    <summary className="small">What it will write</summary>
+                    <pre className="code approval-preview">{p.preview}</pre>
+                  </details>
+                )}
                 <div className="approval-actions">
                   <button type="button" className="btn btn-sm btn-danger-ghost" onClick={() => confirm(p.event_id, false)}>
                     Reject

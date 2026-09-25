@@ -112,7 +112,7 @@ export async function deliver(agent, payload) {
       reply = await callWebhook(agent, payload);
       run("UPDATE agents SET last_seen_at = datetime('now') WHERE id = ?", agent.id);
     }
-    if (reply) postMessage(agent.id, 'agent', reply);
+    if (reply) postMessage(agent.id, 'agent', reply, payload.origin ? { origin: payload.origin } : null);
     return reply;
   } catch (err) {
     setAgentStatus(agent, 'error');
@@ -125,13 +125,15 @@ export async function deliver(agent, payload) {
 /** User sent a chat message to an agent. */
 export async function sendToAgent(agentId, body, meta = null) {
   const agent = get('SELECT * FROM agents WHERE id = ?', agentId);
-  const message = postMessage(agentId, 'user', body, meta);
+  // Where the conversation lives, so the answer goes back there (a Slack thread, or Hive).
+  const origin = meta?.via === 'slack' ? `slack:${meta.channel}:${meta.thread_ts}` : 'hive';
+  const message = postMessage(agentId, 'user', body, { ...(meta ?? {}), origin });
   // Fire and forget: the UI updates over SSE when the reply lands.
   if (agent.platform === 'managed') {
-    if (agent.status === 'paused') postMessage(agentId, 'system', `${agent.name} is paused. Resume it to get a reply.`);
-    else chatWithManagedAgent(agentId, body);
+    if (agent.status === 'paused') postMessage(agentId, 'system', `${agent.name} is paused. Resume it to get a reply.`, { origin });
+    else chatWithManagedAgent(agentId, body, { origin });
   } else {
-    deliver(agent, { event: 'message', message }).catch(() => {});
+    deliver(agent, { event: 'message', message, origin }).catch(() => {});
   }
   return message;
 }

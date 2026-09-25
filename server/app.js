@@ -130,6 +130,23 @@ const OWNER_ONLY = [
 ];
 const forbidden = (msg) => new HttpError(403, msg);
 
+/** Webhooks go out to the internet over https only, never to Hive's own network. */
+export function checkWebhookUrl(url) {
+  if (!url) return;
+  let u;
+  try {
+    u = new URL(url);
+  } catch {
+    throw bad('Webhook URL is not a valid URL');
+  }
+  const host = u.hostname.toLowerCase();
+  const privateHost =
+    host === 'localhost' || host.endsWith('.internal') || host.endsWith('.local') || host.endsWith('.localhost') ||
+    /^(127\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.|0\.)/.test(host) || host.startsWith('[') || /^\d+$/.test(host);
+  if (process.env.NODE_ENV !== 'production') return; // local development and tests use local webhooks
+  if (u.protocol !== 'https:' || privateHost) throw bad('Webhook URL must be a public https:// address');
+}
+
 export function dashboardRouter() {
   const r = express.Router();
 
@@ -303,11 +320,13 @@ export function dashboardRouter() {
     checkTeam(b.team_id);
     check(b.platform, PLATFORMS, 'platform');
     check(b.status, AGENT_STATUSES, 'status');
+    checkWebhookUrl(b.webhook_url);
     const { lastInsertRowid } = run(
-      `INSERT INTO agents (name, title, team_id, description, platform, status, model, system_prompt, webhook_url, color, api_token)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO agents (name, title, team_id, description, platform, status, model, system_prompt, webhook_url, color, api_token, approval)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       b.name.trim(), b.title.trim(), b.team_id, b.description ?? '', b.platform ?? 'custom', b.status ?? 'idle',
       b.model ?? '', b.system_prompt ?? '', b.webhook_url ?? '', b.color ?? '#6366f1', newToken(),
+      b.approval ?? 'every_command', // new agents ask before every command until you decide otherwise
     );
     if (b.reviewer_id && get('SELECT id FROM agents WHERE id = ?', b.reviewer_id)) run('UPDATE agents SET reviewer_id = ? WHERE id = ?', b.reviewer_id, lastInsertRowid);
     try {
@@ -338,6 +357,7 @@ export function dashboardRouter() {
     } catch (err) {
       throw bad(err.message);
     }
+    checkWebhookUrl(b.webhook_url);
     if (b.reviewer_id !== undefined && b.reviewer_id !== null) {
       if (Number(b.reviewer_id) === Number(req.params.id)) throw bad('An agent cannot review its own work');
       if (!get('SELECT id FROM agents WHERE id = ?', b.reviewer_id)) throw bad('Unknown reviewer');
@@ -607,7 +627,12 @@ export function dashboardRouter() {
 
   r.post('/tasks/:id/files', express.raw({ type: () => true, limit: '50mb' }), wrap((req) => {
     if (!get('SELECT id FROM tasks WHERE id = ?', req.params.id)) throw notFound('Task');
-    const raw = decodeURIComponent(req.get('x-filename') || '');
+    let raw;
+    try {
+      raw = decodeURIComponent(req.get('x-filename') || '');
+    } catch {
+      throw bad('Please give the file a normal name');
+    }
     const filename = raw.split(/[\\/]/).pop().replace(/[^\w.\- ()&+,]/g, '_').trim().slice(0, 180);
     if (!filename || filename.startsWith('.')) throw bad('Please give the file a normal name');
     if (!req.body?.length) throw bad('Empty file');
@@ -768,7 +793,12 @@ export function agentRouter() {
     );
   }));
 
-  r.post('/tasks', wrap((req) => getTask(createTask({ ...req.body, agent_id: req.body.agent_id ?? req.agent.id }, req.agent.name))));
+  // Agents create tasks for themselves only, and can't pick reviewers or month-end jobs: those are
+  // decisions for people in Hive (otherwise a leaked token could start work on another agent).
+  r.post('/tasks', wrap((req) => {
+    const { title, description, priority, due_date, status } = req.body ?? {};
+    return getTask(createTask({ title, description, priority, due_date, status, agent_id: req.agent.id }, req.agent.name));
+  }));
 
   r.patch('/tasks/:id', wrap(async (req) => {
     const task = get('SELECT * FROM tasks WHERE id = ?', req.params.id);
