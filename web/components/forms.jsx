@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api, fmtDateTime, useApi } from '../api.js';
-import { Field, Modal, PLATFORM_LABELS, TASK_COLUMNS } from './ui.jsx';
+import { Field, Icon, Modal, PLATFORM_LABELS, TASK_COLUMNS } from './ui.jsx';
+import TaskRun, { uploadFiles } from './TaskRun.jsx';
 
 const COLORS = ['#6366f1', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#3b82f6', '#ec4899', '#14b8a6'];
 
@@ -155,7 +156,7 @@ export function AgentForm({ agent, defaults = {}, onClose, onSaved }) {
           ) : (
             <span className="grid-spacer" />
           )}
-          <Field label="Platform" hint="Where the agent runs. Claude agents reply straight from the Anthropic API.">
+          <Field label="Platform" hint="Claude Managed Agents do real work with skills and tools; set them up in the agent's Skills & tools tab.">
             <select value={values.platform} onChange={set('platform')}>
               {Object.entries(PLATFORM_LABELS).map(([k, l]) => (
                 <option key={k} value={k}>
@@ -176,7 +177,7 @@ export function AgentForm({ agent, defaults = {}, onClose, onSaved }) {
         <Field label="Description">
           <textarea rows={2} value={values.description} onChange={set('description')} />
         </Field>
-        {values.platform === 'claude' ? (
+        {['claude', 'managed'].includes(values.platform) ? (
           <>
             <Field label="Model" hint="Leave blank for the default (claude-opus-5).">
               <input value={values.model} onChange={set('model')} placeholder="claude-opus-5" />
@@ -201,15 +202,27 @@ export function AgentForm({ agent, defaults = {}, onClose, onSaved }) {
 
 // ---------------- Task ----------------
 export function TaskForm({ task, defaults = {}, onClose }) {
+  const { data: agents } = useApi('/agents', ['agent']);
+  const [newFiles, setNewFiles] = useState([]);
   const { values, set, submit, error, saving } = useForm({
     title: '', description: '', status: 'todo', priority: 'medium', agent_id: '', due_date: '', result: '',
     ...defaults,
     ...task,
   });
+  const agent = agents?.find((a) => a.id === Number(values.agent_id));
+  const managed = agent?.platform === 'managed';
   const save = submit(async (v) => {
     const body = { title: v.title, description: v.description, status: v.status, priority: v.priority, agent_id: numOrNull(v.agent_id), due_date: v.due_date || null, result: v.result };
-    if (task) await api(`/tasks/${task.id}`, { method: 'PATCH', body });
-    else await api('/tasks', { method: 'POST', body });
+    if (task) {
+      // Only send what you changed: an agent may have updated status/result while this was open.
+      const changed = Object.fromEntries(Object.entries(body).filter(([k, v]) => v !== (k === 'agent_id' ? numOrNull(task[k]) : task[k] ?? (k === 'due_date' ? null : ''))));
+      if (Object.keys(changed).length) await api(`/tasks/${task.id}`, { method: 'PATCH', body: changed });
+    } else if (managed) {
+      // Managed agents need their files before they start.
+      const created = await api('/tasks', { method: 'POST', body: { ...body, dispatch: false } });
+      if (newFiles.length) await uploadFiles(created.id, newFiles);
+      if (agent.status !== 'paused') await api(`/tasks/${created.id}/runs`, { method: 'POST' });
+    } else await api('/tasks', { method: 'POST', body });
     onClose();
   });
   const remove = async () => {
@@ -257,10 +270,33 @@ export function TaskForm({ task, defaults = {}, onClose }) {
             <textarea rows={4} value={values.result} onChange={set('result')} placeholder="The agent's output lands here." />
           </Field>
         )}
+        {!task && managed && (
+          <Field label="Files for the agent" hint="Statements, invoices, spreadsheets. They're placed in the agent's workspace.">
+            <div className="run-files">
+              {newFiles.map((f) => (
+                <span key={f.name} className="file-chip">
+                  <Icon name="paperclip" size={13} /> {f.name}
+                  <button type="button" aria-label={`Remove ${f.name}`} onClick={() => setNewFiles((l) => l.filter((x) => x !== f))}>
+                    <Icon name="x" size={12} />
+                  </button>
+                </span>
+              ))}
+              <label className="btn btn-sm">
+                <Icon name="paperclip" size={14} /> Attach files
+                <input type="file" multiple hidden onChange={(e) => setNewFiles((l) => [...l, ...e.target.files])} />
+              </label>
+            </div>
+          </Field>
+        )}
         {task?.workflow_name && <p className="muted small">Created by workflow “{task.workflow_name}”.</p>}
-        {!task && <p className="muted small">Assigning an agent sends the task to it right away.</p>}
-        <Actions saving={saving} error={error} label={task ? 'Save' : 'Create task'} onDelete={task ? remove : null} />
+        {!task && (
+          <p className="muted small">
+            {managed ? `${agent.name} starts working as soon as you create the task.` : 'Assigning an agent sends the task to it right away.'}
+          </p>
+        )}
+        <Actions saving={saving} error={error} label={task ? 'Save' : managed ? `Create & start ${agent.name}` : 'Create task'} onDelete={task ? remove : null} />
       </form>
+      {task && managed && Number(task.agent_id) === agent.id && <TaskRun task={task} agentName={agent.name} />}
     </Modal>
   );
 }

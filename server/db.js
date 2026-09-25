@@ -106,6 +106,63 @@ if (columns('agents').includes('role')) db.exec('ALTER TABLE agents RENAME COLUM
 if (!columns('agents').includes('team_id')) db.exec('ALTER TABLE agents ADD COLUMN team_id INTEGER REFERENCES teams(id) ON DELETE SET NULL');
 db.exec('CREATE INDEX IF NOT EXISTS idx_agents_team ON agents(team_id)');
 
+// Capabilities (skills, integrations, approval rule) and the link to Claude Managed Agents.
+const addColumn = (table, name, ddl) => {
+  if (!columns(table).includes(name)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${ddl}`);
+};
+addColumn('agents', 'skills', "TEXT NOT NULL DEFAULT '[]'");
+addColumn('agents', 'integrations', "TEXT NOT NULL DEFAULT '[]'");
+addColumn('agents', 'approval', "TEXT NOT NULL DEFAULT 'agent_asks'");
+addColumn('agents', 'ma_agent_id', 'TEXT');
+addColumn('agents', 'ma_agent_version', 'INTEGER');
+addColumn('agents', 'ma_config_hash', 'TEXT');
+addColumn('agents', 'ma_sync_error', 'TEXT');
+addColumn('messages', 'meta', 'TEXT');
+
+db.exec(`
+CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+
+CREATE TABLE IF NOT EXISTS task_files (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id     INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  filename    TEXT NOT NULL,
+  path        TEXT NOT NULL,
+  size        INTEGER NOT NULL,
+  anthropic_file_id TEXT,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- One run = one Claude Managed Agents session working on a task (or an agent's chat).
+CREATE TABLE IF NOT EXISTS runs (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind         TEXT NOT NULL DEFAULT 'task',      -- task | chat
+  task_id      INTEGER REFERENCES tasks(id) ON DELETE CASCADE,
+  agent_id     INTEGER REFERENCES agents(id) ON DELETE CASCADE,
+  session_id   TEXT,
+  status       TEXT NOT NULL DEFAULT 'starting',  -- starting | running | needs_approval | waiting | failed | ended
+  pending      TEXT NOT NULL DEFAULT '[]',        -- tool calls waiting for approval
+  last_message TEXT NOT NULL DEFAULT '',
+  error        TEXT,
+  cost_cents   INTEGER NOT NULL DEFAULT 0,
+  created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS run_events (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id      INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+  event_id    TEXT NOT NULL,
+  type        TEXT NOT NULL,
+  data        TEXT NOT NULL DEFAULT '{}',
+  created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (run_id, event_id)
+);
+CREATE INDEX IF NOT EXISTS idx_runs_task ON runs(task_id, id);
+CREATE INDEX IF NOT EXISTS idx_run_events_run ON run_events(run_id, id);
+`);
+
+export const DATA_DIR = DB_PATH === ':memory:' ? './data' : dirname(DB_PATH);
+
 export const newToken = () => 'agt_' + randomBytes(24).toString('hex');
 
 export const all = (sql, ...params) => db.prepare(sql).all(...params);

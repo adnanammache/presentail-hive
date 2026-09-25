@@ -1,17 +1,22 @@
 import express from 'express';
-import { all, get, run, update, newToken } from './db.js';
+import { DATA_DIR, all, get, run, update, newToken } from './db.js';
 import { emit, subscribe } from './events.js';
 import { logActivity } from './activity.js';
 import { claudeConfigured, dispatchTask, postMessage, sendToAgent } from './dispatch.js';
+import { integrationList, skillLibrary } from './capabilities.js';
+import { confirmTool, interruptRun, managedReady, replyToRun, runWithEvents, startTaskRun, syncAgent } from './managed.js';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { finishRun, nextRuns, runWorkflow, schedule, unschedule, validateSchedule } from './scheduler.js';
 
-const PLATFORMS = ['claude', 'make', 'replit', 'n8n', 'custom', 'human'];
+const PLATFORMS = ['managed', 'claude', 'make', 'replit', 'n8n', 'custom', 'human'];
+const APPROVALS = ['agent_asks', 'every_command'];
 const AGENT_STATUSES = ['active', 'idle', 'paused', 'error'];
 const TASK_STATUSES = ['backlog', 'todo', 'in_progress', 'review', 'done', 'blocked'];
 const PRIORITIES = ['low', 'medium', 'high', 'urgent'];
 const RUN_STATUSES = ['running', 'success', 'failed'];
 
-const AGENT_FIELDS = ['name', 'title', 'team_id', 'description', 'platform', 'status', 'model', 'system_prompt', 'webhook_url', 'color'];
+const AGENT_FIELDS = ['name', 'title', 'team_id', 'description', 'platform', 'status', 'model', 'system_prompt', 'webhook_url', 'color', 'skills', 'integrations', 'approval'];
 const TASK_FIELDS = ['title', 'description', 'status', 'priority', 'agent_id', 'due_date', 'result'];
 const TEAM_FIELDS = ['name', 'description', 'color'];
 const WORKFLOW_FIELDS = ['name', 'description', 'agent_id', 'schedule', 'timezone', 'instructions', 'enabled'];
@@ -36,7 +41,7 @@ const withNext = (wf) => ({ ...wf, enabled: Boolean(wf.enabled), next_run_at: wf
 
 function getTask(id) {
   return get(
-    `SELECT t.*, a.name AS agent_name, a.color AS agent_color, w.name AS workflow_name
+    `SELECT t.*, a.name AS agent_name, a.color AS agent_color, a.platform AS agent_platform, w.name AS workflow_name
      FROM tasks t LEFT JOIN agents a ON a.id = t.agent_id LEFT JOIN workflows w ON w.id = t.workflow_id WHERE t.id = ?`,
     id,
   );
@@ -207,7 +212,13 @@ export function dashboardRouter() {
 
   r.patch('/agents/:id', wrap((req) => {
     if (!get('SELECT id FROM agents WHERE id = ?', req.params.id)) throw notFound('Agent');
-    const b = req.body;
+    const b = { ...req.body };
+    check(b.approval, APPROVALS, 'approval');
+    for (const k of ['skills', 'integrations']) {
+      if (b[k] === undefined) continue;
+      if (!Array.isArray(b[k]) || b[k].some((v) => typeof v !== 'string')) throw bad(`${k} must be a list`);
+      b[k] = JSON.stringify([...new Set(b[k])]);
+    }
     if (b.name !== undefined && !String(b.name).trim()) throw bad('Name is required');
     if (b.title !== undefined && !String(b.title).trim()) throw bad('Title is required');
     checkTeam(b.team_id);
@@ -229,6 +240,14 @@ export function dashboardRouter() {
     return { ok: true };
   }));
 
+  r.post('/agents/:id/sync', wrap(async (req) => {
+    const agent = await syncAgent(Number(req.params.id));
+    return getAgent(agent.id);
+  }));
+
+  // Capabilities: what agents can be given
+  r.get('/capabilities', wrap(() => ({ skills: skillLibrary(), integrations: integrationList(), managed: managedReady() })));
+
   // Chat
   r.get('/agents/:id/messages', wrap((req) =>
     all('SELECT * FROM (SELECT * FROM messages WHERE agent_id = ? ORDER BY id DESC LIMIT 200) ORDER BY id', req.params.id),
@@ -246,7 +265,7 @@ export function dashboardRouter() {
     const where = keys.map((k) => filters[k]);
     const params = keys.map((k) => req.query[k]);
     return all(
-      `SELECT t.*, a.name AS agent_name, a.color AS agent_color, w.name AS workflow_name
+      `SELECT t.*, a.name AS agent_name, a.color AS agent_color, a.platform AS agent_platform, w.name AS workflow_name
        FROM tasks t LEFT JOIN agents a ON a.id = t.agent_id LEFT JOIN workflows w ON w.id = t.workflow_id
        ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
        ORDER BY CASE t.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, t.updated_at DESC
@@ -277,6 +296,53 @@ export function dashboardRouter() {
   r.delete('/tasks/:id', wrap((req) => {
     run('DELETE FROM tasks WHERE id = ?', req.params.id);
     emit('task');
+    return { ok: true };
+  }));
+
+  // Task files (inputs for the agent: statements, invoices, spreadsheets)
+  r.get('/tasks/:id/files', wrap((req) => all('SELECT id, task_id, filename, size, created_at FROM task_files WHERE task_id = ? ORDER BY id', req.params.id)));
+
+  r.post('/tasks/:id/files', express.raw({ type: () => true, limit: '50mb' }), wrap((req) => {
+    if (!get('SELECT id FROM tasks WHERE id = ?', req.params.id)) throw notFound('Task');
+    const raw = decodeURIComponent(req.get('x-filename') || '');
+    const filename = raw.split(/[\\/]/).pop().replace(/[^\w.\- ()&+,]/g, '_').trim().slice(0, 180);
+    if (!filename || filename.startsWith('.')) throw bad('Please give the file a normal name');
+    if (!req.body?.length) throw bad('Empty file');
+    if (get('SELECT id FROM task_files WHERE task_id = ? AND filename = ?', req.params.id, filename)) throw bad(`${filename} is already attached`);
+    const dir = join(DATA_DIR, 'uploads', String(req.params.id));
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, filename);
+    writeFileSync(path, req.body);
+    const { lastInsertRowid } = run('INSERT INTO task_files (task_id, filename, path, size) VALUES (?, ?, ?, ?)', req.params.id, filename, path, req.body.length);
+    emit('task', { task_id: Number(req.params.id) });
+    return get('SELECT id, task_id, filename, size, created_at FROM task_files WHERE id = ?', lastInsertRowid);
+  }));
+
+  r.delete('/tasks/:id/files/:fileId', wrap((req) => {
+    const f = get('SELECT * FROM task_files WHERE id = ? AND task_id = ?', req.params.fileId, req.params.id);
+    if (!f) throw notFound('File');
+    rmSync(f.path, { force: true });
+    run('DELETE FROM task_files WHERE id = ?', f.id);
+    emit('task', { task_id: Number(req.params.id) });
+    return { ok: true };
+  }));
+
+  // Runs: a Claude Managed Agents session working on a task
+  r.get('/tasks/:id/runs', wrap((req) =>
+    all('SELECT id FROM runs WHERE task_id = ? ORDER BY id DESC LIMIT 10', req.params.id).map((x) => runWithEvents(x.id)),
+  ));
+  r.post('/tasks/:id/runs', wrap((req) => startTaskRun(Number(req.params.id))));
+  r.post('/runs/:id/reply', wrap(async (req) => {
+    if (!req.body.text?.trim()) throw bad('text is required');
+    await replyToRun(Number(req.params.id), req.body.text.trim());
+    return { ok: true };
+  }));
+  r.post('/runs/:id/confirm', wrap(async (req) => {
+    await confirmTool(Number(req.params.id), req.body.event_id, req.body.result === 'allow', req.body.deny_message);
+    return { ok: true };
+  }));
+  r.post('/runs/:id/interrupt', wrap(async (req) => {
+    await interruptRun(Number(req.params.id));
     return { ok: true };
   }));
 

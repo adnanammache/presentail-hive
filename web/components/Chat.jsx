@@ -2,13 +2,34 @@ import { useContext, useEffect, useRef, useState } from 'react';
 import { LiveContext, api, toDate, useApi } from '../api.js';
 import { Avatar, Icon } from './ui.jsx';
 
+function ApprovalButtons({ meta }) {
+  const [state, setState] = useState(null);
+  const answer = async (allow) => {
+    try {
+      await api(`/runs/${meta.run_id}/confirm`, { method: 'POST', body: { event_id: meta.event_id, result: allow ? 'allow' : 'deny' } });
+      setState(allow ? 'Approved' : 'Rejected');
+    } catch (err) {
+      setState(err.message);
+    }
+  };
+  if (state) return <div className="small strong">{state}</div>;
+  return (
+    <div className="approval-actions">
+      <button className="btn btn-sm btn-danger-ghost" onClick={() => answer(false)}>Reject</button>
+      <button className="btn btn-sm btn-primary" onClick={() => answer(true)}>Approve</button>
+    </div>
+  );
+}
+
 function Bubble({ m, agent }) {
   const time = toDate(m.created_at)?.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   if (m.sender === 'system') {
+    const meta = m.meta ? JSON.parse(m.meta) : null;
     return (
       <div className="msg-system">
         <span>{m.body}</span>
         <time>{time}</time>
+        {meta?.type === 'approval' && <ApprovalButtons meta={meta} />}
       </div>
     );
   }
@@ -44,7 +65,8 @@ export default function Chat({ agent, claudeReady }) {
     scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: 'smooth' });
   }, [messages?.length, waiting]);
 
-  const willReply = agent.status !== 'paused' && ((agent.platform === 'claude' && claudeReady) || agent.webhook_url);
+  const claudePowered = ['claude', 'managed'].includes(agent.platform);
+  const willReply = agent.status !== 'paused' && ((claudePowered && claudeReady) || agent.webhook_url);
 
   const send = async (e) => {
     e.preventDefault();
@@ -58,7 +80,7 @@ export default function Chat({ agent, claudeReady }) {
 
   let hint = null;
   if (agent.status === 'paused') hint = `${agent.name} is paused — messages are stored but not delivered.`;
-  else if (agent.platform === 'claude' && !claudeReady) hint = 'Set ANTHROPIC_API_KEY on the server so Claude agents can reply.';
+  else if (claudePowered && !claudeReady) hint = 'Set ANTHROPIC_API_KEY on the server so Claude agents can reply.';
   else if (!willReply) hint = `${agent.name} has no webhook — it will pick messages up when it polls the Agent API.`;
 
   return (

@@ -3,6 +3,7 @@
 Presentail's hive of AI agents: see every agent, what it's working on, what's scheduled, and talk to it. Planned home: `hive.presentail.com`.
 
 - **Dashboard**: what needs you (tasks waiting for review or blocked), upcoming scheduled runs, agent status and recent activity.
+- **Agents that do real work**: agents can run as Claude Managed Agents with Presentail's skills (`agent-skills/`), a private sandbox and approved integrations (Wafeq first). Tasks show the live run, approvals and cost. See DEPLOY.md.
 - **Agents**: one place for all your agents: Claude agents, Make scenarios, Replit apps, n8n flows, your own scripts, even people.
 - **Tasks**: a Kanban board (Backlog → To do → In progress → Needs review → Blocked → Done). Assigning a task to an agent sends it to that agent.
 - **Recurring workflows**: cron schedules with timezones (e.g. "Talabat month-end, 2nd of every month 09:00 Dubai"). Each run creates a task for the agent, sends it the instructions and records the run history.
@@ -29,7 +30,8 @@ APP_PASSWORD=choose-one ANTHROPIC_API_KEY=sk-ant-... npm start   # serves UI + A
 
 | Variable | Purpose |
 |---|---|
-| `ANTHROPIC_API_KEY` | Lets agents with platform **Claude** answer chats and tasks through the Claude API. |
+| `ANTHROPIC_API_KEY` | Powers Claude agents: chat-only agents, and Claude Managed Agents that run tasks with skills and tools. |
+| `WAFEQ_API_KEY` | Wafeq integration for managed agents (kept in an Anthropic vault, never shown to the agent). |
 | `DEFAULT_CLAUDE_MODEL` | Model used when an agent doesn't set one (default `claude-opus-5`). |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Turns on **Continue with Google** sign-in (see DEPLOY.md). |
 | `ALLOWED_EMAIL_DOMAIN` | Google accounts allowed in (default `presentail.com`, comma-separated). |
