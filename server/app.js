@@ -128,7 +128,7 @@ export function dashboardRouter() {
   const getTeams = () =>
     all(
       `SELECT tm.*, (SELECT COUNT(*) FROM agents a WHERE a.team_id = tm.id) AS agent_count
-       FROM teams tm ORDER BY tm.name`,
+       FROM teams tm ORDER BY tm.id`,
     );
   r.get('/teams', wrap(getTeams));
 

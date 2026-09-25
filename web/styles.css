@@ -229,7 +229,11 @@ textarea { resize: vertical; }
 .team-chip { display: inline-flex; align-items: center; gap: 6px; color: var(--text); }
 .team-chip::before { content: ''; width: 8px; height: 8px; border-radius: 3px; background: var(--c); }
 .grid-spacer { display: block; }
-@media (max-width: 760px) { .grid-spacer { display: none; } }
+@media (max-width: 760px) {
+  .grid-spacer { display: none; }
+  .team-head .grow { flex-basis: calc(100% - 22px); }
+  .team-head > .muted { margin-left: 22px; margin-right: auto; }
+}
 .agent-detail { display: flex; flex-direction: column; height: 100%; }
 .agent-hero { background: var(--panel); border-bottom: 1px solid var(--border); padding: 18px 32px 0; }
 .hero-row { display: flex; gap: 16px; align-items: center; margin-top: 10px; flex-wrap: wrap; }

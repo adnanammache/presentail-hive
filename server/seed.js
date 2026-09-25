@@ -1,11 +1,11 @@
 // Sample data so the dashboard isn't empty on first launch. Edit or delete freely.
 import { get, run, newToken } from './db.js';
+import { applyOrgChart, ORG_CHART_VERSION } from './org.js';
 
 const AGENTS = [
   {
     name: 'Ledger',
     title: 'Month-End Accountant (UAE)',
-    team: 'Finance',
     description: 'Processes delivery-platform statements — Talabat, Careem, Noon Food, Now Now — into Wafeq bills and sales invoices.',
     platform: 'claude',
     model: 'claude-opus-5',
@@ -17,7 +17,6 @@ const AGENTS = [
   {
     name: 'Odoo Operator',
     title: 'Odoo Reconciliation Specialist',
-    team: 'Finance',
     description: 'Make scenarios that reconcile BLOM, book Toters fee bills and intercompany SAL ⇄ LTD invoices in Odoo.',
     platform: 'make',
     color: '#8b5cf6',
@@ -26,7 +25,6 @@ const AGENTS = [
   {
     name: 'Morning Briefer',
     title: 'Chief of Staff',
-    team: 'Executive Office',
     description: 'Summarises calendar, Slack and email every weekday morning.',
     platform: 'claude',
     model: 'claude-opus-5',
@@ -37,18 +35,11 @@ const AGENTS = [
   {
     name: 'Replit Builder',
     title: 'Internal Tools Engineer',
-    team: 'Product',
     description: 'Builds and ships small internal apps on Replit.',
     platform: 'replit',
     color: '#3b82f6',
     status: 'paused',
   },
-];
-
-const TEAMS = [
-  { name: 'Finance', color: '#10b981', description: 'Bookkeeping, reconciliations and month-end closes across SAL, LTD and the UAE.' },
-  { name: 'Executive Office', color: '#f59e0b', description: 'Briefs, inbox triage and follow-ups for leadership.' },
-  { name: 'Product', color: '#3b82f6', description: 'Internal tools and prototypes.' },
 ];
 
 const WORKFLOWS = [
@@ -76,15 +67,11 @@ const TASKS = [
  */
 export function seed({ demo = true } = {}) {
   const ids = {};
-  const teamIds = {};
-  for (const t of TEAMS) {
-    teamIds[t.name] = Number(run('INSERT INTO teams (name, description, color) VALUES (?, ?, ?)', t.name, t.description, t.color).lastInsertRowid);
-  }
   for (const a of AGENTS) {
     const { lastInsertRowid } = run(
-      `INSERT INTO agents (name, title, team_id, description, platform, status, model, system_prompt, color, api_token)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      a.name, a.title, teamIds[a.team], a.description, a.platform, a.status, a.model ?? '', a.system_prompt ?? '', a.color, newToken(),
+      `INSERT INTO agents (name, title, description, platform, status, model, system_prompt, color, api_token)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      a.name, a.title, a.description, a.platform, a.status, a.model ?? '', a.system_prompt ?? '', a.color, newToken(),
     );
     ids[a.name] = Number(lastInsertRowid);
   }
@@ -117,10 +104,13 @@ export function seed({ demo = true } = {}) {
 export function seedIfEmpty() {
   if (process.env.NO_SEED) return;
   if (get('SELECT COUNT(*) n FROM agents').n === 0) seed({ demo: process.env.NODE_ENV !== 'production' });
+  applyOrgChart();
 }
 
 if (process.argv[1]?.endsWith('seed.js') && process.argv.includes('--force')) {
   for (const t of ['activity', 'messages', 'workflow_runs', 'tasks', 'workflows', 'agents', 'teams']) run(`DELETE FROM ${t}`);
+  run('DELETE FROM app_meta WHERE key = ?', ORG_CHART_VERSION);
   seed();
+  applyOrgChart();
   console.log('Seeded sample data.');
 }
