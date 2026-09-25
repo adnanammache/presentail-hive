@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { ago, api, useApi } from '../api.js';
 import { Badge, Loading, PageHeader } from '../components/ui.jsx';
-import { BackupSettings, BriefSettings, HealthCard, NotificationSettings } from '../components/Notifications.jsx';
+import { BackupSettings, BriefSettings, HealthCard, NotificationSettings, PeopleSettings } from '../components/Notifications.jsx';
 
 const HOW = {
   anthropic: 'Create a key at console.anthropic.com (a workspace with Managed Agents access) and add it in Railway as ANTHROPIC_API_KEY.',
@@ -49,6 +49,7 @@ function OdooLog() {
 export default function Settings() {
   const { data } = useApi('/settings');
   const { data: setup } = useApi('/setup', ['setup']);
+  const { data: me } = useApi('/me');
   const [slack, setSlack] = useState(null);
   const [odoo, setOdoo] = useState(null);
   const testOdoo = async () => {
@@ -126,7 +127,8 @@ export default function Settings() {
       </div>
       <NotificationSettings />
       <BriefSettings />
-      <BackupSettings />
+      {me?.role === 'owner' && <BackupSettings />}
+      <PeopleSettings me={me} />
       <section className="card settings-note">
         <h2>Odoo changes by agents</h2>
         <p className="muted small">Reads aren't listed. Hover a row to see what Odoo returned.</p>
@@ -153,7 +155,7 @@ export default function Settings() {
               <b>Basic Information</b> → copy the <b>Signing Secret</b> into Railway as <code>SLACK_SIGNING_SECRET</code>.
             </li>
             <li>
-              If alerts go to a channel, set <code>SLACK_APPROVERS</code> to the member IDs allowed to approve (comma-separated). If they go to your DMs, you're the approver automatically.
+              Who can press Approve: owners and approvers from <b>People</b> below (Slack needs the <code>users:read.email</code> scope to recognise them). <code>SLACK_APPROVERS</code> can add extra Slack member IDs.
             </li>
           </ol>
         )}

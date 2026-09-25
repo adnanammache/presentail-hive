@@ -244,3 +244,71 @@ export function HealthBanner() {
     </a>
   );
 }
+
+const ROLE_HELP = {
+  owner: 'Everything: agents, teams, budgets, settings, backups and people',
+  approver: 'Approves agents’ actions and teaches them, plus everything a member can do',
+  member: 'Views, chats with agents, and gives and manages tasks',
+};
+
+/** Settings (owners): who uses Hive and what they may do. */
+export function PeopleSettings({ me }) {
+  const { data, reload } = useApi(me?.role === 'owner' ? '/users' : null, ['user']);
+  const { data: teams } = useApi('/teams', ['agent']);
+  const [err, setErr] = useState('');
+  if (me?.role !== 'owner' || !data) return null;
+  const save = async (u, patch) => {
+    setErr('');
+    try {
+      await api(`/users/${encodeURIComponent(u.email)}`, { method: 'PATCH', body: patch });
+      reload();
+    } catch (e) {
+      setErr(e.message);
+    }
+  };
+  const toggleTeam = (u, id) => save(u, { teams: u.teams.includes(id) ? u.teams.filter((t) => t !== id) : [...u.teams, id] });
+  return (
+    <section className="card settings-note">
+      <h2>People</h2>
+      <p className="muted">Everyone who has signed in to Hive. New people start as members.</p>
+      <ul className="people">
+        {data.map((u) => (
+          <li key={u.email}>
+            <div className="grow">
+              <div className="row-title">
+                {u.name || u.email} {u.email === me.email && <span className="muted small">(you)</span>}
+              </div>
+              <div className="row-sub">
+                {u.email} · last seen {ago(u.last_seen_at)}
+              </div>
+              {u.role === 'approver' && (
+                <div className="people-teams">
+                  <span className="muted small">Approves for:</span>
+                  {teams?.map((t) => (
+                    <button key={t.id} type="button" className={`chip ${u.teams.includes(t.id) ? 'on' : ''}`} onClick={() => toggleTeam(u, t.id)}>
+                      {t.name}
+                    </button>
+                  ))}
+                  {!u.teams.length && <span className="muted small">all departments</span>}
+                </div>
+              )}
+            </div>
+            <select value={u.role} onChange={(e) => save(u, { role: e.target.value })} aria-label={`Role for ${u.name || u.email}`} title={ROLE_HELP[u.role]}>
+              <option value="owner">Owner</option>
+              <option value="approver">Approver</option>
+              <option value="member">Member</option>
+            </select>
+          </li>
+        ))}
+      </ul>
+      {err && <p className="small" style={{ color: 'var(--red)' }}>{err}</p>}
+      <ul className="muted small role-help">
+        {Object.entries(ROLE_HELP).map(([k, v]) => (
+          <li key={k}>
+            <b>{k[0].toUpperCase() + k.slice(1)}:</b> {v}
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}

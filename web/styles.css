@@ -701,3 +701,11 @@ button.link { background: none; border: 0; padding: 0; cursor: pointer; font: in
 .health-state.warn { color: var(--amber); }
 .health-error { color: var(--red); word-break: break-word; }
 .health-banner { margin-bottom: 14px; text-decoration: none; }
+
+/* ---- people ---- */
+.people { list-style: none; margin: 0; padding: 0; }
+.people li { display: flex; gap: 12px; align-items: flex-start; padding: 10px 0; border-top: 1px solid var(--border); }
+.people li:first-child { border-top: 0; }
+.people select { width: auto; }
+.people-teams { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 6px; }
+.role-help { margin: 10px 0 0; padding-left: 18px; }
