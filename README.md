@@ -31,7 +31,11 @@ APP_PASSWORD=choose-one ANTHROPIC_API_KEY=sk-ant-... npm start   # serves UI + A
 |---|---|
 | `ANTHROPIC_API_KEY` | Lets agents with platform **Claude** answer chats and tasks through the Claude API. |
 | `DEFAULT_CLAUDE_MODEL` | Model used when an agent doesn't set one (default `claude-opus-5`). |
-| `APP_PASSWORD` | Protects the dashboard with a password (browser login prompt, any username). **Required in production**: the server refuses to start without it. |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Turns on **Continue with Google** sign-in (see DEPLOY.md). |
+| `ALLOWED_EMAIL_DOMAIN` | Google accounts allowed in (default `presentail.com`, comma-separated). |
+| `ALLOWED_EMAILS` | Extra individual addresses allowed in. |
+| `SESSION_SECRET` | Signs the login cookie. Set a long random value in production. |
+| `APP_PASSWORD` | Protects the dashboard with a password (browser login prompt, any username). Fallback sign-in when Google isn't configured. Production refuses to start with neither. |
 | `PUBLIC_URL` | Public base URL (e.g. `https://hive.presentail.com`), included in webhook payloads so agents know where to call back. |
 | `PORT` | HTTP port (default `3001`). |
 | `DB_PATH` | SQLite file (default `./data/hive.db`, or `hive.db` on the Railway volume when one is attached). |

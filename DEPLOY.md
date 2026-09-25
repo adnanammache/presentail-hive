@@ -52,3 +52,33 @@ Every push to `main` redeploys automatically. The database on the volume is kept
 ## Backups
 
 Railway volumes support backups (Volume → **Backups**). Turn on a daily schedule.
+
+## Continue with Google (sign-in)
+
+Hive signs people in with Google and only lets in `@presentail.com` accounts. Until Google is configured, it falls back to `APP_PASSWORD`.
+
+### A. Create the Google sign-in credentials (about 5 minutes)
+
+1. Open [console.cloud.google.com](https://console.cloud.google.com) signed in as your presentail.com admin account. Create a project named **Presentail Hive**, or pick an existing one.
+2. **APIs & Services → OAuth consent screen** (called **Google Auth Platform → Branding / Audience** in newer consoles):
+   - App name `Presentail Hive`, support email: yours.
+   - Audience / User type: **Internal**. Only presentail.com Workspace accounts can then sign in, and no Google review is needed.
+3. **APIs & Services → Credentials → Create credentials → OAuth client ID** (or **Clients → Create client**):
+   - Application type: **Web application**, name `Hive`.
+   - **Authorized JavaScript origins**: `https://hive.presentail.com`
+   - **Authorized redirect URIs**: `https://hive.presentail.com/auth/google/callback`
+   - Create, then copy the **Client ID** and **Client secret**.
+
+### B. Add them in Railway → service → Variables
+
+| Variable | Value |
+|---|---|
+| `GOOGLE_CLIENT_ID` | the Client ID (ends in `.apps.googleusercontent.com`) |
+| `GOOGLE_CLIENT_SECRET` | the Client secret |
+| `SESSION_SECRET` | any long random string, e.g. 40+ random characters. It keeps people signed in across deploys. |
+| `ALLOWED_EMAIL_DOMAIN` | optional, default `presentail.com` (comma-separate several) |
+| `ALLOWED_EMAILS` | optional: specific outside addresses to let in, e.g. `accountant@gmail.com` |
+
+Deploy, then open https://hive.presentail.com. You'll see **Continue with Google**. Once that works, you can delete `APP_PASSWORD`.
+
+Sessions last 30 days. **Sign out** is at the bottom of the sidebar.
