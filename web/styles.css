@@ -103,8 +103,9 @@ textarea { resize: vertical; }
 }
 .brand { display: flex; align-items: center; gap: 10px; font-size: 16px; padding: 4px 10px 22px; }
 .brand-mark {
-  width: 26px; height: 26px; border-radius: 8px;
-  background: radial-gradient(circle at 50% 50%, #fff 0 5px, transparent 6px), linear-gradient(135deg, #6366f1, #a855f7);
+  width: 26px; height: 28px;
+  clip-path: polygon(50% 0, 100% 25%, 100% 75%, 50% 100%, 0 75%, 0 25%);
+  background: radial-gradient(circle at 50% 50%, #fff 0 5px, transparent 6px), linear-gradient(135deg, #f59e0b, #d97706);
 }
 .sidebar nav { display: flex; flex-direction: column; gap: 2px; }
 .sidebar nav a {

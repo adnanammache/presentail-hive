@@ -1,6 +1,6 @@
-# Presentail OS
+# Presentail Hive
 
-Mission control for Presentail's AI agents: see every agent, what it's working on, what's scheduled, and talk to it.
+Presentail's hive of AI agents: see every agent, what it's working on, what's scheduled, and talk to it. Planned home: `hive.presentail.com`.
 
 - **Dashboard**: what needs you (tasks waiting for review or blocked), upcoming scheduled runs, agent status and recent activity.
 - **Agents**: one place for all your agents: Claude agents, Make scenarios, Replit apps, n8n flows, your own scripts, even people.
@@ -32,9 +32,9 @@ APP_PASSWORD=choose-one ANTHROPIC_API_KEY=sk-ant-... npm start   # serves UI + A
 | `ANTHROPIC_API_KEY` | Lets agents with platform **Claude** answer chats and tasks through the Claude API. |
 | `DEFAULT_CLAUDE_MODEL` | Model used when an agent doesn't set one (default `claude-opus-5`). |
 | `APP_PASSWORD` | Protects the dashboard with a password (browser login prompt, any username). **Set this before exposing the app to the internet.** |
-| `PUBLIC_URL` | Public base URL, included in webhook payloads so agents know where to call back. |
+| `PUBLIC_URL` | Public base URL (e.g. `https://hive.presentail.com`), included in webhook payloads so agents know where to call back. |
 | `PORT` | HTTP port (default `3001`). |
-| `DB_PATH` | SQLite file (default `./data/presentail-os.db`). |
+| `DB_PATH` | SQLite file (default `./data/hive.db`). |
 
 Requires Node ≥ 22.5. It uses the built-in `node:sqlite`, so there are no native modules to build.
 

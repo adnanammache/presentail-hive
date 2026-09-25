@@ -53,7 +53,7 @@ function Shell() {
         <div className="brand">
           <span className="brand-mark" />
           <span>
-            Presentail <strong>OS</strong>
+            Presentail <strong>Hive</strong>
           </span>
         </div>
         <nav>

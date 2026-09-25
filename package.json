@@ -1,8 +1,8 @@
 {
-  "name": "presentail-os",
+  "name": "presentail-hive",
   "version": "0.1.0",
   "private": true,
-  "description": "Presentail OS — mission control for AI agents: tasks, recurring workflows and chat.",
+  "description": "Presentail Hive — mission control for AI agents: tasks, recurring workflows and chat.",
   "type": "module",
   "engines": {
     "node": ">=22.5"

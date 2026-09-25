@@ -87,7 +87,7 @@ export function seed() {
     ids.Ledger,
     'The Balance Summary for Abu Dhabi includes a AED 12.40 refund dated 1 September. It belongs to August on the SOA but September in the PDF. Want me to book it in August?',
   );
-  run("INSERT INTO activity (agent_id, kind, text) VALUES (NULL, 'system', 'Presentail OS initialised with sample data')");
+  run("INSERT INTO activity (agent_id, kind, text) VALUES (NULL, 'system', 'Presentail Hive initialised with sample data')");
 }
 
 export function seedIfEmpty() {

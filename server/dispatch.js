@@ -36,7 +36,7 @@ async function askClaude(agent, messages) {
     max_tokens: 16000,
     system:
       (agent.system_prompt || `You are ${agent.name}, an AI agent. Your role: ${agent.role || 'general assistant'}.`) +
-      '\n\nYou are managed from Presentail OS, an operations dashboard. Messages marked [System] come from the dashboard itself (task assignments, scheduled workflow runs). Reply concisely with what you did or what you need.',
+      '\n\nYou are managed from Presentail Hive, an operations dashboard. Messages marked [System] come from the dashboard itself (task assignments, scheduled workflow runs). Reply concisely with what you did or what you need.',
     messages,
   };
   if (!model.startsWith('claude-haiku')) params.thinking = { type: 'adaptive' };
@@ -67,7 +67,7 @@ function threadToMessages(agentId, limit = 40) {
 async function callWebhook(agent, payload) {
   const res = await fetch(agent.webhook_url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'User-Agent': 'Presentail-OS' },
+    headers: { 'Content-Type': 'application/json', 'User-Agent': 'Presentail-Hive' },
     body: JSON.stringify({ ...payload, agent: { id: agent.id, name: agent.name }, callback: callbackInfo() }),
     signal: AbortSignal.timeout(30000),
   });

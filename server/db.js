@@ -3,7 +3,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { randomBytes } from 'node:crypto';
 
-const DB_PATH = process.env.DB_PATH || './data/presentail-os.db';
+const DB_PATH = process.env.DB_PATH || './data/hive.db';
 if (DB_PATH !== ':memory:') mkdirSync(dirname(DB_PATH), { recursive: true });
 
 export const db = new DatabaseSync(DB_PATH);

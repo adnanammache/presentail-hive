@@ -24,7 +24,7 @@ if (PASSWORD) {
     const [, encoded = ''] = (req.get('authorization') || '').split(' ');
     const supplied = Buffer.from(Buffer.from(encoded, 'base64').toString().split(':').slice(1).join(':'));
     if (supplied.length === expected.length && timingSafeEqual(supplied, expected)) return next();
-    res.set('WWW-Authenticate', 'Basic realm="Presentail OS"').status(401).send('Authentication required');
+    res.set('WWW-Authenticate', 'Basic realm="Presentail Hive"').status(401).send('Authentication required');
   });
 }
 
@@ -40,4 +40,4 @@ if (existsSync(dist)) {
 
 seedIfEmpty();
 startScheduler();
-app.listen(PORT, () => console.log(`Presentail OS API listening on http://localhost:${PORT}`));
+app.listen(PORT, () => console.log(`Presentail Hive API listening on http://localhost:${PORT}`));

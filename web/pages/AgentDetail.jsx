@@ -22,7 +22,7 @@ function Connect({ agent, onRotate }) {
     <div className="connect">
       <section className="card">
         <h3>API token</h3>
-        <p className="muted small">The agent uses this token to talk back to Presentail OS. Keep it secret.</p>
+        <p className="muted small">The agent uses this token to talk back to Presentail Hive. Keep it secret.</p>
         <div className="token-row">
           <code className="token">{token}</code>
           <button className="btn btn-sm" onClick={() => setShow((s) => !s)}>
