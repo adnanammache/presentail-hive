@@ -59,7 +59,12 @@ const TASKS = [
   { agent: 'Morning Briefer', title: 'Add Asana overdue tasks to the brief', status: 'done', priority: 'low' },
 ];
 
-export function seed() {
+/**
+ * Demo mode (local dev) adds example tasks and chat so every screen has content.
+ * Production gets only the agents and workflows as starting templates, with workflows
+ * switched off so nothing fires until you've reviewed it.
+ */
+export function seed({ demo = true } = {}) {
   const ids = {};
   for (const a of AGENTS) {
     const { lastInsertRowid } = run(
@@ -71,9 +76,14 @@ export function seed() {
   }
   for (const w of WORKFLOWS) {
     run(
-      'INSERT INTO workflows (name, description, agent_id, schedule, timezone, instructions) VALUES (?, ?, ?, ?, ?, ?)',
-      w.name, w.description, ids[w.agent], w.schedule, w.timezone, w.instructions,
+      'INSERT INTO workflows (name, description, agent_id, schedule, timezone, instructions, enabled) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      w.name, w.description, ids[w.agent], w.schedule, w.timezone, w.instructions, demo ? 1 : 0,
     );
+  }
+  if (!demo) {
+    run('UPDATE agents SET status = ?', 'idle');
+    run("INSERT INTO activity (agent_id, kind, text) VALUES (NULL, 'system', 'Presentail Hive initialised with template agents and workflows (workflows are off until you enable them)')");
+    return;
   }
   for (const t of TASKS) {
     run(
@@ -92,7 +102,7 @@ export function seed() {
 
 export function seedIfEmpty() {
   if (process.env.NO_SEED) return;
-  if (get('SELECT COUNT(*) n FROM agents').n === 0) seed();
+  if (get('SELECT COUNT(*) n FROM agents').n === 0) seed({ demo: process.env.NODE_ENV !== 'production' });
 }
 
 if (process.argv[1]?.endsWith('seed.js') && process.argv.includes('--force')) {

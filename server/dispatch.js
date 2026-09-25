@@ -82,7 +82,9 @@ async function callWebhook(agent, payload) {
 }
 
 function callbackInfo() {
-  const base = process.env.PUBLIC_URL || `http://localhost:${process.env.PORT || 3001}`;
+  const base =
+    process.env.PUBLIC_URL ||
+    (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : `http://localhost:${process.env.PORT || 3001}`);
   return { api: `${base}/api/agent`, auth: 'Authorization: Bearer <agent api token>' };
 }
 

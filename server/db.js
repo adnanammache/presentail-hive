@@ -3,7 +3,12 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { randomBytes } from 'node:crypto';
 
-const DB_PATH = process.env.DB_PATH || './data/hive.db';
+// On Railway, an attached volume exposes RAILWAY_VOLUME_MOUNT_PATH; keep the database there so it survives deploys.
+const volume = process.env.RAILWAY_VOLUME_MOUNT_PATH;
+const DB_PATH = process.env.DB_PATH || (volume ? `${volume.replace(/\/$/, '')}/hive.db` : './data/hive.db');
+if (process.env.RAILWAY_ENVIRONMENT && !volume && !process.env.DB_PATH) {
+  console.warn('[db] No Railway volume attached: data will be lost on every redeploy. Attach a volume to this service.');
+}
 if (DB_PATH !== ':memory:') mkdirSync(dirname(DB_PATH), { recursive: true });
 
 export const db = new DatabaseSync(DB_PATH);

@@ -16,9 +16,9 @@ npm install
 npm run dev          # API on :3001, UI on http://localhost:5173
 ```
 
-On first launch the database is filled with sample Presentail agents and workflows (Ledger, Odoo Operator, Morning Briefer and so on) so there's something to look at. Edit or delete them in the UI, or run `npm run seed` to reset to the samples. To start empty, set `NO_SEED=1` and delete `data/`.
+In development, the first launch fills the database with sample Presentail agents and workflows (Ledger, Odoo Operator, Morning Briefer and so on) so there's something to look at. Edit or delete them in the UI, or run `npm run seed` to reset to the samples. To start empty, set `NO_SEED=1` and delete `data/`.
 
-Production:
+Production (see **[DEPLOY.md](DEPLOY.md)** for the step-by-step Railway setup):
 
 ```bash
 npm run build
@@ -31,10 +31,10 @@ APP_PASSWORD=choose-one ANTHROPIC_API_KEY=sk-ant-... npm start   # serves UI + A
 |---|---|
 | `ANTHROPIC_API_KEY` | Lets agents with platform **Claude** answer chats and tasks through the Claude API. |
 | `DEFAULT_CLAUDE_MODEL` | Model used when an agent doesn't set one (default `claude-opus-5`). |
-| `APP_PASSWORD` | Protects the dashboard with a password (browser login prompt, any username). **Set this before exposing the app to the internet.** |
+| `APP_PASSWORD` | Protects the dashboard with a password (browser login prompt, any username). **Required in production**: the server refuses to start without it. |
 | `PUBLIC_URL` | Public base URL (e.g. `https://hive.presentail.com`), included in webhook payloads so agents know where to call back. |
 | `PORT` | HTTP port (default `3001`). |
-| `DB_PATH` | SQLite file (default `./data/hive.db`). |
+| `DB_PATH` | SQLite file (default `./data/hive.db`, or `hive.db` on the Railway volume when one is attached). |
 
 Requires Node ≥ 22.5. It uses the built-in `node:sqlite`, so there are no native modules to build.
 

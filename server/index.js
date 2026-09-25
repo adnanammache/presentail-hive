@@ -9,6 +9,11 @@ import { seedIfEmpty } from './seed.js';
 const PORT = Number(process.env.PORT) || 3001;
 const PASSWORD = process.env.APP_PASSWORD;
 
+if (process.env.NODE_ENV === 'production' && !PASSWORD && !process.env.ALLOW_NO_PASSWORD) {
+  console.error('Refusing to start: set APP_PASSWORD so the dashboard is not open to the internet (or ALLOW_NO_PASSWORD=1 if it sits behind other auth).');
+  process.exit(1);
+}
+
 const app = express();
 app.use(express.json({ limit: '1mb' }));
 

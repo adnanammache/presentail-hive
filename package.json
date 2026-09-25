@@ -5,7 +5,7 @@
   "description": "Presentail Hive — mission control for AI agents: tasks, recurring workflows and chat.",
   "type": "module",
   "engines": {
-    "node": ">=22.5"
+    "node": ">=22.5 <23"
   },
   "scripts": {
     "dev": "concurrently -k -n api,web -c blue,magenta \"node --watch --disable-warning=ExperimentalWarning server/index.js\" \"vite\"",
