@@ -230,6 +230,7 @@ export function TaskForm({ task, defaults = {}, onClose }) {
     const body = {
       title: v.title, description: v.description, status: v.status, priority: v.priority, agent_id: numOrNull(v.agent_id), due_date: v.due_date || null, result: v.result,
       handoff_agent_id: numOrNull(v.handoff_agent_id),
+      ...(v.close_item_id && !task ? { close_item_id: v.close_item_id, period: v.period } : {}),
     };
     if (task) {
       // Only send what you changed: an agent may have updated status/result while this was open.
@@ -305,7 +306,7 @@ export function TaskForm({ task, defaults = {}, onClose }) {
           </Field>
         )}
         {!task && managed && (
-          <Field label="Files for the agent" hint="Statements, invoices, spreadsheets. They're placed in the agent's workspace.">
+          <Field label="Files for the agent" hint={values.files_hint ? `Attach: ${values.files_hint}` : "Statements, invoices, spreadsheets. They're placed in the agent's workspace."}>
             <div className="run-files">
               {newFiles.map((f) => (
                 <span key={f.name} className="file-chip">

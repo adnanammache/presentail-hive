@@ -7,6 +7,7 @@ import { integrationList, skillLibrary } from './capabilities.js';
 import { sendSlack, slackButtonsEnabled, slackConfigured } from './notify.js';
 import { approvers } from './slack.js';
 import { finishTask, handOff, reviewerFor } from './handoff.js';
+import { closeBoard, dueDate, itemInstructions, monthLabel, saveCloseItem } from './close.js';
 import { briefConfig, latestBrief, nextBriefAt, sendBrief, setBriefConfig } from './brief.js';
 import { pushToAll, removeSubscription, saveSubscription, subscriptionCount, vapidKeys } from './push.js';
 import { COMPANIES, testOdoo } from './odoo.js';
@@ -88,14 +89,20 @@ function createTask(body, actor) {
   if (!body.title?.trim()) throw bad('title is required');
   check(body.status, TASK_STATUSES, 'status');
   check(body.priority, PRIORITIES, 'priority');
+  if (body.handoff_agent_id && !get('SELECT id FROM agents WHERE id = ?', body.handoff_agent_id)) throw bad('Unknown reviewer');
+  if (body.close_item_id && !get('SELECT id FROM close_items WHERE id = ?', body.close_item_id)) throw bad('Unknown close item');
+  if (body.period && !/^\d{4}-(0[1-9]|1[0-2])$/.test(body.period)) throw bad('period must be YYYY-MM');
   const { lastInsertRowid } = run(
-    'INSERT INTO tasks (title, description, status, priority, agent_id, due_date) VALUES (?, ?, ?, ?, ?, ?)',
+    'INSERT INTO tasks (title, description, status, priority, agent_id, due_date, handoff_agent_id, close_item_id, period) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
     body.title.trim(),
     body.description ?? '',
     body.status ?? 'todo',
     body.priority ?? 'medium',
     body.agent_id ?? null,
     body.due_date ?? null,
+    body.handoff_agent_id ?? null,
+    body.close_item_id ?? null,
+    body.close_item_id ? body.period ?? null : null,
   );
   const id = Number(lastInsertRowid);
   logActivity(body.agent_id, 'task', `${actor} created task "${body.title.trim()}"`);
@@ -303,6 +310,49 @@ export function dashboardRouter() {
     ],
     slack: { buttons: slackButtonsEnabled(), interactivity_url: `${req.protocol}://${req.get('host')}/slack/interactions`, approvers: approvers().length },
   })));
+  // Month-end close board
+  r.get('/close', wrap((req) => closeBoard({ months: Math.min(Math.max(Number(req.query.months) || 6, 1), 12) })));
+  // What to prefill when starting one job for one month (the UI then creates the task, with files).
+  r.get('/close/items/:id/draft/:period', wrap((req) => {
+    const item = get('SELECT * FROM close_items WHERE id = ?', req.params.id);
+    if (!item) throw notFound('Close item');
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(req.params.period)) throw bad('period must be YYYY-MM');
+    return {
+      title: `${item.name} (${item.entity}): ${monthLabel(req.params.period)}`,
+      description: itemInstructions(item, req.params.period),
+      agent_id: item.agent_id,
+      due_date: dueDate(req.params.period, item.due_day),
+      close_item_id: item.id,
+      period: req.params.period,
+      files_hint: item.files_hint,
+      priority: 'high',
+    };
+  }));
+  r.post('/close/items', wrap((req) => {
+    try {
+      const item = saveCloseItem(null, req.body || {});
+      emit('task', {});
+      return item;
+    } catch (err) {
+      throw bad(err.message);
+    }
+  }));
+  r.patch('/close/items/:id', wrap((req) => {
+    if (!get('SELECT id FROM close_items WHERE id = ?', req.params.id)) throw notFound('Close item');
+    try {
+      const item = saveCloseItem(Number(req.params.id), req.body || {});
+      emit('task', {});
+      return item;
+    } catch (err) {
+      throw bad(err.message);
+    }
+  }));
+  r.delete('/close/items/:id', wrap((req) => {
+    run('DELETE FROM close_items WHERE id = ?', req.params.id);
+    emit('task', {});
+    return { ok: true };
+  }));
+
   // Daily brief
   r.get('/brief', wrap(() => ({ brief: latestBrief(), config: briefConfig(), next_at: nextBriefAt() })));
   r.post('/brief', wrap(async () => sendBrief({ trigger: 'manual' })));

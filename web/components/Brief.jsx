@@ -100,6 +100,19 @@ export default function BriefCard() {
               </ul>
             </div>
           )}
+          {b.close && b.close.done < b.close.total && (
+            <div className="brief-sec">
+              <h3>
+                <a href="#/close">
+                  {b.close.label} close: {b.close.done} of {b.close.total} done
+                </a>
+              </h3>
+              <ul>
+                {b.close.overdue.length > 0 && <li>🔴 Overdue: {b.close.overdue.join(', ')}</li>}
+                {b.close.not_started.length > 0 && <li>Not started: {b.close.not_started.join(', ')}</li>}
+              </ul>
+            </div>
+          )}
           <p className="muted small">
             AI spend: {money(b.spend.since_cents)} since the last brief · {money(b.spend.month_cents)} this month
           </p>

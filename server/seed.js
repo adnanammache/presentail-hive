@@ -1,5 +1,6 @@
 // Sample data so the dashboard isn't empty on first launch. Edit or delete freely.
 import { get, run, newToken } from './db.js';
+import { seedCloseItems } from './close.js';
 import { applyDefaultReviewers, applyOrgChart, ORG_CHART_VERSION, REVIEWERS_VERSION } from './org.js';
 
 const AGENTS = [
@@ -106,6 +107,7 @@ export function seedIfEmpty() {
   if (get('SELECT COUNT(*) n FROM agents').n === 0) seed({ demo: process.env.NODE_ENV !== 'production' });
   applyOrgChart();
   applyDefaultReviewers();
+  seedCloseItems();
 }
 
 if (process.argv[1]?.endsWith('seed.js') && process.argv.includes('--force')) {

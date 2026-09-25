@@ -5,6 +5,7 @@ import { Icon } from './components/ui.jsx';
 import Dashboard from './pages/Dashboard.jsx';
 import Agents from './pages/Agents.jsx';
 import AgentDetail from './pages/AgentDetail.jsx';
+import Close from './pages/Close.jsx';
 import Tasks from './pages/Tasks.jsx';
 import Workflows from './pages/Workflows.jsx';
 import Inbox from './pages/Inbox.jsx';
@@ -30,6 +31,7 @@ const NAV = [
   ['org', 'org', 'Org chart'],
   ['agents', 'bot', 'Agents'],
   ['tasks', 'board', 'Tasks'],
+  ['close', 'check', 'Month-end'],
   ['workflows', 'repeat', 'Workflows'],
   ['inbox', 'chat', 'Inbox'],
   ['settings', 'key', 'Settings'],
@@ -50,6 +52,7 @@ function Shell() {
   else if (section === 'org') page = <OrgChart me={me} />;
   else if (section === 'map') page = <HiveMap />;
   else if (section === 'tasks') page = <Tasks openId={id} />;
+  else if (section === 'close') page = <Close />;
   else if (section === 'settings') page = <Settings />;
   else if (section === 'workflows') page = <Workflows />;
   else if (section === 'inbox') page = <Inbox id={id} meta={meta} />;
