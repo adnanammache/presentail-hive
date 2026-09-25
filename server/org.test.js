@@ -35,3 +35,19 @@ test('org chart slots existing agents into titles, adds the rest, and only runs 
   assert.equal(applyOrgChart(), false);
   assert.equal(get("SELECT COUNT(*) n FROM agents WHERE name = 'Fold'").n, 0);
 });
+
+test('the Auditor reviews the accountants by default, once, without overriding choices', async () => {
+  const { applyDefaultReviewers } = await import('./org.js');
+  const scout = get("SELECT id FROM agents WHERE name = 'Scout'").id;
+  run("UPDATE agents SET reviewer_id = ? WHERE title = 'Cyprus Accountant'", scout); // your own pick
+  assert.equal(applyDefaultReviewers(), true);
+  const vera = get("SELECT id FROM agents WHERE title = 'Auditor'").id;
+  const reviewerOf = (title) => get('SELECT reviewer_id FROM agents WHERE title = ?', title).reviewer_id;
+  assert.equal(reviewerOf('UAE Accountant'), vera);
+  assert.equal(reviewerOf('Lebanon Accountant'), vera);
+  assert.equal(reviewerOf('Cyprus Accountant'), scout);
+  assert.equal(reviewerOf('Auditor'), null);
+  run("UPDATE agents SET reviewer_id = NULL WHERE title = 'UAE Accountant'");
+  assert.equal(applyDefaultReviewers(), false, 'removing a reviewer sticks');
+  assert.equal(reviewerOf('UAE Accountant'), null);
+});

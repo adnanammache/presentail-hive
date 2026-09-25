@@ -6,6 +6,7 @@ import { claudeConfigured, dispatchTask, postMessage, sendToAgent } from './disp
 import { integrationList, skillLibrary } from './capabilities.js';
 import { sendSlack, slackButtonsEnabled, slackConfigured } from './notify.js';
 import { approvers } from './slack.js';
+import { finishTask, handOff, reviewerFor } from './handoff.js';
 import { briefConfig, latestBrief, nextBriefAt, sendBrief, setBriefConfig } from './brief.js';
 import { pushToAll, removeSubscription, saveSubscription, subscriptionCount, vapidKeys } from './push.js';
 import { COMPANIES, testOdoo } from './odoo.js';
@@ -23,8 +24,8 @@ const TASK_STATUSES = ['backlog', 'todo', 'in_progress', 'review', 'done', 'bloc
 const PRIORITIES = ['low', 'medium', 'high', 'urgent'];
 const RUN_STATUSES = ['running', 'success', 'failed'];
 
-const AGENT_FIELDS = ['name', 'title', 'team_id', 'description', 'platform', 'status', 'model', 'system_prompt', 'webhook_url', 'color', 'skills', 'integrations', 'approval'];
-const TASK_FIELDS = ['title', 'description', 'status', 'priority', 'agent_id', 'due_date', 'result'];
+const AGENT_FIELDS = ['name', 'title', 'team_id', 'description', 'platform', 'status', 'model', 'system_prompt', 'webhook_url', 'color', 'skills', 'integrations', 'approval', 'reviewer_id'];
+const TASK_FIELDS = ['title', 'description', 'status', 'priority', 'agent_id', 'due_date', 'result', 'handoff_agent_id'];
 const TEAM_FIELDS = ['name', 'description', 'color'];
 const WORKFLOW_FIELDS = ['name', 'description', 'agent_id', 'schedule', 'timezone', 'instructions', 'enabled'];
 
@@ -48,8 +49,14 @@ const withNext = (wf) => ({ ...wf, enabled: Boolean(wf.enabled), next_run_at: wf
 
 function getTask(id) {
   return get(
-    `SELECT t.*, a.name AS agent_name, a.color AS agent_color, a.platform AS agent_platform, w.name AS workflow_name
-     FROM tasks t LEFT JOIN agents a ON a.id = t.agent_id LEFT JOIN workflows w ON w.id = t.workflow_id WHERE t.id = ?`,
+    `SELECT t.*, a.name AS agent_name, a.color AS agent_color, a.platform AS agent_platform, w.name AS workflow_name,
+       COALESCE(t.handoff_agent_id, CASE WHEN t.parent_task_id IS NULL THEN a.reviewer_id END) AS reviewer_id,
+       rv.name AS reviewer_name, p.title AS parent_title, h.status AS handoff_status, ha.name AS handoff_agent_name
+     FROM tasks t LEFT JOIN agents a ON a.id = t.agent_id LEFT JOIN workflows w ON w.id = t.workflow_id
+     LEFT JOIN agents rv ON rv.id = COALESCE(t.handoff_agent_id, CASE WHEN t.parent_task_id IS NULL THEN a.reviewer_id END)
+     LEFT JOIN tasks p ON p.id = t.parent_task_id
+     LEFT JOIN tasks h ON h.id = t.handoff_task_id LEFT JOIN agents ha ON ha.id = h.agent_id
+     WHERE t.id = ?`,
     id,
   );
 }
@@ -61,6 +68,7 @@ function patchTask(id, patch, actor) {
   check(patch.status, TASK_STATUSES, 'status');
   check(patch.priority, PRIORITIES, 'priority');
   if (patch.agent_id !== undefined && patch.agent_id !== null && !get('SELECT id FROM agents WHERE id = ?', patch.agent_id)) throw bad('Unknown agent_id');
+  if (patch.handoff_agent_id !== undefined && patch.handoff_agent_id !== null && !get('SELECT id FROM agents WHERE id = ?', patch.handoff_agent_id)) throw bad('Unknown reviewer');
   update('tasks', id, patch, TASK_FIELDS);
   run("UPDATE tasks SET updated_at = datetime('now') WHERE id = ?", id);
 
@@ -239,6 +247,7 @@ export function dashboardRouter() {
       b.name.trim(), b.title.trim(), b.team_id, b.description ?? '', b.platform ?? 'custom', b.status ?? 'idle',
       b.model ?? '', b.system_prompt ?? '', b.webhook_url ?? '', b.color ?? '#6366f1', newToken(),
     );
+    if (b.reviewer_id && get('SELECT id FROM agents WHERE id = ?', b.reviewer_id)) run('UPDATE agents SET reviewer_id = ? WHERE id = ?', b.reviewer_id, lastInsertRowid);
     const agent = getAgent(lastInsertRowid);
     logActivity(agent.id, 'agent', `${agent.name} joined ${agent.team_name} as ${agent.title}`);
     emit('agent');
@@ -257,6 +266,10 @@ export function dashboardRouter() {
     if (b.name !== undefined && !String(b.name).trim()) throw bad('Name is required');
     if (b.title !== undefined && !String(b.title).trim()) throw bad('Title is required');
     checkTeam(b.team_id);
+    if (b.reviewer_id !== undefined && b.reviewer_id !== null) {
+      if (Number(b.reviewer_id) === Number(req.params.id)) throw bad('An agent cannot review its own work');
+      if (!get('SELECT id FROM agents WHERE id = ?', b.reviewer_id)) throw bad('Unknown reviewer');
+    }
     check(b.platform, PLATFORMS, 'platform');
     check(b.status, AGENT_STATUSES, 'status');
     update('agents', req.params.id, b, AGENT_FIELDS);
@@ -398,6 +411,17 @@ export function dashboardRouter() {
     return { ok: true };
   }));
 
+  // Hand a task to another agent for review, now.
+  r.post('/tasks/:id/handoff', wrap(async (req) => {
+    if (!getTask(req.params.id)) throw notFound('Task');
+    try {
+      const id = await handOff(Number(req.params.id), Number(req.body?.agent_id), { by: req.user?.name || 'You' });
+      return getTask(id);
+    } catch (err) {
+      throw bad(err.message);
+    }
+  }));
+
   r.delete('/tasks/:id', wrap((req) => {
     run('DELETE FROM tasks WHERE id = ?', req.params.id);
     emit('task');
@@ -405,6 +429,11 @@ export function dashboardRouter() {
   }));
 
   // Task files (inputs for the agent: statements, invoices, spreadsheets)
+  r.get('/tasks/:id', wrap((req) => {
+    const task = getTask(req.params.id);
+    if (!task) throw notFound('Task');
+    return task;
+  }));
   r.get('/tasks/:id/files', wrap((req) => all('SELECT id, task_id, filename, size, created_at FROM task_files WHERE task_id = ? ORDER BY id', req.params.id)));
 
   r.post('/tasks/:id/files', express.raw({ type: () => true, limit: '50mb' }), wrap((req) => {
@@ -564,10 +593,16 @@ export function agentRouter() {
 
   r.post('/tasks', wrap((req) => getTask(createTask({ ...req.body, agent_id: req.body.agent_id ?? req.agent.id }, req.agent.name))));
 
-  r.patch('/tasks/:id', wrap((req) => {
+  r.patch('/tasks/:id', wrap(async (req) => {
     const task = get('SELECT * FROM tasks WHERE id = ?', req.params.id);
     if (!task || task.agent_id !== req.agent.id) throw notFound('Task');
     const { status, result, description } = req.body;
+    // An agent marking its work done goes through review first, if it has a reviewer (or is a review).
+    if (status === 'done' && (task.parent_task_id || (!task.handoff_task_id && reviewerFor(task)))) {
+      if (description !== undefined) patchTask(task.id, { description }, req.agent.name);
+      await finishTask(task.id, { summary: result ?? task.result });
+      return getTask(task.id);
+    }
     return patchTask(task.id, { status, result, description }, req.agent.name);
   }));
 

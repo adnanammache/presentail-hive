@@ -15,6 +15,7 @@ import { logActivity } from './activity.js';
 import { INTEGRATIONS, parseList, skillFiles, skillHash, skillLibrary } from './capabilities.js';
 import { postMessage } from './dispatch.js';
 import { notifyRun, settleApprovalAlert } from './notify.js';
+import { TASK_TOOL, finishTask } from './handoff.js';
 import { ODOO_TOOL, classify, describeCall, formatResult, odooCall } from './odoo.js';
 
 const DEFAULT_MODEL = process.env.DEFAULT_CLAUDE_MODEL || 'claude-opus-5';
@@ -170,6 +171,7 @@ async function buildAgentConfig(agent) {
         configs: agent.approval === 'every_command' ? ['bash', 'write', 'edit'].map((name) => ({ name, permission_policy: ask })) : [],
       },
       ...(parseList(agent.integrations).includes('odoo') ? [ODOO_TOOL] : []),
+      TASK_TOOL,
     ],
     metadata: { hive_agent_id: String(agent.id) },
   };
@@ -419,6 +421,12 @@ async function resolveToolCalls(runId, customIds, builtinPending) {
   const results = [];
   const waiting = [];
   for (const id of customIds) {
+    const call = JSON.parse(get('SELECT data FROM run_events WHERE run_id = ? AND event_id = ?', runId, id)?.data ?? '{}');
+    if (call.name === 'task_complete') {
+      const reply = r.task_id ? await finishTask(r.task_id, call.input ?? {}) : 'There is no task in a chat. Just reply to the user.';
+      results.push({ type: 'user.custom_tool_result', custom_tool_use_id: id, content: [{ type: 'text', text: reply }] });
+      continue;
+    }
     const action = get('SELECT * FROM odoo_actions WHERE event_id = ?', id);
     if (!action) {
       results.push({ type: 'user.custom_tool_result', custom_tool_use_id: id, content: [{ type: 'text', text: 'Unknown tool' }], is_error: true });
@@ -523,6 +531,7 @@ function summarize(ev) {
     case 'agent.mcp_tool_use':
       return toolSummary(ev);
     case 'agent.custom_tool_use':
+      if (ev.name === 'task_complete') return { name: 'task_complete', detail: String(ev.input?.summary ?? '').slice(0, 600), kind: 'custom', input: ev.input ?? {} };
       return { name: ev.name, detail: ev.name === 'odoo' ? describeCall(ev.input || {}) : '', kind: ev.name === 'odoo' ? classify(ev.input?.model, ev.input?.method) : 'custom' };
     case 'user.custom_tool_result':
       return { is_error: Boolean(ev.is_error), preview: text(ev.content).slice(0, 300) };
@@ -579,6 +588,14 @@ export function handleEvent(runId, ev) {
         const latest = getRun(runId);
         setRun(runId, { status: 'waiting', pending: '[]', error: reason === 'budget_reached' ? 'Budget reached' : latest.error });
         syncOutputs(runId).catch(() => {});
+        // If the agent called task_complete since the user last spoke, that already filed the result
+        // (and maybe handed it to a reviewer), so don't overwrite it with the sign-off message.
+        const finished = get(
+          `SELECT MAX(CASE WHEN type = 'agent.custom_tool_use' AND data LIKE '%"name":"task_complete"%' THEN id END) AS done,
+                  MAX(CASE WHEN type = 'user.message' THEN id END) AS spoke FROM run_events WHERE run_id = ?`,
+          runId,
+        );
+        if (finished.done && finished.done > (finished.spoke ?? 0)) break;
         if (r.kind === 'task') notifyRun(runId, 'done');
         setTask(r.task_id, 'review', latest.last_message || undefined);
         if (r.task_id) logActivity(r.agent_id, 'task', `Run #${runId} is waiting for your review`);

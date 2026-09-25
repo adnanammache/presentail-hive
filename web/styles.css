@@ -596,3 +596,32 @@ button.link { background: none; border: 0; padding: 0; cursor: pointer; font: in
 .brief-config input[type='time'], .brief-config select { width: auto; }
 .brief-config input[type='checkbox'] { width: auto; accent-color: var(--accent); }
 .row-gap { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+/* ---- map: departments, moving agents, live feed ---- */
+.map-zone { cursor: pointer; }
+.map-zone-label { cursor: pointer; }
+.map-zone-g.drop .map-zone { fill: color-mix(in srgb, var(--c) 26%, transparent); stroke-width: 4; stroke-dasharray: none; }
+.map-zone-g.selected .map-zone { stroke-width: 3.5; }
+.map-agent.ghost { pointer-events: none; opacity: 0.95; filter: drop-shadow(0 8px 14px rgb(15 23 42 / 0.3)); }
+.map-agent.ghost .map-cell { stroke: var(--c); stroke-width: 3; }
+.map-hint { color: var(--muted); border-left: 1px solid var(--border); padding-left: 10px; }
+.map-team-list { max-height: 260px; overflow-y: auto; }
+.map-team-list .list-row { width: 100%; text-align: left; }
+.map-feed { position: absolute; right: 16px; bottom: 16px; width: 300px; max-width: calc(100% - 32px); background: color-mix(in srgb, var(--panel) 92%, transparent); backdrop-filter: blur(6px); border: 1px solid var(--border); border-radius: 12px; font-size: 12.5px; cursor: default; }
+.map-feed-head { display: flex; align-items: center; gap: 8px; width: 100%; background: none; border: 0; padding: 9px 12px; font: inherit; font-weight: 600; color: var(--text); cursor: pointer; }
+.map-feed ul { list-style: none; margin: 0; padding: 0 12px 10px; display: grid; gap: 6px; }
+.map-feed li { line-height: 1.35; }
+.map-toast { position: absolute; left: 50%; bottom: 70px; transform: translateX(-50%); background: var(--text); color: var(--panel); padding: 9px 14px; border-radius: 10px; display: flex; gap: 14px; align-items: center; font-size: 13px; box-shadow: 0 10px 30px rgb(15 23 42 / 0.25); cursor: default; white-space: nowrap; }
+.map-toast .link { color: #a5b4fc; }
+@media (max-width: 760px) {
+  .map-feed { right: auto; left: 64px; bottom: 16px; width: auto; }
+  .map-hint { display: none; }
+}
+
+/* ---- hand-offs ---- */
+.handoff-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; background: var(--panel-2); border: 1px dashed var(--border); border-radius: 10px; padding: 9px 12px; font-size: 13px; }
+.handoff-bar select { width: auto; }
+.handoff-bar a { color: var(--accent); }
+.map-review { fill: none; stroke: var(--muted); stroke-width: 2; stroke-dasharray: 5 4; opacity: 0.85; pointer-events: none; }
+.map-review-head { fill: var(--muted); opacity: 0.9; }
+.lg-review { display: inline-block; width: 18px; border-top: 2px dashed var(--muted); vertical-align: middle; margin-right: 2px; }

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ago, useApi } from '../api.js';
+import { ago, api, useApi } from '../api.js';
 import { Badge, Icon, Loading, PLATFORM_LABELS, agentTone } from '../components/ui.jsx';
 import BotAvatar, { BotFace } from '../components/BotAvatar.jsx';
 import { TaskForm } from '../components/forms.jsx';
@@ -76,11 +76,12 @@ function layout(teams, agents) {
   return { clusters, box, extent: `${box.x0},${box.x1},${box.y0},${box.y1}` };
 }
 
-function AgentToken({ a, x, y, selected, dim, onSelect }) {
+function AgentToken({ a, x, y, selected, dim, onSelect, ghost }) {
   const m = mood(a);
   return (
     <g
-      className={`map-agent mood-${m} ${selected ? 'selected' : ''} ${dim ? 'dim' : ''}`}
+      data-agent={a.id}
+      className={`map-agent mood-${m} ${selected ? 'selected' : ''} ${dim ? 'dim' : ''} ${ghost ? 'ghost' : ''}`}
       transform={`translate(${x} ${y})`}
       onClick={(e) => (e.stopPropagation(), onSelect(a, e))}
       role="button"
@@ -178,6 +179,91 @@ function Panel({ a, onClose, onAssign }) {
   );
 }
 
+function TeamPanel({ c, onClose, onSelectAgent }) {
+  const counts = c.members.reduce((t, a) => ((t[mood(a)] = (t[mood(a)] || 0) + 1), t), {});
+  const open = c.members.reduce((t, a) => t + (a.open_tasks || 0), 0);
+  const spend = c.members.reduce((t, a) => t + (a.month_cents || 0), 0);
+  return (
+    <aside className="map-panel" aria-label={`${c.team.name} details`}>
+      <button className="icon-btn map-close" onClick={onClose} aria-label="Close">
+        <Icon name="x" />
+      </button>
+      <div className="map-panel-head">
+        <svg width="52" height="52" viewBox="-30 -30 60 60" aria-hidden="true">
+          <polygon points={hexPoints(28)} fill={c.team.color} opacity="0.2" stroke={c.team.color} strokeWidth="2" />
+        </svg>
+        <div>
+          <h2>{c.team.name}</h2>
+          <div className="muted">
+            {c.members.length} agent{c.members.length === 1 ? '' : 's'}
+          </div>
+        </div>
+      </div>
+      <dl className="map-facts">
+        <div>
+          <dt>Working</dt>
+          <dd>{counts.working || 0}</dd>
+        </div>
+        <div>
+          <dt>Needs you</dt>
+          <dd>{counts.waiting || 0}</dd>
+        </div>
+        <div>
+          <dt>Open tasks</dt>
+          <dd>{open}</dd>
+        </div>
+        <div>
+          <dt>This month</dt>
+          <dd>{money(spend)}</dd>
+        </div>
+      </dl>
+      <ul className="list map-team-list">
+        {c.members.map((a) => (
+          <li key={a.id}>
+            <button className="list-row clickable linkish" onClick={() => onSelectAgent(a)}>
+              <BotAvatar name={a.name} color={a.color} size={30} mood={mood(a) === 'paused' ? 'paused' : mood(a)} />
+              <div className="grow">
+                <div className="row-title">{a.name}</div>
+                <div className="row-sub">{a.title}</div>
+              </div>
+              <span className="muted small">{MOOD_LABEL[mood(a)]}</span>
+            </button>
+          </li>
+        ))}
+      </ul>
+      {c.team.id > 0 && (
+        <a className="btn" href="#/org">
+          Open in org chart
+        </a>
+      )}
+    </aside>
+  );
+}
+
+function Feed() {
+  const { data } = useApi('/activity?limit=6', ['activity']);
+  const [open, setOpen] = useState(() => window.innerWidth > 900);
+  if (!data?.length) return null;
+  return (
+    <div className={`map-feed ${open ? 'open' : ''}`} onPointerDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
+      <button className="map-feed-head" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
+        <span className="live on" /> Happening now
+      </button>
+      {open && (
+        <ul>
+          {data.map((e) => (
+            <li key={e.id}>
+              {e.agent_name && <b style={{ color: e.agent_color }}>{e.agent_name} </b>}
+              <span>{e.agent_name && e.text.startsWith(e.agent_name) ? e.text.slice(e.agent_name.length).trimStart() : e.text}</span>
+              <span className="muted"> · {ago(e.created_at)}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 export default function HiveMap() {
   const { data: agents } = useApi('/agents', ['agent', 'task', 'run']);
   const { data: teams } = useApi('/teams', ['agent']);
@@ -186,6 +272,10 @@ export default function HiveMap() {
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState('all');
   const [assigning, setAssigning] = useState(null);
+  const [teamSel, setTeamSel] = useState(null); // team id whose panel is open
+  const [moving, setMoving] = useState(null); // { agent, x, y } while an agent is being moved
+  const [toast, setToast] = useState(null);
+  const hold = useRef(null);
   const box = useRef(null);
   const pointers = useRef(new Map());
   const gesture = useRef(null);
@@ -232,20 +322,45 @@ export default function HiveMap() {
 
   // Capture the pointer only once it actually drags, so plain clicks still reach the agent tokens.
   const dragged = useRef(false);
+  const toWorld = ([sx, sy]) => [(sx - view.x) / view.k, (sy - view.y) / view.k];
+  const zoneAt = ([wx, wy]) =>
+    map.clusters.find((c) => Math.hypot(wx - c.cx, wy - c.cy) < c.radius * 0.9) ?? null;
+
+  // Hold an agent (~0.4s) to pick it up, then drop it on another department to move it there.
   const onPointerDown = (e) => {
     pointers.current.set(e.pointerId, local(e));
     if (pointers.current.size === 1) dragged.current = 0;
     gesture.current = null;
+    clearTimeout(hold.current);
+    const id = Number(e.target.closest?.('[data-agent]')?.getAttribute('data-agent'));
+    if (id && pointers.current.size === 1) {
+      const pointerId = e.pointerId;
+      hold.current = setTimeout(() => {
+        const agent = agents.find((a) => a.id === id);
+        if (!agent || dragged.current === true) return;
+        dragged.current = true; // swallow the click that follows
+        box.current.setPointerCapture?.(pointerId);
+        const [x, y] = toWorld(pointers.current.get(pointerId));
+        setMoving({ agent, x, y });
+        navigator.vibrate?.(15);
+      }, 420);
+    }
   };
   const onPointerMove = (e) => {
     if (!pointers.current.has(e.pointerId)) return;
     const prev = pointers.current.get(e.pointerId);
     const now = local(e);
     pointers.current.set(e.pointerId, now);
+    if (moving) {
+      const [x, y] = toWorld(now);
+      setMoving((m) => m && { ...m, x, y });
+      return;
+    }
     if (dragged.current !== true) {
       dragged.current += Math.hypot(now[0] - prev[0], now[1] - prev[1]);
       if (dragged.current < 5) return;
       dragged.current = true;
+      clearTimeout(hold.current);
       box.current.setPointerCapture?.(e.pointerId);
     }
     if (pointers.current.size === 1) {
@@ -258,12 +373,50 @@ export default function HiveMap() {
       gesture.current = dist;
     }
   };
+  const moveAgent = async (agent, teamId, undo) => {
+    try {
+      await api(`/agents/${agent.id}`, { method: 'PATCH', body: { team_id: teamId || null } });
+      const name = teamId ? teams.find((t) => t.id === teamId)?.name : 'No team';
+      setToast(undo ? null : { text: `Moved ${agent.name} to ${name}`, undo: () => moveAgent(agent, agent.team_id, true) });
+    } catch (err) {
+      setToast({ text: err.message });
+    }
+  };
   const onPointerUp = (e) => {
+    clearTimeout(hold.current);
     pointers.current.delete(e.pointerId);
     if (pointers.current.size < 2) gesture.current = null;
+    if (moving) {
+      const zone = zoneAt([moving.x, moving.y]);
+      const target = zone ? zone.team.id || 0 : null;
+      if (zone && target !== (moving.agent.team_id || 0)) moveAgent(moving.agent, target);
+      setMoving(null);
+    }
   };
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 6000);
+    return () => clearTimeout(t);
+  }, [toast]);
 
   if (!agents || !teams) return <Loading />;
+
+  // Dashed arrows from each agent to the agent who reviews its work.
+  const where = new Map();
+  for (const c of map?.clusters ?? []) c.members.forEach((a, i) => where.set(a.id, [c.cx + c.cells[i][0], c.cy + c.cells[i][1]]));
+  const reviewLinks = agents
+    .filter((a) => a.reviewer_id && where.has(a.id) && where.has(a.reviewer_id))
+    .map((a) => {
+      const [x1, y1] = where.get(a.id);
+      const [x2, y2] = where.get(a.reviewer_id);
+      const len = Math.hypot(x2 - x1, y2 - y1) || 1;
+      const [ux, uy] = [(x2 - x1) / len, (y2 - y1) / len];
+      const [sx, sy, ex, ey] = [x1 + ux * 34, y1 + uy * 34, x2 - ux * 36, y2 - uy * 36]; // start/end at the token edges
+      const bend = Math.min(60, len * 0.25);
+      const [mx, my] = [(sx + ex) / 2 - uy * bend, (sy + ey) / 2 + ux * bend];
+      const reviewer = agents.find((x) => x.id === a.reviewer_id);
+      return { key: a.id, d: `M${sx} ${sy} Q${mx} ${my} ${ex} ${ey}`, title: `${reviewer?.name} reviews ${a.name}'s work` };
+    });
 
   const q = query.trim().toLowerCase();
   const matches = (a) =>
@@ -302,7 +455,7 @@ export default function HiveMap() {
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
-        onClick={() => dragged.current !== true && setSelected(null)}
+        onClick={() => dragged.current !== true && (setSelected(null), setTeamSel(null))}
       >
         {view && map && (
           <svg width="100%" height="100%" role="img" aria-label="Map of Presentail's AI agents grouped by department">
@@ -316,6 +469,11 @@ export default function HiveMap() {
               {map.clusters.map((c) => (
                 <line key={`l${c.team.id}`} x1="0" y1="0" x2={c.cx} y2={c.cy} className="map-link" />
               ))}
+              <defs>
+                <marker id="review-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                  <path d="M0 0 L10 5 L0 10 z" className="map-review-head" />
+                </marker>
+              </defs>
               <g className="map-hub">
                 <polygon points={hexPoints(58)} />
                 <polygon points={hexPoints(22)} className="map-hub-core" />
@@ -324,14 +482,33 @@ export default function HiveMap() {
                 </text>
               </g>
               {map.clusters.map((c) => (
-                <g key={c.team.id} transform={`translate(${c.cx} ${c.cy})`} style={{ '--c': c.team.color }}>
-                  <polygon points={hexPoints(c.radius)} className="map-zone" />
-                  <text y={-c.radius * 0.87 - 12} textAnchor="middle" className="map-zone-label">
+                <g
+                  key={c.team.id}
+                  transform={`translate(${c.cx} ${c.cy})`}
+                  style={{ '--c': c.team.color }}
+                  className={`map-zone-g ${moving && zoneAt([moving.x, moving.y]) === c ? 'drop' : ''} ${teamSel === c.team.id ? 'selected' : ''}`}
+                >
+                  <polygon
+                    points={hexPoints(c.radius)}
+                    className="map-zone"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (dragged.current === true) return;
+                      setSelected(null);
+                      setTeamSel(c.team.id);
+                    }}
+                  />
+                  <text
+                    y={-c.radius * 0.87 - 12}
+                    textAnchor="middle"
+                    className="map-zone-label"
+                    onClick={(e) => (e.stopPropagation(), setSelected(null), setTeamSel(c.team.id))}
+                  >
                     {c.team.name}
                     <tspan className="map-zone-count"> · {c.members.length}</tspan>
                   </text>
                   {c.members.map((a, i) => (
-                    <AgentToken key={a.id} a={a} x={c.cells[i][0]} y={c.cells[i][1]} selected={selected?.id === a.id} dim={!matches(a)} onSelect={(a) => dragged.current !== true && setSelected(a)} />
+                    <AgentToken key={a.id} a={a} x={c.cells[i][0]} y={c.cells[i][1]} selected={selected?.id === a.id} dim={!matches(a) || moving?.agent.id === a.id} onSelect={(a) => dragged.current !== true && (setTeamSel(null), setSelected(a))} />
                   ))}
                   {c.members.length === 0 && (
                     <text textAnchor="middle" className="map-empty">
@@ -340,6 +517,12 @@ export default function HiveMap() {
                   )}
                 </g>
               ))}
+              {reviewLinks.map((l) => (
+                <path key={l.key} d={l.d} className="map-review" markerEnd="url(#review-arrow)">
+                  <title>{l.title}</title>
+                </path>
+              ))}
+              {moving && <AgentToken a={moving.agent} x={moving.x} y={moving.y} ghost onSelect={() => {}} />}
             </g>
           </svg>
         )}
@@ -361,7 +544,31 @@ export default function HiveMap() {
           <span><i className="lg waiting" /> Needs you</span>
           <span><i className="lg idle" /> Ready</span>
           <span><i className="lg paused" /> Not set up</span>
+          {reviewLinks.length > 0 && <span><i className="lg-review" /> Reviews</span>}
+          <span className="map-hint">Hold an agent to move it</span>
         </div>
+
+        <Feed />
+
+        {teamSel !== null && !selected && map && (() => {
+          const c = map.clusters.find((x) => x.team.id === teamSel);
+          return c ? (
+            <div onPointerDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
+              <TeamPanel c={c} onClose={() => setTeamSel(null)} onSelectAgent={(a) => (setTeamSel(null), setSelected(a))} />
+            </div>
+          ) : null;
+        })()}
+
+        {toast && (
+          <div className="map-toast" role="status" onPointerDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
+            {toast.text}
+            {toast.undo && (
+              <button className="link" onClick={toast.undo}>
+                Undo
+              </button>
+            )}
+          </div>
+        )}
 
         {selected && (
           <div onPointerDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
