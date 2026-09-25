@@ -16,6 +16,7 @@ import { INTEGRATIONS, parseList, skillFiles, skillHash, skillLibrary } from './
 import { postMessage } from './dispatch.js';
 import { notifyRun, settleApprovalAlert } from './notify.js';
 import { TASK_TOOL, finishTask } from './handoff.js';
+import { AGENT_DM_TOOL, askAgent } from './conversations.js';
 import { ODOO_TOOL, classify, describeCall, formatResult, odooCall } from './odoo.js';
 
 const DEFAULT_MODEL = process.env.DEFAULT_CLAUDE_MODEL || 'claude-opus-5';
@@ -172,6 +173,7 @@ async function buildAgentConfig(agent) {
       },
       ...(parseList(agent.integrations).includes('odoo') ? [ODOO_TOOL] : []),
       TASK_TOOL,
+      AGENT_DM_TOOL,
     ],
     metadata: { hive_agent_id: String(agent.id) },
   };
@@ -317,6 +319,33 @@ export async function chatWithManagedAgent(agentId, text) {
   }
 }
 
+/**
+ * Another agent asks this managed agent a question: a fresh session, one turn, and its answer.
+ * Waits up to `timeoutMs`; if the agent needs an approval meanwhile, a person approves it in Hive.
+ */
+export async function consultManagedAgent(agentId, text, { timeoutMs = 15 * 60 * 1000, title = 'Question from a colleague' } = {}) {
+  const agent = get('SELECT * FROM agents WHERE id = ?', agentId);
+  const runId = Number(run("INSERT INTO runs (kind, agent_id, status) VALUES ('consult', ?, 'starting')", agentId).lastInsertRowid);
+  try {
+    const session = await createSession(agent, { title, metadata: { hive_consult_run_id: String(runId) } });
+    setRun(runId, { session_id: session.id, status: 'running' });
+    await sendAndFollow(runId, [{ type: 'user.message', content: [{ type: 'text', text }] }]);
+  } catch (err) {
+    setRun(runId, { status: 'failed', error: err.message });
+    throw err;
+  }
+  const started = Date.now();
+  for (;;) {
+    const r = getRun(runId);
+    if (r.status === 'waiting' || r.status === 'ended') return { runId, text: r.last_message || '(no answer)' };
+    if (r.status === 'failed') throw new Error(r.error || 'failed');
+    if (Date.now() - started > timeoutMs) {
+      return { runId, text: r.last_message || null, timedOut: true, needsApproval: r.status === 'needs_approval' };
+    }
+    await new Promise((res) => setTimeout(res, 500));
+  }
+}
+
 export async function replyToRun(runId, text) {
   const r = getRun(runId);
   if (!r?.session_id || ['failed', 'ended'].includes(r.status)) throw new Error('This run has ended; start a new one');
@@ -422,6 +451,14 @@ async function resolveToolCalls(runId, customIds, builtinPending) {
   const waiting = [];
   for (const id of customIds) {
     const call = JSON.parse(get('SELECT data FROM run_events WHERE run_id = ? AND event_id = ?', runId, id)?.data ?? '{}');
+    if (call.name === 'message_agent') {
+      const reply =
+        r.kind === 'consult'
+          ? { text: 'You were asked a question by another agent, so you cannot message others from here. Answer with what you know.', is_error: true }
+          : await askAgent(r.agent_id, call.input?.agent, call.input?.message, { runId });
+      results.push({ type: 'user.custom_tool_result', custom_tool_use_id: id, content: [{ type: 'text', text: reply.text }], ...(reply.is_error ? { is_error: true } : {}) });
+      continue;
+    }
     if (call.name === 'task_complete') {
       const reply = r.task_id ? await finishTask(r.task_id, call.input ?? {}) : 'There is no task in a chat. Just reply to the user.';
       results.push({ type: 'user.custom_tool_result', custom_tool_use_id: id, content: [{ type: 'text', text: reply }] });
@@ -532,6 +569,7 @@ function summarize(ev) {
       return toolSummary(ev);
     case 'agent.custom_tool_use':
       if (ev.name === 'task_complete') return { name: 'task_complete', detail: String(ev.input?.summary ?? '').slice(0, 600), kind: 'custom', input: ev.input ?? {} };
+      if (ev.name === 'message_agent') return { name: 'message_agent', detail: `→ ${ev.input?.agent ?? '?'}: ${String(ev.input?.message ?? '').slice(0, 500)}`, kind: 'custom', input: ev.input ?? {} };
       return { name: ev.name, detail: ev.name === 'odoo' ? describeCall(ev.input || {}) : '', kind: ev.name === 'odoo' ? classify(ev.input?.model, ev.input?.method) : 'custom' };
     case 'user.custom_tool_result':
       return { is_error: Boolean(ev.is_error), preview: text(ev.content).slice(0, 300) };

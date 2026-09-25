@@ -155,6 +155,31 @@ export default function Settings() {
             </li>
           </ol>
         )}
+        <h3>Talk to agents in Slack</h3>
+        <p className="muted">
+          DM the Hive app with an agent's name first, e.g. <i>Ledger: can you do Careem for August?</i> The agent answers in the thread under its own name and face. Attach files to give it a task; progress and approvals come back to the same thread. Only people with a Presentail email can use it.
+        </p>
+        {data.slack?.conversations ? (
+          <p className="muted">✅ On. Hive has received messages from Slack.</p>
+        ) : (
+          <ol className="muted small">
+            <li>
+              <b>OAuth &amp; Permissions</b> → Bot Token Scopes: <code>chat:write</code>, <code>chat:write.customize</code>, <code>im:history</code>, <code>app_mentions:read</code>, <code>channels:history</code>, <code>files:read</code>, <code>users:read</code>, <code>users:read.email</code>.
+            </li>
+            <li>
+              <b>Event Subscriptions</b> → on → Request URL <code>{data.slack?.events_url}</code> → Subscribe to bot events: <code>message.im</code>, <code>app_mention</code>, <code>message.channels</code> → Save.
+            </li>
+            <li>
+              <b>App Home</b> → tick "Allow users to send Slash commands and messages from the messages tab".
+            </li>
+            <li>Reinstall the app to your workspace (Slack asks after scope changes). It needs <code>SLACK_SIGNING_SECRET</code> too.</li>
+          </ol>
+        )}
+        <h3>Agents talking to each other</h3>
+        <p className="muted">
+          Agents can message each other (e.g. Ledger asks Kyros for an intercompany balance). Every exchange is on the agents' <b>Colleagues</b> tab
+          {data.slack?.agents_channel ? ', and posted to your agents channel in Slack.' : '. To see them in Slack too, create a channel such as #hive-agents, invite the Hive app, and put its ID in SLACK_AGENTS_CHANNEL.'}
+        </p>
       </section>
     </>
   );

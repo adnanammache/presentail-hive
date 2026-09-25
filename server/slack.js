@@ -7,6 +7,9 @@
 import express from 'express';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { confirmMany } from './managed.js';
+import { run } from './db.js';
+import { handleSlackMessage, threadFor } from './conversations.js';
+import { markVerified } from './setup.js';
 
 export function approvers() {
   const list = (process.env.SLACK_APPROVERS || '').split(',').map((s) => s.trim()).filter(Boolean);
@@ -60,8 +63,38 @@ export async function handleAction(payload) {
   }
 }
 
+/** Handle each Slack event once (Slack retries, and a mention can arrive as two events). */
+const firstTime = (key) => run('INSERT OR IGNORE INTO slack_events (event_id) VALUES (?)', key).changes > 0;
+
+/** Route one event from Slack's Events API. Exported for tests. */
+export async function handleEvent(payload) {
+  if (payload.type !== 'event_callback' || !firstTime(payload.event_id)) return;
+  markVerified('slack-events');
+  const ev = payload.event ?? {};
+  if (ev.bot_id || ev.app_id || (ev.subtype && ev.subtype !== 'file_share') || !ev.user) return; // our own posts, edits, joins
+  const isDm = ev.type === 'message' && ev.channel_type === 'im';
+  const isMention = ev.type === 'app_mention';
+  const inOurThread = ev.type === 'message' && ev.thread_ts && threadFor(ev.channel, ev.thread_ts);
+  if (!isDm && !isMention && !inOurThread) return;
+  if (!firstTime(`msg:${ev.channel}:${ev.ts}`)) return;
+  await handleSlackMessage(ev);
+}
+
 export function slackRouter() {
   const r = express.Router();
+  r.post('/slack/events', express.raw({ type: '*/*', limit: '1mb' }), async (req, res) => {
+    const raw = Buffer.isBuffer(req.body) ? req.body.toString('utf8') : '';
+    if (!verifySlack(raw, req.get('x-slack-request-timestamp'), req.get('x-slack-signature'))) return res.status(401).send('Bad signature');
+    let payload;
+    try {
+      payload = JSON.parse(raw);
+    } catch {
+      return res.status(400).send('Bad payload');
+    }
+    if (payload.type === 'url_verification') return res.json({ challenge: payload.challenge });
+    res.status(200).send('');
+    handleEvent(payload).catch((err) => console.error('[slack] event:', err.message));
+  });
   r.post('/slack/interactions', express.raw({ type: '*/*', limit: '1mb' }), async (req, res) => {
     const raw = Buffer.isBuffer(req.body) ? req.body.toString('utf8') : '';
     if (!verifySlack(raw, req.get('x-slack-request-timestamp'), req.get('x-slack-signature'))) {

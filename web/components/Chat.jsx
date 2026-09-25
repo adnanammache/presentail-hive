@@ -34,12 +34,16 @@ function Bubble({ m, agent }) {
     );
   }
   const mine = m.sender === 'user';
+  const via = mine && m.meta ? JSON.parse(m.meta) : null;
   return (
     <div className={`msg ${mine ? 'mine' : ''}`}>
       {!mine && <Avatar name={agent.name} color={agent.color} size={28} />}
       <div className="bubble">
         <div className="bubble-text">{m.body}</div>
-        <time>{time}</time>
+        <time>
+          {via?.via === 'slack' && `${via.user ?? 'Someone'} via Slack · `}
+          {time}
+        </time>
       </div>
     </div>
   );

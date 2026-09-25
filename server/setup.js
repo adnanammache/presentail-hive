@@ -17,7 +17,7 @@ const setMeta = (key, value) =>
 
 /** Remember that something was verified (e.g. 'slack-tested'), so its item ticks itself. */
 export const markVerified = (key) => setMeta(`verified:${key}`, new Date().toISOString());
-const verified = (key) => Boolean(meta(`verified:${key}`));
+export const verified = (key) => Boolean(meta(`verified:${key}`));
 
 function manualDone() {
   try {

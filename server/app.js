@@ -12,7 +12,7 @@ import { briefConfig, latestBrief, nextBriefAt, sendBrief, setBriefConfig } from
 import { pushToAll, removeSubscription, saveSubscription, subscriptionCount, vapidKeys } from './push.js';
 import { COMPANIES, testOdoo } from './odoo.js';
 import { authMode } from './auth.js';
-import { markVerified, setHidden, setManualDone, setupChecklist } from './setup.js';
+import { markVerified, setHidden, setManualDone, setupChecklist, verified } from './setup.js';
 import { confirmTool, downloadOutput, interruptRun, managedReady, replyToRun, runWithEvents, startTaskRun, syncAgent } from './managed.js';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -308,7 +308,14 @@ export function dashboardRouter() {
       { key: 'slack', name: 'Slack alerts', connected: slackConfigured(), env: 'SLACK_BOT_TOKEN + SLACK_ALERT_CHANNEL', purpose: 'Pings you when an agent needs approval, finishes, or gets stuck.' },
       { key: 'google', name: 'Google sign-in', connected: authMode() === 'google', env: 'GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET', purpose: 'Continue with Google for @presentail.com accounts.' },
     ],
-    slack: { buttons: slackButtonsEnabled(), interactivity_url: `${req.protocol}://${req.get('host')}/slack/interactions`, approvers: approvers().length },
+    slack: {
+      buttons: slackButtonsEnabled(),
+      interactivity_url: `${req.protocol}://${req.get('host')}/slack/interactions`,
+      events_url: `${req.protocol}://${req.get('host')}/slack/events`,
+      approvers: approvers().length,
+      conversations: verified('slack-events'),
+      agents_channel: Boolean(process.env.SLACK_AGENTS_CHANNEL),
+    },
   })));
   // Month-end close board
   r.get('/close', wrap((req) => closeBoard({ months: Math.min(Math.max(Number(req.query.months) || 6, 1), 12) })));
@@ -415,6 +422,16 @@ export function dashboardRouter() {
 
   // Capabilities: what agents can be given
   r.get('/capabilities', wrap(() => ({ skills: skillLibrary(), integrations: integrationList(), managed: managedReady() })));
+
+  // Messages between agents
+  r.get('/agents/:id/dms', wrap((req) =>
+    all(
+      `SELECT d.*, f.name AS from_name, t.name AS to_name FROM agent_dms d
+       LEFT JOIN agents f ON f.id = d.from_agent_id LEFT JOIN agents t ON t.id = d.to_agent_id
+       WHERE d.from_agent_id = ? OR d.to_agent_id = ? ORDER BY d.id DESC LIMIT 100`,
+      req.params.id, req.params.id,
+    ),
+  ));
 
   // Chat
   r.get('/agents/:id/messages', wrap((req) =>

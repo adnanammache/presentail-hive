@@ -19,4 +19,18 @@ export function subscribe(req, res) {
 export function emit(type, data = {}) {
   const payload = `data: ${JSON.stringify({ type, ...data })}\n\n`;
   for (const res of clients) res.write(payload);
+  emitLocal(type, data);
+}
+
+// In-process listeners (e.g. forwarding an agent's reply to the Slack thread it came from).
+const listeners = new Set();
+export const onEvent = (fn) => (listeners.add(fn), () => listeners.delete(fn));
+export function emitLocal(type, data) {
+  for (const fn of listeners) {
+    try {
+      fn(type, data);
+    } catch (err) {
+      console.error('[events]', err.message);
+    }
+  }
 }

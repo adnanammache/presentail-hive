@@ -213,6 +213,32 @@ addColumn('tasks', 'close_item_id', 'INTEGER REFERENCES close_items(id) ON DELET
 addColumn('tasks', 'period', 'TEXT'); // YYYY-MM the close task is for
 
 db.exec(`
+-- Slack threads started with an agent (a chat, or a task created from files)
+CREATE TABLE IF NOT EXISTS slack_threads (
+  channel     TEXT NOT NULL,
+  thread_ts   TEXT NOT NULL,
+  agent_id    INTEGER REFERENCES agents(id) ON DELETE CASCADE,
+  task_id     INTEGER REFERENCES tasks(id) ON DELETE SET NULL,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (channel, thread_ts)
+);
+-- Slack retries events; each is handled once
+CREATE TABLE IF NOT EXISTS slack_events (event_id TEXT PRIMARY KEY, created_at TEXT NOT NULL DEFAULT (datetime('now')));
+-- Agents messaging each other
+CREATE TABLE IF NOT EXISTS agent_dms (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  from_agent_id  INTEGER REFERENCES agents(id) ON DELETE CASCADE,
+  to_agent_id    INTEGER REFERENCES agents(id) ON DELETE CASCADE,
+  message        TEXT NOT NULL,
+  reply          TEXT,
+  status         TEXT NOT NULL DEFAULT 'asked',   -- asked | answered | failed
+  run_id         INTEGER,
+  created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+  answered_at    TEXT
+);
+`);
+
+db.exec(`
 CREATE TABLE IF NOT EXISTS briefs (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   data        TEXT NOT NULL,                     -- the brief as JSON (see brief.js)

@@ -30,7 +30,7 @@ export function postMessage(agentId, sender, body, meta = null) {
   return message;
 }
 
-async function askClaude(agent, messages) {
+export async function askClaude(agent, messages) {
   const model = agent.model || DEFAULT_MODEL;
   const params = {
     model,
@@ -121,9 +121,9 @@ export async function deliver(agent, payload) {
 }
 
 /** User sent a chat message to an agent. */
-export async function sendToAgent(agentId, body) {
+export async function sendToAgent(agentId, body, meta = null) {
   const agent = get('SELECT * FROM agents WHERE id = ?', agentId);
-  const message = postMessage(agentId, 'user', body);
+  const message = postMessage(agentId, 'user', body, meta);
   // Fire and forget: the UI updates over SSE when the reply lands.
   if (agent.platform === 'managed') {
     if (agent.status === 'paused') postMessage(agentId, 'system', `${agent.name} is paused. Resume it to get a reply.`);
