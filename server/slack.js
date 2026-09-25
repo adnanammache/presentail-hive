@@ -7,8 +7,9 @@
 import express from 'express';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { confirmMany } from './managed.js';
-import { run } from './db.js';
-import { handleSlackMessage, threadFor } from './conversations.js';
+import { handleSlackMessage, slackPerson, threadFor } from './conversations.js';
+import { canApproveFor, knownUser } from './roles.js';
+import { get, run } from './db.js';
 import { markVerified } from './setup.js';
 
 export function approvers() {
@@ -47,10 +48,15 @@ export async function handleAction(payload) {
   const action = payload.actions?.[0];
   if (!action || !['hive_approve', 'hive_reject'].includes(action.action_id)) return null;
   const userId = payload.user?.id;
-  if (!approvers().includes(userId)) {
-    return 'You are not allowed to approve agent actions from Slack. Ask an admin to add your member ID to SLACK_APPROVERS.';
-  }
   const [runId, ids] = String(action.value || '').split(':');
+  // Allowed: members listed in SLACK_APPROVERS, or people whose Hive role lets them approve this agent.
+  if (!approvers().includes(userId)) {
+    const person = await slackPerson(userId).catch(() => null);
+    const agentId = get('SELECT agent_id FROM runs WHERE id = ?', Number(runId))?.agent_id;
+    if (!person?.ok || !canApproveFor(knownUser(person.email), agentId)) {
+      return "You can't approve this agent's actions. An owner can make you an approver in Hive (Settings → People).";
+    }
+  }
   const eventIds = (ids || '').split(',').filter(Boolean);
   const allow = action.action_id === 'hive_approve';
   const by = `${payload.user?.name || payload.user?.username || userId} (Slack)`;

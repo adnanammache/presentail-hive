@@ -19,6 +19,7 @@ import { isAllowed } from './auth.js';
 import { askClaude, dispatchTask, sendToAgent } from './dispatch.js';
 import { baseUrl, slackApi, slackConfigured } from './notify.js';
 import { REMEMBER, addLesson } from './lessons.js';
+import { canApproveFor, knownUser } from './roles.js';
 
 // ---------------------------------------------------------------- directory
 
@@ -154,6 +155,7 @@ export async function handleSlackMessage(event) {
   if (REMEMBER.test(rest)) {
     const lesson = rest.replace(REMEMBER, '').trim();
     if (lesson) {
+      if (!canApproveFor(knownUser(person.email), agent.id)) return reply(agent, 'Only approvers and owners can teach me. Ask one of them, or tell me in the task instead.');
       addLesson(agent.id, lesson, { source: 'slack', taskId: thread?.task_id ?? null, by: person.name });
       return reply(agent, `🧠 Noted. I'll remember that from now on: _${lesson}_`);
     }

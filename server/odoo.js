@@ -8,6 +8,8 @@
 // Env: ODOO_API_KEY (required), ODOO_URL (default https://presentail.odoo.com),
 //      ODOO_DB (default: the subdomain, e.g. "presentail").
 
+import { recordHealth } from './health.js';
+
 export const odooConfigured = () => Boolean(process.env.ODOO_API_KEY);
 const odooUrl = () => (process.env.ODOO_URL || 'https://presentail.odoo.com').replace(/\/$/, '');
 const odooDb = () => process.env.ODOO_DB || new URL(odooUrl()).hostname.split('.')[0];
@@ -72,17 +74,23 @@ export async function odooCall({ model, method, ids, params = {}, company_id }) 
   const body = { ...(params || {}) };
   if (Array.isArray(ids)) body.ids = ids;
   if (company_id) body.context = { ...(body.context || {}), allowed_company_ids: [company_id] };
-  const res = await fetch(`${odooUrl()}/json/2/${model}/${method}`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `bearer ${process.env.ODOO_API_KEY}`,
-      'X-Odoo-Database': odooDb(),
-      'User-Agent': 'Presentail-Hive',
-    },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(60_000),
-  });
+  let res;
+  try {
+    res = await fetch(`${odooUrl()}/json/2/${model}/${method}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `bearer ${process.env.ODOO_API_KEY}`,
+        'X-Odoo-Database': odooDb(),
+        'User-Agent': 'Presentail-Hive',
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(60_000),
+    });
+  } catch (err) {
+    recordHealth('odoo', false, err.message);
+    throw err;
+  }
   const text = await res.text();
   let json;
   try {
@@ -92,8 +100,11 @@ export async function odooCall({ model, method, ids, params = {}, company_id }) 
   }
   if (!res.ok) {
     const message = (json && (json.message || json.error?.message)) || `HTTP ${res.status}`;
+    // 401/403/5xx mean Odoo itself isn't reachable for Hive; a 4xx on one call is that call's problem.
+    if (res.status === 401 || res.status === 403 || res.status >= 500) recordHealth('odoo', false, `Odoo: ${message}`);
     throw new Error(`Odoo: ${message}`);
   }
+  recordHealth('odoo', true);
   return json;
 }
 

@@ -67,7 +67,12 @@ export function setupChecklist() {
       done: notSetUp === 0,
       href: '#/map',
     },
-    { key: 'backups', title: 'Check daily backups', detail: 'Confirm backups are on for the Railway volume that holds Hive’s database.', manual: true },
+    {
+      key: 'backups',
+      title: 'Keep a backup somewhere else',
+      detail: 'Hive backs itself up every night on its volume. Settings → Backups → download the latest and keep it in Google Drive, in case the volume itself is lost.',
+      manual: true,
+    },
     { key: 'make-webhook', title: 'Regenerate the old Make webhook', detail: 'Its URL was in the skills you shared. Make → the webhook → regenerate.', manual: true },
     {
       key: 'phone',

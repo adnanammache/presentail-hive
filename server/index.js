@@ -8,6 +8,8 @@ import { resumeRuns } from './managed.js';
 import { seedIfEmpty } from './seed.js';
 import { slackRouter } from './slack.js';
 import { scheduleBrief } from './brief.js';
+import { scheduleBackups } from './backup.js';
+import { scheduleHealthChecks } from './health.js';
 import { agentAvatarPng } from './avatars.js';
 
 const PORT = Number(process.env.PORT) || 3001;
@@ -48,7 +50,6 @@ app.get('/avatars/:file', async (req, res) => {
 app.use(authRouter());
 app.use(requireAuth);
 
-app.get('/api/me', (req, res) => res.json({ ...req.user, auth: authMode() }));
 app.use('/api', dashboardRouter());
 app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));
 app.use(errorHandler);
@@ -61,5 +62,7 @@ if (existsSync(dist)) {
 seedIfEmpty();
 startScheduler();
 scheduleBrief();
+scheduleBackups();
+scheduleHealthChecks();
 resumeRuns();
 app.listen(PORT, () => console.log(`Presentail Hive listening on http://localhost:${PORT} (sign-in: ${authMode()})`));

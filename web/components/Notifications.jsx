@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api, useApi } from '../api.js';
+import { ago, api, useApi } from '../api.js';
 
 const b64ToBytes = (s) => {
   const pad = '='.repeat((4 - (s.length % 4)) % 4);
@@ -121,6 +121,194 @@ export function BriefSettings() {
         </select>
       </div>
       {err && <p className="small" style={{ color: 'var(--red)' }}>{err}</p>}
+    </section>
+  );
+}
+
+const size = (n) => (n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
+
+/** Settings: the database backups Hive keeps, and a way to download one. */
+export function BackupSettings() {
+  const { data, reload } = useApi('/backups');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const now = async () => {
+    setBusy(true);
+    setErr('');
+    try {
+      await api('/backups', { method: 'POST' });
+      await reload();
+    } catch (e) {
+      setErr(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <section className="card settings-note">
+      <h2>Backups</h2>
+      <p className="muted">
+        Hive saves a full copy of its database every night at 03:15 (Dubai) and keeps the last 14. They live on the same Railway volume, so download one now and then and keep it somewhere else, such as Google Drive.
+      </p>
+      <div className="row-gap">
+        <button className="btn" onClick={now} disabled={busy}>
+          {busy ? 'Backing up…' : 'Back up now'}
+        </button>
+        {data?.[0] && (
+          <a className="btn btn-primary" href={`/api/backups/${data[0].name}`} download>
+            Download latest
+          </a>
+        )}
+      </div>
+      {err && <p className="small" style={{ color: 'var(--red)' }}>{err}</p>}
+      {data?.length > 0 && (
+        <ul className="list compact backup-list">
+          {data.map((b) => (
+            <li key={b.name} className="list-row">
+              <span className="grow">{new Date(b.created_at).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}</span>
+              <span className="muted small">{size(b.size)}</span>
+              <a className="link small" href={`/api/backups/${b.name}`} download>
+                Download
+              </a>
+            </li>
+          ))}
+        </ul>
+      )}
+      <p className="muted small">To restore: stop the service in Railway, replace hive.db on the volume with the backup file, then start it again.</p>
+    </section>
+  );
+}
+
+const DOT = { ok: 'ok', down: 'down', warn: 'warn', unknown: 'unknown', off: 'off' };
+const STATE = { ok: 'Working', down: 'Not working', warn: 'Needs a look', unknown: 'Not checked yet', off: 'Not connected' };
+
+/** Settings: is each connection working, when did it last work, and the last error. */
+export function HealthCard() {
+  const { data, setData } = useApi('/health', ['health', 'run']);
+  const [checking, setChecking] = useState(false);
+  const check = async () => {
+    setChecking(true);
+    try {
+      setData(await api('/health/check', { method: 'POST' }));
+    } finally {
+      setChecking(false);
+    }
+  };
+  if (!data) return null;
+  return (
+    <section className="card health-card">
+      <header className="card-head">
+        <h2>System health</h2>
+        <button className="btn btn-sm" onClick={check} disabled={checking}>
+          {checking ? 'Checking…' : 'Check now'}
+        </button>
+      </header>
+      <ul className="health-list">
+        {data.rows.map((r) => (
+          <li key={r.key}>
+            <i className={`health-dot ${DOT[r.state]}`} aria-hidden="true" />
+            <div className="grow">
+              <div className="row-title">
+                {r.name} <span className={`health-state ${r.state}`}>{STATE[r.state]}</span>
+              </div>
+              <div className="row-sub">
+                {r.state === 'off' ? (
+                  <>Set {r.env} in Railway to connect.</>
+                ) : (
+                  <>
+                    {r.detail && <>{r.detail}. </>}
+                    {r.last_ok && <>Last worked {ago(r.last_ok)}. </>}
+                    {r.last_error && (r.state !== 'ok' || (r.last_error_at && r.last_error_at > (r.last_ok ?? ''))) && (
+                      <span className="health-error">
+                        Last error {ago(r.last_error_at)}: {r.last_error}
+                      </span>
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+/** Dashboard: a banner when a connection is down. */
+export function HealthBanner() {
+  const { data } = useApi('/health', ['health']);
+  if (!data?.down?.length) return null;
+  return (
+    <a className="notice warn health-banner" href="#/settings">
+      ⚠️ {data.down.join(' and ')} {data.down.length === 1 ? "isn't" : "aren't"} working right now. Agents that need {data.down.length === 1 ? 'it' : 'them'} will fail. See System health in Settings.
+    </a>
+  );
+}
+
+const ROLE_HELP = {
+  owner: 'Everything: agents, teams, budgets, settings, backups and people',
+  approver: 'Approves agents’ actions and teaches them, plus everything a member can do',
+  member: 'Views, chats with agents, and gives and manages tasks',
+};
+
+/** Settings (owners): who uses Hive and what they may do. */
+export function PeopleSettings({ me }) {
+  const { data, reload } = useApi(me?.role === 'owner' ? '/users' : null, ['user']);
+  const { data: teams } = useApi('/teams', ['agent']);
+  const [err, setErr] = useState('');
+  if (me?.role !== 'owner' || !data) return null;
+  const save = async (u, patch) => {
+    setErr('');
+    try {
+      await api(`/users/${encodeURIComponent(u.email)}`, { method: 'PATCH', body: patch });
+      reload();
+    } catch (e) {
+      setErr(e.message);
+    }
+  };
+  const toggleTeam = (u, id) => save(u, { teams: u.teams.includes(id) ? u.teams.filter((t) => t !== id) : [...u.teams, id] });
+  return (
+    <section className="card settings-note">
+      <h2>People</h2>
+      <p className="muted">Everyone who has signed in to Hive. New people start as members.</p>
+      <ul className="people">
+        {data.map((u) => (
+          <li key={u.email}>
+            <div className="grow">
+              <div className="row-title">
+                {u.name || u.email} {u.email === me.email && <span className="muted small">(you)</span>}
+              </div>
+              <div className="row-sub">
+                {u.email} · last seen {ago(u.last_seen_at)}
+              </div>
+              {u.role === 'approver' && (
+                <div className="people-teams">
+                  <span className="muted small">Approves for:</span>
+                  {teams?.map((t) => (
+                    <button key={t.id} type="button" className={`chip ${u.teams.includes(t.id) ? 'on' : ''}`} onClick={() => toggleTeam(u, t.id)}>
+                      {t.name}
+                    </button>
+                  ))}
+                  {!u.teams.length && <span className="muted small">all departments</span>}
+                </div>
+              )}
+            </div>
+            <select value={u.role} onChange={(e) => save(u, { role: e.target.value })} aria-label={`Role for ${u.name || u.email}`} title={ROLE_HELP[u.role]}>
+              <option value="owner">Owner</option>
+              <option value="approver">Approver</option>
+              <option value="member">Member</option>
+            </select>
+          </li>
+        ))}
+      </ul>
+      {err && <p className="small" style={{ color: 'var(--red)' }}>{err}</p>}
+      <ul className="muted small role-help">
+        {Object.entries(ROLE_HELP).map(([k, v]) => (
+          <li key={k}>
+            <b>{k[0].toUpperCase() + k.slice(1)}:</b> {v}
+          </li>
+        ))}
+      </ul>
     </section>
   );
 }
