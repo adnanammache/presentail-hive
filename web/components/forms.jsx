@@ -59,28 +59,102 @@ function AgentSelect({ value, onChange, allowNone = true }) {
 
 const numOrNull = (v) => (v === '' || v == null ? null : Number(v));
 
+// ---------------- Team ----------------
+export function TeamForm({ team, onClose, onSaved }) {
+  const { values, set, submit, error, saving } = useForm({ name: '', description: '', color: COLORS[1], ...team });
+  const save = submit(async (v) => {
+    const body = { name: v.name, description: v.description, color: v.color };
+    const saved = team ? await api(`/teams/${team.id}`, { method: 'PATCH', body }) : await api('/teams', { method: 'POST', body });
+    onSaved?.(saved);
+    onClose();
+  });
+  const remove = async () => {
+    if (!confirm(`Delete the ${team.name} team? Its agents stay, but without a team.`)) return;
+    await api(`/teams/${team.id}`, { method: 'DELETE' });
+    onClose();
+  };
+  return (
+    <Modal title={team ? `Edit ${team.name}` : 'New team'} onClose={onClose}>
+      <form onSubmit={save} className="form">
+        <Field label="Team name">
+          <input value={values.name} onChange={set('name')} required autoFocus placeholder="e.g. Finance" />
+        </Field>
+        <Field label="What this team does">
+          <textarea rows={2} value={values.description} onChange={set('description')} />
+        </Field>
+        <Field label="Colour">
+          <Swatches value={values.color} onChange={set('color')} />
+        </Field>
+        <Actions saving={saving} error={error} label={team ? 'Save' : 'Create team'} onDelete={team ? remove : null} />
+      </form>
+    </Modal>
+  );
+}
+
+function Swatches({ value, onChange }) {
+  return (
+    <div className="swatches">
+      {COLORS.map((c) => (
+        <button type="button" key={c} className={`swatch ${value === c ? 'on' : ''}`} style={{ background: c }} onClick={() => onChange(c)} aria-label={c} />
+      ))}
+    </div>
+  );
+}
+
 // ---------------- Agent ----------------
-export function AgentForm({ agent, onClose, onSaved }) {
+const NEW_TEAM = '__new';
+
+export function AgentForm({ agent, defaults = {}, onClose, onSaved }) {
+  const { data: teams } = useApi('/teams', ['agent']);
   const { values, set, submit, error, saving } = useForm({
-    name: '', role: '', description: '', platform: 'claude', model: '', system_prompt: '', webhook_url: '', color: COLORS[0], status: 'idle',
+    name: '', title: '', team_id: '', new_team: '', description: '', platform: 'claude', model: '', system_prompt: '', webhook_url: '', color: COLORS[0], status: 'idle',
+    ...defaults,
     ...agent,
   });
   const save = submit(async (v) => {
-    const body = { name: v.name, role: v.role, description: v.description, platform: v.platform, model: v.model, system_prompt: v.system_prompt, webhook_url: v.webhook_url, color: v.color, status: v.status };
+    let teamId = v.team_id;
+    if (teamId === NEW_TEAM) {
+      if (!v.new_team.trim()) throw new Error('Give the new team a name');
+      teamId = (await api('/teams', { method: 'POST', body: { name: v.new_team, color: v.color } })).id;
+    }
+    const body = {
+      name: v.name, title: v.title, team_id: numOrNull(teamId), description: v.description, platform: v.platform,
+      model: v.model, system_prompt: v.system_prompt, webhook_url: v.webhook_url, color: v.color, status: v.status,
+    };
     const saved = agent ? await api(`/agents/${agent.id}`, { method: 'PATCH', body }) : await api('/agents', { method: 'POST', body });
     onSaved?.(saved);
     onClose();
   });
   return (
-    <Modal title={agent ? `Edit ${agent.name}` : 'Add agent'} onClose={onClose} wide>
+    <Modal title={agent ? `Edit ${agent.name}` : 'New agent'} onClose={onClose} wide>
       <form onSubmit={save} className="form">
         <div className="grid-2">
           <Field label="Name">
             <input value={values.name} onChange={set('name')} required autoFocus placeholder="e.g. Ledger" />
           </Field>
-          <Field label="Role">
-            <input value={values.role} onChange={set('role')} placeholder="What does this agent do?" />
+          <Field label="Title" hint="Their job title, e.g. Month-End Accountant.">
+            <input value={values.title} onChange={set('title')} required placeholder="e.g. Month-End Accountant (UAE)" />
           </Field>
+          <Field label="Team">
+            <select value={values.team_id ?? ''} onChange={set('team_id')} required={!agent}>
+              <option value="" disabled>
+                Choose a team…
+              </option>
+              {teams?.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name}
+                </option>
+              ))}
+              <option value={NEW_TEAM}>+ New team…</option>
+            </select>
+          </Field>
+          {values.team_id === NEW_TEAM ? (
+            <Field label="New team name">
+              <input value={values.new_team} onChange={set('new_team')} autoFocus placeholder="e.g. Operations" />
+            </Field>
+          ) : (
+            <span className="grid-spacer" />
+          )}
           <Field label="Platform" hint="Where the agent runs. Claude agents reply straight from the Anthropic API.">
             <select value={values.platform} onChange={set('platform')}>
               {Object.entries(PLATFORM_LABELS).map(([k, l]) => (
@@ -117,11 +191,7 @@ export function AgentForm({ agent, onClose, onSaved }) {
           </Field>
         )}
         <Field label="Colour">
-          <div className="swatches">
-            {COLORS.map((c) => (
-              <button type="button" key={c} className={`swatch ${values.color === c ? 'on' : ''}`} style={{ background: c }} onClick={() => set('color')(c)} aria-label={c} />
-            ))}
-          </div>
+          <Swatches value={values.color} onChange={set('color')} />
         </Field>
         <Actions saving={saving} error={error} label={agent ? 'Save' : 'Add agent'} />
       </form>

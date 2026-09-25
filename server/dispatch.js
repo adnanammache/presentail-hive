@@ -35,7 +35,7 @@ async function askClaude(agent, messages) {
     model,
     max_tokens: 16000,
     system:
-      (agent.system_prompt || `You are ${agent.name}, an AI agent. Your role: ${agent.role || 'general assistant'}.`) +
+      (agent.system_prompt || `You are ${agent.name}, ${agent.title || 'an AI agent'} at Presentail.`) +
       '\n\nYou are managed from Presentail Hive, an operations dashboard. Messages marked [System] come from the dashboard itself (task assignments, scheduled workflow runs). Reply concisely with what you did or what you need.',
     messages,
   };

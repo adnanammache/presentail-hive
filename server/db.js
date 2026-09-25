@@ -15,10 +15,19 @@ export const db = new DatabaseSync(DB_PATH);
 db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
 
 db.exec(`
+CREATE TABLE IF NOT EXISTS teams (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  name        TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  description TEXT NOT NULL DEFAULT '',
+  color       TEXT NOT NULL DEFAULT '#6366f1',
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS agents (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   name          TEXT NOT NULL,
-  role          TEXT NOT NULL DEFAULT '',
+  title         TEXT NOT NULL DEFAULT '',
+  team_id       INTEGER REFERENCES teams(id) ON DELETE SET NULL,
   description   TEXT NOT NULL DEFAULT '',
   platform      TEXT NOT NULL DEFAULT 'custom',   -- claude | make | replit | n8n | custom | human
   status        TEXT NOT NULL DEFAULT 'idle',     -- active | idle | paused | error
@@ -90,6 +99,12 @@ CREATE INDEX IF NOT EXISTS idx_tasks_agent ON tasks(agent_id);
 CREATE INDEX IF NOT EXISTS idx_messages_agent ON messages(agent_id, id);
 CREATE INDEX IF NOT EXISTS idx_runs_workflow ON workflow_runs(workflow_id, id);
 `);
+
+// ---- migrations for databases created by earlier versions ----
+const columns = (table) => db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+if (columns('agents').includes('role')) db.exec('ALTER TABLE agents RENAME COLUMN role TO title');
+if (!columns('agents').includes('team_id')) db.exec('ALTER TABLE agents ADD COLUMN team_id INTEGER REFERENCES teams(id) ON DELETE SET NULL');
+db.exec('CREATE INDEX IF NOT EXISTS idx_agents_team ON agents(team_id)');
 
 export const newToken = () => 'agt_' + randomBytes(24).toString('hex');
 

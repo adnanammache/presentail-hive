@@ -4,7 +4,8 @@ import { get, run, newToken } from './db.js';
 const AGENTS = [
   {
     name: 'Ledger',
-    role: 'Month-end bookkeeping (Wafeq)',
+    title: 'Month-End Accountant (UAE)',
+    team: 'Finance',
     description: 'Processes delivery-platform statements — Talabat, Careem, Noon Food, Now Now — into Wafeq bills and sales invoices.',
     platform: 'claude',
     model: 'claude-opus-5',
@@ -15,7 +16,8 @@ const AGENTS = [
   },
   {
     name: 'Odoo Operator',
-    role: 'Odoo reconciliation via Make',
+    title: 'Odoo Reconciliation Specialist',
+    team: 'Finance',
     description: 'Make scenarios that reconcile BLOM, book Toters fee bills and intercompany SAL ⇄ LTD invoices in Odoo.',
     platform: 'make',
     color: '#8b5cf6',
@@ -23,7 +25,8 @@ const AGENTS = [
   },
   {
     name: 'Morning Briefer',
-    role: 'Daily brief & inbox triage',
+    title: 'Chief of Staff',
+    team: 'Executive Office',
     description: 'Summarises calendar, Slack and email every weekday morning.',
     platform: 'claude',
     model: 'claude-opus-5',
@@ -33,12 +36,19 @@ const AGENTS = [
   },
   {
     name: 'Replit Builder',
-    role: 'Internal tools & prototypes',
+    title: 'Internal Tools Engineer',
+    team: 'Product',
     description: 'Builds and ships small internal apps on Replit.',
     platform: 'replit',
     color: '#3b82f6',
     status: 'paused',
   },
+];
+
+const TEAMS = [
+  { name: 'Finance', color: '#10b981', description: 'Bookkeeping, reconciliations and month-end closes across SAL, LTD and the UAE.' },
+  { name: 'Executive Office', color: '#f59e0b', description: 'Briefs, inbox triage and follow-ups for leadership.' },
+  { name: 'Product', color: '#3b82f6', description: 'Internal tools and prototypes.' },
 ];
 
 const WORKFLOWS = [
@@ -66,11 +76,15 @@ const TASKS = [
  */
 export function seed({ demo = true } = {}) {
   const ids = {};
+  const teamIds = {};
+  for (const t of TEAMS) {
+    teamIds[t.name] = Number(run('INSERT INTO teams (name, description, color) VALUES (?, ?, ?)', t.name, t.description, t.color).lastInsertRowid);
+  }
   for (const a of AGENTS) {
     const { lastInsertRowid } = run(
-      `INSERT INTO agents (name, role, description, platform, status, model, system_prompt, color, api_token)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      a.name, a.role, a.description, a.platform, a.status, a.model ?? '', a.system_prompt ?? '', a.color, newToken(),
+      `INSERT INTO agents (name, title, team_id, description, platform, status, model, system_prompt, color, api_token)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      a.name, a.title, teamIds[a.team], a.description, a.platform, a.status, a.model ?? '', a.system_prompt ?? '', a.color, newToken(),
     );
     ids[a.name] = Number(lastInsertRowid);
   }
@@ -106,7 +120,7 @@ export function seedIfEmpty() {
 }
 
 if (process.argv[1]?.endsWith('seed.js') && process.argv.includes('--force')) {
-  for (const t of ['activity', 'messages', 'workflow_runs', 'tasks', 'workflows', 'agents']) run(`DELETE FROM ${t}`);
+  for (const t of ['activity', 'messages', 'workflow_runs', 'tasks', 'workflows', 'agents', 'teams']) run(`DELETE FROM ${t}`);
   seed();
   console.log('Seeded sample data.');
 }

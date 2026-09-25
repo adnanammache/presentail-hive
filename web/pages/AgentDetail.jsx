@@ -107,7 +107,17 @@ export default function AgentDetail({ id, meta }) {
           <Avatar name={agent.name} color={agent.color} size={56} status={agent.status} />
           <div className="grow">
             <h1>{agent.name}</h1>
-            <div className="muted">{agent.role}</div>
+            <div className="hero-title">
+              {agent.title}
+              {agent.team_name && (
+                <>
+                  {' · '}
+                  <a href="#/agents" className="team-chip" style={{ '--c': agent.team_color }}>
+                    {agent.team_name}
+                  </a>
+                </>
+              )}
+            </div>
             <div className="hero-meta">
               <Badge tone={agentTone[agent.status]}>{agent.status}</Badge>
               <span className="pill">{PLATFORM_LABELS[agent.platform]}</span>

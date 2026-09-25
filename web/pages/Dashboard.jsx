@@ -98,7 +98,7 @@ export default function Dashboard() {
                   <Avatar name={a.name} color={a.color} size={32} status={a.status} />
                   <div className="grow">
                     <div className="row-title">{a.name}</div>
-                    <div className="row-sub clamp">{a.last_message ?? a.role}</div>
+                    <div className="row-sub clamp">{a.last_message ?? a.title}</div>
                   </div>
                   <div className="right">
                     <Badge tone={agentTone[a.status]}>{a.status}</Badge>

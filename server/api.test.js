@@ -55,9 +55,14 @@ const call = async (path, { method = 'GET', body, token } = {}) => {
   return { status: res.status, body: await res.json() };
 };
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+let teamId;
+const newAgent = async (body) => {
+  teamId ??= (await call('/teams', { method: 'POST', body: { name: 'Test team' } })).body.id;
+  return call('/agents', { method: 'POST', body: { title: 'Tester', team_id: teamId, ...body } });
+};
 
 test('agent lifecycle, chat via webhook, and the Agent API', async () => {
-  const { body: agent } = await call('/agents', { method: 'POST', body: { name: 'Hooky', platform: 'make', webhook_url: hookUrl } });
+  const { body: agent } = await newAgent({ name: 'Hooky', platform: 'make', webhook_url: hookUrl });
   assert.match(agent.api_token, /^agt_/);
 
   // The list endpoint never leaks tokens.
@@ -84,7 +89,7 @@ test('agent lifecycle, chat via webhook, and the Agent API', async () => {
 });
 
 test('workflows validate cron and complete runs when the task is done', async () => {
-  const { body: agent } = await call('/agents', { method: 'POST', body: { name: 'Poller', platform: 'custom' } });
+  const { body: agent } = await newAgent({ name: 'Poller', platform: 'custom' });
   assert.equal((await call('/workflows', { method: 'POST', body: { name: 'Bad', schedule: 'every day' } })).status, 400);
 
   const { body: wf } = await call('/workflows', { method: 'POST', body: { name: 'Weekly report', schedule: '0 9 * * 1', timezone: 'Asia/Dubai', agent_id: agent.id } });
@@ -101,4 +106,34 @@ test('workflows validate cron and complete runs when the task is done', async ()
   ({ body: runs } = await call(`/workflows/${wf.id}/runs`));
   assert.equal(runs[0].status, 'success');
   assert.equal(runs[0].output, 'Sent');
+});
+
+test('agents are created with a name, title and team', async () => {
+  const { body: team } = await call('/teams', { method: 'POST', body: { name: 'Finance', color: '#10b981' } });
+  assert.equal((await call('/teams', { method: 'POST', body: { name: 'finance' } })).status, 400, 'team names are unique, any case');
+
+  assert.equal((await call('/agents', { method: 'POST', body: { name: 'No title', team_id: team.id } })).status, 400);
+  assert.equal((await call('/agents', { method: 'POST', body: { name: 'No team', title: 'Accountant' } })).status, 400);
+  assert.equal((await call('/agents', { method: 'POST', body: { name: 'Bad team', title: 'Accountant', team_id: 9999 } })).status, 400);
+
+  const { status, body: agent } = await call('/agents', { method: 'POST', body: { name: 'Ledger', title: 'Month-End Accountant', team_id: team.id } });
+  assert.equal(status, 200);
+  assert.equal(agent.title, 'Month-End Accountant');
+  assert.equal(agent.team_name, 'Finance');
+
+  const { body: teams } = await call('/teams');
+  assert.equal(teams.find((t) => t.id === team.id).agent_count, 1);
+
+  // Moving teams and renaming titles
+  const { body: ops } = await call('/teams', { method: 'POST', body: { name: 'Operations' } });
+  const { body: moved } = await call(`/agents/${agent.id}`, { method: 'PATCH', body: { team_id: ops.id, title: 'Ops Lead' } });
+  assert.equal(moved.team_name, 'Operations');
+  assert.equal(moved.title, 'Ops Lead');
+  assert.equal((await call(`/agents/${agent.id}`, { method: 'PATCH', body: { title: '  ' } })).status, 400);
+
+  // Deleting a team keeps its agents, just without a team
+  await call(`/teams/${ops.id}`, { method: 'DELETE' });
+  const { body: after } = await call(`/agents/${agent.id}`);
+  assert.equal(after.team_id, null);
+  assert.equal(after.name, 'Ledger');
 });
