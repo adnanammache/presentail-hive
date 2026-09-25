@@ -14,7 +14,7 @@ import { emit } from './events.js';
 import { logActivity } from './activity.js';
 import { INTEGRATIONS, parseList, skillFiles, skillHash, skillLibrary } from './capabilities.js';
 import { postMessage } from './dispatch.js';
-import { notifyRun } from './notify.js';
+import { notifyRun, settleApprovalAlert } from './notify.js';
 import { ODOO_TOOL, classify, describeCall, formatResult, odooCall } from './odoo.js';
 
 const DEFAULT_MODEL = process.env.DEFAULT_CLAUDE_MODEL || 'claude-opus-5';
@@ -331,9 +331,29 @@ export async function confirmTool(runId, eventId, allow, denyMessage, { by = 'Hi
   // "Approve all for this run": this and every other Odoo change in the run go through without asking.
   if (allow && approveRest) run('UPDATE runs SET auto_approve = 1 WHERE id = ?', runId);
   const resolving = allow && approveRest ? pending.filter((p) => p.event_id === eventId || p.kind === 'odoo') : [item];
-  const rest = pending.filter((p) => !resolving.includes(p));
+  await resolvePending(runId, resolving, allow, denyMessage, by);
+}
+
+/**
+ * Approve or reject several pending calls at once (e.g. from a Slack button). Only the listed
+ * event ids are touched, so nobody approves something they weren't shown.
+ * Returns how many were still pending.
+ */
+export async function confirmMany(runId, eventIds, allow, { by = 'Hive user', denyMessage } = {}) {
+  const pending = parseList(getRun(runId)?.pending);
+  const resolving = pending.filter((p) => eventIds.includes(p.event_id));
+  if (resolving.length) await resolvePending(runId, resolving, allow, denyMessage, by);
+  return resolving.length;
+}
+
+async function resolvePending(runId, resolving, allow, denyMessage, by) {
+  const r = getRun(runId);
+  const rest = parseList(r.pending).filter((p) => !resolving.some((x) => x.event_id === p.event_id));
   setRun(runId, { pending: JSON.stringify(rest), status: rest.length ? 'needs_approval' : 'running' });
-  if (!rest.length) setTask(r.task_id, 'in_progress');
+  if (!rest.length) {
+    setTask(r.task_id, 'in_progress');
+    settleApprovalAlert(runId, `${allow ? '✅ Approved' : '⛔ Rejected'} by ${by}`);
+  }
 
   const events = [];
   for (const p of resolving) {
@@ -350,6 +370,7 @@ export async function confirmTool(runId, eventId, allow, denyMessage, { by = 'Hi
       events.push(event);
     }
   }
+  logActivity(r.agent_id, 'task', `${allow ? 'Approved' : 'Rejected'} ${resolving.length} action${resolving.length === 1 ? '' : 's'} on run #${runId} (${by})`);
   sendAndFollow(runId, events).catch((err) => failRun(runId, err));
 }
 

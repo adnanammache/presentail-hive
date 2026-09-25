@@ -6,6 +6,8 @@ import { authMode, authRouter, requireAuth } from './auth.js';
 import { startScheduler } from './scheduler.js';
 import { resumeRuns } from './managed.js';
 import { seedIfEmpty } from './seed.js';
+import { slackRouter } from './slack.js';
+import { scheduleBrief } from './brief.js';
 
 const PORT = Number(process.env.PORT) || 3001;
 
@@ -19,6 +21,8 @@ if (authMode() === 'google' && !process.env.SESSION_SECRET) {
 
 const app = express();
 app.set('trust proxy', 1); // Railway terminates TLS in front of us; needed for secure cookies and redirect URLs
+// Slack signs its button clicks; verified against the raw body, so this comes before the JSON parser.
+app.use(slackRouter());
 app.use(express.json({ limit: '1mb' }));
 
 app.get('/healthz', (req, res) => res.json({ ok: true }));
@@ -48,5 +52,6 @@ if (existsSync(dist)) {
 
 seedIfEmpty();
 startScheduler();
+scheduleBrief();
 resumeRuns();
 app.listen(PORT, () => console.log(`Presentail Hive listening on http://localhost:${PORT} (sign-in: ${authMode()})`));

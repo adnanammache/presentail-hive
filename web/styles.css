@@ -578,3 +578,21 @@ textarea { resize: vertical; }
 .setup-toggle { margin-top: 4px; }
 button.link { background: none; border: 0; padding: 0; cursor: pointer; font: inherit; }
 @media (max-width: 760px) { .setup-list { grid-template-columns: 1fr; } }
+
+/* ---- daily brief ---- */
+.brief-card .card-head { gap: 10px; flex-wrap: wrap; }
+.brief-card .card-head h2 { margin-right: auto; }
+.brief-headline { font-weight: 600; font-size: 15px; margin: 2px 0 10px; }
+.brief-sec { margin-bottom: 10px; }
+.brief-sec h3 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin: 0 0 4px; }
+.brief-sec ul { margin: 0; padding-left: 18px; }
+.brief-sec li { margin: 3px 0; }
+.brief-sec a { color: inherit; text-decoration: underline; text-decoration-color: var(--border); text-underline-offset: 3px; }
+.brief-sec a:hover { color: var(--accent); }
+.brief-team { margin: 4px 0 6px; }
+.brief-team ul { margin-top: 2px; }
+.brief-config { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.brief-config label { display: inline-flex; gap: 6px; align-items: center; }
+.brief-config input[type='time'], .brief-config select { width: auto; }
+.brief-config input[type='checkbox'] { width: auto; accent-color: var(--accent); }
+.row-gap { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }

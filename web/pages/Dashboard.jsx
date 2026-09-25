@@ -4,6 +4,7 @@ import { Avatar, Badge, Empty, Icon, Loading, PageHeader, agentTone, runTone, st
 import { TaskForm } from '../components/forms.jsx';
 import SpendCard from '../components/Spend.jsx';
 import SetupCard from '../components/SetupCard.jsx';
+import BriefCard from '../components/Brief.jsx';
 
 function Stat({ label, value, sub, tone, href }) {
   return (
@@ -37,6 +38,7 @@ export default function Dashboard() {
       </div>
 
       <div className="dash-grid">
+        <BriefCard />
         <SpendCard />
         <section className="card">
           <header className="card-head">
