@@ -3,6 +3,7 @@ import { ago, api, fmtDateTime, until, useApi } from '../api.js';
 import { Avatar, Badge, Empty, Icon, Loading, PageHeader, agentTone, runTone, statusLabel } from '../components/ui.jsx';
 import { TaskForm } from '../components/forms.jsx';
 import SpendCard from '../components/Spend.jsx';
+import SetupCard from '../components/SetupCard.jsx';
 
 function Stat({ label, value, sub, tone, href }) {
   return (
@@ -25,6 +26,8 @@ export default function Dashboard() {
   return (
     <>
       <PageHeader title="Mission control" subtitle={new Date().toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' })} />
+
+      <SetupCard />
 
       <div className="stats">
         <Stat label="Agents" value={s.agents} sub={`${s.agents_active} active${s.agents_error ? ` · ${s.agents_error} erroring` : ''}`} tone={s.agents_error ? 'red' : null} href="#/agents" />

@@ -47,6 +47,7 @@ function OdooLog() {
 
 export default function Settings() {
   const { data } = useApi('/settings');
+  const { data: setup } = useApi('/setup', ['setup']);
   const [slack, setSlack] = useState(null);
   const [odoo, setOdoo] = useState(null);
   const testOdoo = async () => {
@@ -69,7 +70,16 @@ export default function Settings() {
   };
   return (
     <>
-      <PageHeader title="Settings" subtitle="What Hive is connected to. Secrets are set as Railway variables and never shown here." />
+      <PageHeader
+        title="Settings"
+        subtitle="What Hive is connected to. Secrets are set as Railway variables and never shown here."
+      >
+        {setup?.hidden && setup.done < setup.total && (
+            <button className="btn" onClick={() => api('/setup', { method: 'POST', body: { hidden: false } }).then(() => (location.hash = '#/'))}>
+              Show setup checklist ({setup.done}/{setup.total})
+            </button>
+        )}
+      </PageHeader>
       <div className="settings-list">
         {data.connections.map((c) => (
           <section key={c.key} className="card settings-row">

@@ -10,6 +10,7 @@ import Workflows from './pages/Workflows.jsx';
 import Inbox from './pages/Inbox.jsx';
 import OrgChart from './pages/OrgChart.jsx';
 import Settings from './pages/Settings.jsx';
+import HiveMap from './pages/HiveMap.jsx';
 import './styles.css';
 
 function useHashRoute() {
@@ -25,6 +26,7 @@ function useHashRoute() {
 
 const NAV = [
   ['', 'home', 'Dashboard'],
+  ['map', 'hex', 'Hive map'],
   ['org', 'org', 'Org chart'],
   ['agents', 'bot', 'Agents'],
   ['tasks', 'board', 'Tasks'],
@@ -46,6 +48,7 @@ function Shell() {
   if (section === 'agents' && id) page = <AgentDetail key={id} id={id} meta={meta} />;
   else if (section === 'agents') page = <Agents />;
   else if (section === 'org') page = <OrgChart me={me} />;
+  else if (section === 'map') page = <HiveMap />;
   else if (section === 'tasks') page = <Tasks openId={id} />;
   else if (section === 'settings') page = <Settings />;
   else if (section === 'workflows') page = <Workflows />;
@@ -91,7 +94,7 @@ function Shell() {
       <button className="icon-btn nav-toggle" onClick={() => setNavOpen((o) => !o)} aria-label="Menu">
         <Icon name="menu" />
       </button>
-      <main className={`main ${section === 'inbox' || (section === 'agents' && id) ? 'main-flush' : ''}`}>{page}</main>
+      <main className={`main ${section === 'inbox' || section === 'map' || (section === 'agents' && id) ? 'main-flush' : ''}`}>{page}</main>
     </div>
   );
 }

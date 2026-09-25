@@ -7,6 +7,7 @@ import { integrationList, skillLibrary } from './capabilities.js';
 import { sendSlack, slackConfigured } from './notify.js';
 import { COMPANIES, testOdoo } from './odoo.js';
 import { authMode } from './auth.js';
+import { markVerified, setHidden, setManualDone, setupChecklist } from './setup.js';
 import { confirmTool, downloadOutput, interruptRun, managedReady, replyToRun, runWithEvents, startTaskRun, syncAgent } from './managed.js';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -208,7 +209,9 @@ export function dashboardRouter() {
         (SELECT COUNT(*) FROM workflows w WHERE w.agent_id = a.id AND w.enabled = 1) AS workflows,
         (SELECT body FROM messages m WHERE m.agent_id = a.id ORDER BY id DESC LIMIT 1) AS last_message,
         (SELECT created_at FROM messages m WHERE m.agent_id = a.id ORDER BY id DESC LIMIT 1) AS last_message_at,
-        (SELECT COALESCE(SUM(cost_cents), 0) FROM runs r WHERE r.agent_id = a.id AND r.created_at >= date('now', 'start of month')) AS month_cents
+        (SELECT COALESCE(SUM(cost_cents), 0) FROM runs r WHERE r.agent_id = a.id AND r.created_at >= date('now', 'start of month')) AS month_cents,
+        (SELECT COUNT(*) FROM runs r WHERE r.agent_id = a.id AND r.status = 'needs_approval') AS pending_approvals,
+        (SELECT COUNT(*) FROM runs r WHERE r.agent_id = a.id AND r.status IN ('starting', 'running')) AS running_runs
        FROM agents a LEFT JOIN teams tm ON tm.id = a.team_id ORDER BY a.name`,
     ).map(publicAgent),
   ));
@@ -283,16 +286,27 @@ export function dashboardRouter() {
       { key: 'google', name: 'Google sign-in', connected: authMode() === 'google', env: 'GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET', purpose: 'Continue with Google for @presentail.com accounts.' },
     ],
   })));
+  r.get('/setup', wrap(() => setupChecklist()));
+  r.post('/setup', wrap((req) => {
+    const { key, done, hidden } = req.body || {};
+    if (typeof hidden === 'boolean') setHidden(hidden);
+    if (typeof key === 'string' && key) setManualDone(key, Boolean(done));
+    emit('setup', {});
+    return setupChecklist();
+  }));
   r.post('/settings/slack/test', wrap(async (req) => {
     if (!slackConfigured()) throw bad('Slack is not configured: set SLACK_BOT_TOKEN and SLACK_ALERT_CHANNEL in Railway');
     const result = await sendSlack({ text: `👋 Test alert from *Presentail Hive*${req.user?.name ? `, sent by ${req.user.name}` : ''}. Alerts are working.` });
     if (!result.ok) throw bad(`Slack said: ${result.error}`);
+    markVerified('slack-tested');
     return { ok: true };
   }));
 
   r.post('/settings/odoo/test', wrap(async () => {
     try {
-      return await testOdoo();
+      const result = await testOdoo();
+      markVerified('odoo-tested');
+      return result;
     } catch (err) {
       throw bad(err.message);
     }
