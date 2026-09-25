@@ -8,6 +8,9 @@ import { sendSlack, slackButtonsEnabled, slackConfigured } from './notify.js';
 import { approvers } from './slack.js';
 import { finishTask, handOff, reviewerFor } from './handoff.js';
 import { agentSpend, parseBudget, teamSpend } from './budget.js';
+import { backupNow, backupPath, listBackups } from './backup.js';
+import { healthReport, runChecks } from './health.js';
+import { canApproveFor, isOwner, listUsers, setUserRole, userFor } from './roles.js';
 import { addLesson, deleteLesson, listLessons, updateLesson } from './lessons.js';
 import { closeBoard, dueDate, itemInstructions, monthLabel, saveCloseItem } from './close.js';
 import { briefConfig, latestBrief, nextBriefAt, sendBrief, setBriefConfig } from './brief.js';
@@ -113,8 +116,40 @@ function createTask(body, actor) {
 }
 
 // ---------- dashboard API ----------
+// What only owners may change. Everything else is open to anyone signed in, except approving
+// agents' actions and teaching them lessons (approvers, checked in those routes).
+const OWNER_ONLY = [
+  ['post', '/teams'], ['patch', '/teams/:id'], ['delete', '/teams/:id'],
+  ['post', '/agents'], ['patch', '/agents/:id'], ['delete', '/agents/:id'], ['post', '/agents/:id/rotate-token'], ['post', '/agents/:id/sync'],
+  ['post', '/workflows'], ['patch', '/workflows/:id'], ['delete', '/workflows/:id'],
+  ['post', '/close/items'], ['patch', '/close/items/:id'], ['delete', '/close/items/:id'],
+  ['put', '/brief/config'], ['post', '/setup'],
+  ['get', '/backups'], ['post', '/backups'], ['get', '/backups/:name'],
+  ['post', '/settings/slack/test'], ['post', '/settings/odoo/test'],
+  ['get', '/users'], ['patch', '/users/:email'],
+];
+const forbidden = (msg) => new HttpError(403, msg);
+
 export function dashboardRouter() {
   const r = express.Router();
+
+  // Who is asking, and what they may do.
+  r.use((req, res, next) => {
+    req.hive = userFor(req.user ?? {});
+    next();
+  });
+  const ownerOnly = (req, res, next) => (isOwner(req.hive) ? next() : next(forbidden('Only a Hive owner can do this. Ask an owner.')));
+  for (const [method, path] of OWNER_ONLY) r[method](path, ownerOnly);
+
+  r.get('/me', (req, res) => res.json({ ...req.user, auth: authMode(), role: req.hive.role, teams: req.hive.teams }));
+  r.get('/users', wrap(() => listUsers()));
+  r.patch('/users/:email', wrap((req) => {
+    try {
+      return setUserRole(req.params.email, req.body || {}, req.hive);
+    } catch (err) {
+      throw bad(err.message);
+    }
+  }));
 
   r.get('/events', subscribe);
   r.get('/meta', (req, res) => res.json({ claude: claudeConfigured(), platforms: PLATFORMS, taskStatuses: TASK_STATUSES, priorities: PRIORITIES }));
@@ -257,7 +292,7 @@ export function dashboardRouter() {
   r.get('/agents/:id', wrap((req) => {
     const agent = getAgent(req.params.id);
     if (!agent) throw notFound('Agent');
-    return agent; // includes api_token: the dashboard is the admin surface
+    return isOwner(req.hive) ? agent : publicAgent(agent); // the Agent API token is for owners only
   }));
 
   r.post('/agents', wrap((req) => {
@@ -347,6 +382,19 @@ export function dashboardRouter() {
       agents_channel: Boolean(process.env.SLACK_AGENTS_CHANNEL),
     },
   })));
+  // System health
+  r.get('/health', wrap(() => healthReport()));
+  r.post('/health/check', wrap(() => runChecks()));
+
+  // Backups of the database
+  r.get('/backups', wrap(() => listBackups()));
+  r.post('/backups', wrap(() => backupNow()));
+  r.get('/backups/:name', (req, res) => {
+    const path = backupPath(req.params.name);
+    if (!path) return res.status(404).json({ error: 'Backup not found' });
+    res.download(path, req.params.name);
+  });
+
   // Month-end close board
   r.get('/close', wrap((req) => closeBoard({ months: Math.min(Math.max(Number(req.query.months) || 6, 1), 12) })));
   // What to prefill when starting one job for one month (the UI then creates the task, with files).
@@ -456,20 +504,26 @@ export function dashboardRouter() {
   // Lessons each agent has learned from corrections
   r.get('/agents/:id/lessons', wrap((req) => listLessons(req.params.id)));
   r.post('/agents/:id/lessons', wrap((req) => {
+    if (!canApproveFor(req.hive, Number(req.params.id))) throw forbidden('Only approvers and owners can teach this agent.');
     try {
       return addLesson(Number(req.params.id), req.body?.text, { source: req.body?.task_id ? 'task' : 'manual', taskId: req.body?.task_id ?? null, by: req.user?.name || null });
     } catch (err) {
       throw bad(err.message);
     }
   }));
+  const lessonGuard = (req) => {
+    const l = get('SELECT agent_id FROM agent_lessons WHERE id = ?', req.params.id);
+    if (l && !canApproveFor(req.hive, l.agent_id)) throw forbidden('Only approvers and owners can change what this agent has learned.');
+  };
   r.patch('/lessons/:id', wrap((req) => {
+    lessonGuard(req);
     try {
       return updateLesson(Number(req.params.id), req.body || {});
     } catch (err) {
       throw bad(err.message);
     }
   }));
-  r.delete('/lessons/:id', wrap((req) => (deleteLesson(Number(req.params.id)), { ok: true })));
+  r.delete('/lessons/:id', wrap((req) => (lessonGuard(req), deleteLesson(Number(req.params.id)), { ok: true })));
 
   // Messages between agents
   r.get('/agents/:id/dms', wrap((req) =>
@@ -587,6 +641,9 @@ export function dashboardRouter() {
     return { ok: true };
   }));
   r.post('/runs/:id/confirm', wrap(async (req) => {
+    const target = get('SELECT agent_id FROM runs WHERE id = ?', req.params.id);
+    if (!target) throw notFound('Run');
+    if (!canApproveFor(req.hive, target.agent_id)) throw forbidden("You can't approve or reject this agent's actions. Ask an approver or an owner.");
     const by = req.user?.name || req.user?.email || 'Hive user';
     if (req.body.result !== 'allow' && req.body.remember && req.body.deny_message?.trim()) {
       const runRow = get('SELECT agent_id, task_id FROM runs WHERE id = ?', req.params.id);

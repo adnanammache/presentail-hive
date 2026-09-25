@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { ago, api, useApi } from '../api.js';
 import { Badge, Loading, PageHeader } from '../components/ui.jsx';
-import { BriefSettings, NotificationSettings } from '../components/Notifications.jsx';
+import { BackupSettings, BriefSettings, HealthCard, NotificationSettings } from '../components/Notifications.jsx';
 
 const HOW = {
   anthropic: 'Create a key at console.anthropic.com (a workspace with Managed Agents access) and add it in Railway as ANTHROPIC_API_KEY.',
@@ -81,6 +81,7 @@ export default function Settings() {
             </button>
         )}
       </PageHeader>
+      <HealthCard />
       <div className="settings-list">
         {data.connections.map((c) => (
           <section key={c.key} className="card settings-row">
@@ -125,6 +126,7 @@ export default function Settings() {
       </div>
       <NotificationSettings />
       <BriefSettings />
+      <BackupSettings />
       <section className="card settings-note">
         <h2>Odoo changes by agents</h2>
         <p className="muted small">Reads aren't listed. Hover a row to see what Odoo returned.</p>

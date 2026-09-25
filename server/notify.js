@@ -5,6 +5,7 @@
 // With SLACK_SIGNING_SECRET as well, approval alerts get Approve / Reject buttons (see slack.js).
 import { get, run } from './db.js';
 import { pushToAll } from './push.js';
+import { recordHealth } from './health.js';
 
 export const slackConfigured = () => Boolean(process.env.SLACK_BOT_TOKEN && process.env.SLACK_ALERT_CHANNEL);
 
@@ -27,8 +28,12 @@ export async function slackApi(method, body) {
     });
     const json = await res.json();
     if (!json.ok) console.error(`[slack] ${method}:`, json.error);
+    // Auth problems mean Slack is broken for Hive; a single missing channel or thread isn't.
+    if (json.ok) recordHealth('slack', true);
+    else if (/auth|token|account_inactive|missing_scope/.test(json.error)) recordHealth('slack', false, `${method}: ${json.error}`);
     return json;
   } catch (err) {
+    recordHealth('slack', false, err.message);
     console.error('[slack]', err.message);
     return { ok: false, error: err.message };
   }

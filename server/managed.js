@@ -19,6 +19,7 @@ import { TASK_TOOL, finishTask } from './handoff.js';
 import { AGENT_DM_TOOL, askAgent } from './conversations.js';
 import { lessonsBlock } from './lessons.js';
 import { checkBudget, checkThresholds } from './budget.js';
+import { recordHealth } from './health.js';
 import { ODOO_TOOL, classify, describeCall, formatResult, odooCall } from './odoo.js';
 
 const DEFAULT_MODEL = process.env.DEFAULT_CLAUDE_MODEL || 'claude-opus-5';
@@ -240,6 +241,8 @@ function setTask(taskId, status, result) {
 }
 
 function failRun(runId, err) {
+  // API-level failures (auth, overload, network) say Claude isn't working; others are the task's own.
+  if (err?.status || /api key|authentication|overloaded|ECONN|fetch failed|timed out/i.test(err?.message ?? '')) recordHealth('anthropic', false, err.message);
   const r = setRun(runId, { status: 'failed', error: err.message || String(err) });
   setTask(r.task_id, 'blocked', `Could not run: ${err.message || err}`);
   logActivity(r.agent_id, 'error', `Run #${runId} failed: ${err.message || err}`);
@@ -301,6 +304,7 @@ export function startTaskRun(taskId) {
     const files = await uploadTaskFiles(taskId);
     const session = await createSession(agent, { title: task.title, files, metadata: { hive_task_id: String(taskId), hive_run_id: String(runId) } });
     setRun(runId, { session_id: session.id, status: 'running' });
+    recordHealth('anthropic', true);
     await sendAndFollow(runId, [{ type: 'user.message', content: [{ type: 'text', text: taskPrompt(task, files) }] }]);
   })().catch((err) => failRun(runId, err));
 

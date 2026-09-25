@@ -79,7 +79,7 @@ test('Approve in Slack resolves exactly the calls in the alert and updates the m
     // Someone who isn't an approver gets a private "not allowed" and nothing happens.
     let req = click('U0OTHER');
     assert.equal((await fetch(url, { method: 'POST', ...req })).status, 200);
-    await waitFor(() => slack.some((s) => s.url.includes('hooks.slack.com') && /not allowed/.test(s.body.text)), 'refusal');
+    await waitFor(() => slack.some((s) => s.url.includes('hooks.slack.com') && /can't approve/.test(s.body.text)), 'refusal');
     assert.equal(get('SELECT status FROM runs WHERE id = ?', started.id).status, 'needs_approval');
 
     // The approver approves both calls in one go.

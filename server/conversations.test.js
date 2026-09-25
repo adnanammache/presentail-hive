@@ -8,6 +8,7 @@ process.env.SLACK_BOT_TOKEN = 'xoxb-test';
 process.env.SLACK_ALERT_CHANNEL = 'C0ALERTS';
 process.env.SLACK_AGENTS_CHANNEL = 'C0AGENTS';
 process.env.SLACK_SIGNING_SECRET = 'shh';
+process.env.OWNER_EMAILS = 'adnan@presentail.com';
 
 const { all, get, run } = await import('./db.js');
 const managed = await import('./managed.js');

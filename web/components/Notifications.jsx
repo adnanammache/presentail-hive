@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api, useApi } from '../api.js';
+import { ago, api, useApi } from '../api.js';
 
 const b64ToBytes = (s) => {
   const pad = '='.repeat((4 - (s.length % 4)) % 4);
@@ -122,5 +122,125 @@ export function BriefSettings() {
       </div>
       {err && <p className="small" style={{ color: 'var(--red)' }}>{err}</p>}
     </section>
+  );
+}
+
+const size = (n) => (n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
+
+/** Settings: the database backups Hive keeps, and a way to download one. */
+export function BackupSettings() {
+  const { data, reload } = useApi('/backups');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const now = async () => {
+    setBusy(true);
+    setErr('');
+    try {
+      await api('/backups', { method: 'POST' });
+      await reload();
+    } catch (e) {
+      setErr(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <section className="card settings-note">
+      <h2>Backups</h2>
+      <p className="muted">
+        Hive saves a full copy of its database every night at 03:15 (Dubai) and keeps the last 14. They live on the same Railway volume, so download one now and then and keep it somewhere else, such as Google Drive.
+      </p>
+      <div className="row-gap">
+        <button className="btn" onClick={now} disabled={busy}>
+          {busy ? 'Backing up…' : 'Back up now'}
+        </button>
+        {data?.[0] && (
+          <a className="btn btn-primary" href={`/api/backups/${data[0].name}`} download>
+            Download latest
+          </a>
+        )}
+      </div>
+      {err && <p className="small" style={{ color: 'var(--red)' }}>{err}</p>}
+      {data?.length > 0 && (
+        <ul className="list compact backup-list">
+          {data.map((b) => (
+            <li key={b.name} className="list-row">
+              <span className="grow">{new Date(b.created_at).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}</span>
+              <span className="muted small">{size(b.size)}</span>
+              <a className="link small" href={`/api/backups/${b.name}`} download>
+                Download
+              </a>
+            </li>
+          ))}
+        </ul>
+      )}
+      <p className="muted small">To restore: stop the service in Railway, replace hive.db on the volume with the backup file, then start it again.</p>
+    </section>
+  );
+}
+
+const DOT = { ok: 'ok', down: 'down', warn: 'warn', unknown: 'unknown', off: 'off' };
+const STATE = { ok: 'Working', down: 'Not working', warn: 'Needs a look', unknown: 'Not checked yet', off: 'Not connected' };
+
+/** Settings: is each connection working, when did it last work, and the last error. */
+export function HealthCard() {
+  const { data, setData } = useApi('/health', ['health', 'run']);
+  const [checking, setChecking] = useState(false);
+  const check = async () => {
+    setChecking(true);
+    try {
+      setData(await api('/health/check', { method: 'POST' }));
+    } finally {
+      setChecking(false);
+    }
+  };
+  if (!data) return null;
+  return (
+    <section className="card health-card">
+      <header className="card-head">
+        <h2>System health</h2>
+        <button className="btn btn-sm" onClick={check} disabled={checking}>
+          {checking ? 'Checking…' : 'Check now'}
+        </button>
+      </header>
+      <ul className="health-list">
+        {data.rows.map((r) => (
+          <li key={r.key}>
+            <i className={`health-dot ${DOT[r.state]}`} aria-hidden="true" />
+            <div className="grow">
+              <div className="row-title">
+                {r.name} <span className={`health-state ${r.state}`}>{STATE[r.state]}</span>
+              </div>
+              <div className="row-sub">
+                {r.state === 'off' ? (
+                  <>Set {r.env} in Railway to connect.</>
+                ) : (
+                  <>
+                    {r.detail && <>{r.detail}. </>}
+                    {r.last_ok && <>Last worked {ago(r.last_ok)}. </>}
+                    {r.last_error && (r.state !== 'ok' || (r.last_error_at && r.last_error_at > (r.last_ok ?? ''))) && (
+                      <span className="health-error">
+                        Last error {ago(r.last_error_at)}: {r.last_error}
+                      </span>
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+/** Dashboard: a banner when a connection is down. */
+export function HealthBanner() {
+  const { data } = useApi('/health', ['health']);
+  if (!data?.down?.length) return null;
+  return (
+    <a className="notice warn health-banner" href="#/settings">
+      ⚠️ {data.down.join(' and ')} {data.down.length === 1 ? "isn't" : "aren't"} working right now. Agents that need {data.down.length === 1 ? 'it' : 'them'} will fail. See System health in Settings.
+    </a>
   );
 }

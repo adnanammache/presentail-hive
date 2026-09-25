@@ -226,6 +226,15 @@ CREATE TABLE IF NOT EXISTS slack_threads (
 );
 -- Slack retries events; each is handled once
 CREATE TABLE IF NOT EXISTS slack_events (event_id TEXT PRIMARY KEY, created_at TEXT NOT NULL DEFAULT (datetime('now')));
+-- People who use Hive and what they may do (see roles.js)
+CREATE TABLE IF NOT EXISTS users (
+  email         TEXT PRIMARY KEY,
+  name          TEXT,
+  role          TEXT NOT NULL DEFAULT 'member',   -- owner | approver | member
+  teams         TEXT NOT NULL DEFAULT '[]',        -- approver: team ids they approve for ([] = all)
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  last_seen_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
 -- What each agent should remember from people's corrections
 CREATE TABLE IF NOT EXISTS agent_lessons (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,

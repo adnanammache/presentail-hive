@@ -5,6 +5,7 @@ import { TaskForm } from '../components/forms.jsx';
 import SpendCard from '../components/Spend.jsx';
 import SetupCard from '../components/SetupCard.jsx';
 import BriefCard from '../components/Brief.jsx';
+import { HealthBanner } from '../components/Notifications.jsx';
 
 function Stat({ label, value, sub, tone, href }) {
   return (
@@ -28,6 +29,7 @@ export default function Dashboard() {
     <>
       <PageHeader title="Mission control" subtitle={new Date().toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' })} />
 
+      <HealthBanner />
       <SetupCard />
 
       <div className="stats">
