@@ -7,6 +7,7 @@ import { integrationList, skillLibrary } from './capabilities.js';
 import { sendSlack, slackButtonsEnabled, slackConfigured } from './notify.js';
 import { approvers } from './slack.js';
 import { finishTask, handOff, reviewerFor } from './handoff.js';
+import { agentSpend, parseBudget, teamSpend } from './budget.js';
 import { addLesson, deleteLesson, listLessons, updateLesson } from './lessons.js';
 import { closeBoard, dueDate, itemInstructions, monthLabel, saveCloseItem } from './close.js';
 import { briefConfig, latestBrief, nextBriefAt, sendBrief, setBriefConfig } from './brief.js';
@@ -26,9 +27,9 @@ const TASK_STATUSES = ['backlog', 'todo', 'in_progress', 'review', 'done', 'bloc
 const PRIORITIES = ['low', 'medium', 'high', 'urgent'];
 const RUN_STATUSES = ['running', 'success', 'failed'];
 
-const AGENT_FIELDS = ['name', 'title', 'team_id', 'description', 'platform', 'status', 'model', 'system_prompt', 'webhook_url', 'color', 'skills', 'integrations', 'approval', 'reviewer_id'];
+const AGENT_FIELDS = ['name', 'title', 'team_id', 'description', 'platform', 'status', 'model', 'system_prompt', 'webhook_url', 'color', 'skills', 'integrations', 'approval', 'reviewer_id', 'budget_cents'];
 const TASK_FIELDS = ['title', 'description', 'status', 'priority', 'agent_id', 'due_date', 'result', 'handoff_agent_id'];
-const TEAM_FIELDS = ['name', 'description', 'color'];
+const TEAM_FIELDS = ['name', 'description', 'color', 'budget_cents'];
 const WORKFLOW_FIELDS = ['name', 'description', 'agent_id', 'schedule', 'timezone', 'instructions', 'enabled'];
 
 class HttpError extends Error {
@@ -152,17 +153,22 @@ export function dashboardRouter() {
       month_cents: sum(`created_at >= ${monthStart}`),
       last_month_cents: sum(`created_at >= date('now', 'start of month', '-1 month') AND created_at < ${monthStart}`),
       runs_this_month: get(`SELECT COUNT(*) n FROM runs WHERE created_at >= ${monthStart}`).n,
+      // Budgets with how much of each is used, most used first.
+      budgets: [
+        ...all('SELECT id, name, color, budget_cents FROM teams WHERE budget_cents IS NOT NULL').map((t) => ({ kind: 'team', ...t, cents: teamSpend(t.id) })),
+        ...all('SELECT id, name, color, budget_cents FROM agents WHERE budget_cents IS NOT NULL').map((a) => ({ kind: 'agent', ...a, cents: agentSpend(a.id) })),
+      ].sort((x, y) => y.cents / (y.budget_cents || 1) - x.cents / (x.budget_cents || 1)),
       daily: all(
         `SELECT date(created_at) AS day, SUM(cost_cents) AS cents, COUNT(*) AS runs FROM runs
          WHERE created_at >= date('now', '-29 days') GROUP BY day ORDER BY day`,
       ),
       by_agent: all(
-        `SELECT a.id, a.name, a.title, a.color, tm.name AS team_name, SUM(r.cost_cents) AS cents, COUNT(r.id) AS runs
+        `SELECT a.id, a.name, a.title, a.color, a.budget_cents, tm.name AS team_name, SUM(r.cost_cents) AS cents, COUNT(r.id) AS runs
          FROM runs r JOIN agents a ON a.id = r.agent_id LEFT JOIN teams tm ON tm.id = a.team_id
          WHERE r.created_at >= ${monthStart} GROUP BY a.id HAVING cents > 0 ORDER BY cents DESC`,
       ),
       by_team: all(
-        `SELECT COALESCE(tm.id, 0) AS id, COALESCE(tm.name, 'No team') AS name, COALESCE(tm.color, '#94a3b8') AS color, SUM(r.cost_cents) AS cents
+        `SELECT COALESCE(tm.id, 0) AS id, COALESCE(tm.name, 'No team') AS name, COALESCE(tm.color, '#94a3b8') AS color, tm.budget_cents, SUM(r.cost_cents) AS cents
          FROM runs r JOIN agents a ON a.id = r.agent_id LEFT JOIN teams tm ON tm.id = a.team_id
          WHERE r.created_at >= ${monthStart} GROUP BY tm.id HAVING cents > 0 ORDER BY cents DESC`,
       ),
@@ -182,14 +188,20 @@ export function dashboardRouter() {
     all(
       `SELECT tm.*, (SELECT COUNT(*) FROM agents a WHERE a.team_id = tm.id) AS agent_count
        FROM teams tm ORDER BY tm.id`,
-    );
+    ).map((t) => ({ ...t, month_cents: teamSpend(t.id) }));
   r.get('/teams', wrap(getTeams));
 
   r.post('/teams', wrap((req) => {
     const name = req.body.name?.trim();
     if (!name) throw bad('Team name is required');
     if (get('SELECT id FROM teams WHERE name = ?', name)) throw bad(`A team called "${name}" already exists`);
-    const { lastInsertRowid } = run('INSERT INTO teams (name, description, color) VALUES (?, ?, ?)', name, req.body.description ?? '', req.body.color ?? '#6366f1');
+    let budget = null;
+    try {
+      budget = parseBudget(req.body.budget) ?? null;
+    } catch (err) {
+      throw bad(err.message);
+    }
+    const { lastInsertRowid } = run('INSERT INTO teams (name, description, color, budget_cents) VALUES (?, ?, ?, ?)', name, req.body.description ?? '', req.body.color ?? '#6366f1', budget);
     logActivity(null, 'agent', `Team "${name}" created`);
     emit('agent');
     return getTeams().find((t) => t.id === Number(lastInsertRowid));
@@ -198,6 +210,11 @@ export function dashboardRouter() {
   r.patch('/teams/:id', wrap((req) => {
     if (!get('SELECT id FROM teams WHERE id = ?', req.params.id)) throw notFound('Team');
     const patch = { ...req.body };
+    try {
+      if (patch.budget !== undefined) patch.budget_cents = parseBudget(patch.budget);
+    } catch (err) {
+      throw bad(err.message);
+    }
     if (patch.name !== undefined) {
       patch.name = patch.name.trim();
       if (!patch.name) throw bad('Team name is required');
@@ -215,7 +232,9 @@ export function dashboardRouter() {
   }));
 
   // Agents
-  const AGENT_SELECT = `SELECT a.*, tm.name AS team_name, tm.color AS team_color FROM agents a LEFT JOIN teams tm ON tm.id = a.team_id`;
+  const AGENT_SELECT = `SELECT a.*, tm.name AS team_name, tm.color AS team_color,
+    (SELECT COALESCE(SUM(cost_cents), 0) FROM runs r WHERE r.agent_id = a.id AND r.created_at >= date('now', 'start of month')) AS month_cents
+    FROM agents a LEFT JOIN teams tm ON tm.id = a.team_id`;
   const getAgent = (id) => get(`${AGENT_SELECT} WHERE a.id = ?`, id);
   const checkTeam = (teamId) => {
     if (teamId !== undefined && teamId !== null && !get('SELECT id FROM teams WHERE id = ?', teamId)) throw bad('Unknown team');
@@ -256,6 +275,11 @@ export function dashboardRouter() {
       b.model ?? '', b.system_prompt ?? '', b.webhook_url ?? '', b.color ?? '#6366f1', newToken(),
     );
     if (b.reviewer_id && get('SELECT id FROM agents WHERE id = ?', b.reviewer_id)) run('UPDATE agents SET reviewer_id = ? WHERE id = ?', b.reviewer_id, lastInsertRowid);
+    try {
+      if (b.budget != null && b.budget !== '') run('UPDATE agents SET budget_cents = ? WHERE id = ?', parseBudget(b.budget), lastInsertRowid);
+    } catch (err) {
+      throw bad(err.message);
+    }
     const agent = getAgent(lastInsertRowid);
     logActivity(agent.id, 'agent', `${agent.name} joined ${agent.team_name} as ${agent.title}`);
     emit('agent');
@@ -274,6 +298,11 @@ export function dashboardRouter() {
     if (b.name !== undefined && !String(b.name).trim()) throw bad('Name is required');
     if (b.title !== undefined && !String(b.title).trim()) throw bad('Title is required');
     checkTeam(b.team_id);
+    try {
+      if (b.budget !== undefined) b.budget_cents = parseBudget(b.budget);
+    } catch (err) {
+      throw bad(err.message);
+    }
     if (b.reviewer_id !== undefined && b.reviewer_id !== null) {
       if (Number(b.reviewer_id) === Number(req.params.id)) throw bad('An agent cannot review its own work');
       if (!get('SELECT id FROM agents WHERE id = ?', b.reviewer_id)) throw bad('Unknown reviewer');

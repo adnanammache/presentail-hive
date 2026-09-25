@@ -66,8 +66,35 @@ function Ranked({ rows }) {
   );
 }
 
+function Budgets({ rows }) {
+  return (
+    <ul className="budgets">
+      {rows.map((b) => {
+        const pct = b.budget_cents ? Math.round((b.cents / b.budget_cents) * 100) : 0;
+        const tone = pct >= 100 ? 'over' : pct >= 80 ? 'near' : '';
+        return (
+          <li key={`${b.kind}${b.id}`} className={tone}>
+            <a href={b.kind === 'agent' ? `#/agents/${b.id}` : '#/org'} className="budget-name clamp-1">
+              <i style={{ background: b.color }} />
+              {b.name}
+              {b.kind === 'team' && <span className="muted"> · team</span>}
+            </a>
+            <span className="budget-bar" role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100}>
+              <span style={{ width: `${Math.min(100, pct)}%` }} />
+            </span>
+            <span className="budget-value">
+              {money(b.cents)} / {money(b.budget_cents)}
+              {pct >= 100 && ' · paused'}
+            </span>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
 export default function SpendCard() {
-  const { data } = useApi('/spend', ['run']);
+  const { data } = useApi('/spend', ['run', 'agent', 'budget']);
   if (!data) return null;
   const delta = data.last_month_cents ? Math.round(((data.month_cents - data.last_month_cents) / data.last_month_cents) * 100) : null;
   return (
@@ -83,6 +110,12 @@ export default function SpendCard() {
           {delta !== null && ` · ${delta >= 0 ? '+' : ''}${delta}% vs last month (${money(data.last_month_cents)})`}
         </span>
       </div>
+      {data.budgets?.length > 0 && (
+        <div className="spend-budgets">
+          <h3 className="small muted">Budgets this month</h3>
+          <Budgets rows={data.budgets} />
+        </div>
+      )}
       {data.runs_this_month === 0 && data.daily.length === 0 ? (
         <p className="muted small">No agent runs yet. Costs appear here as soon as an agent works on a task.</p>
       ) : (

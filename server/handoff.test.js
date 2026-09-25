@@ -74,7 +74,11 @@ test('work is handed to the reviewer with its files and outputs, and the verdict
   assert.equal(review.title, 'Review: Talabat August');
   assert.equal(review.agent_id, vera);
   assert.match(review.description, /Posted 3 bills, AED 18,420\.55[\s\S]*Abu Dhabi branch/);
-  const files = all('SELECT filename, path FROM task_files WHERE task_id = ? ORDER BY id', review.id);
+  // Files are attached right after the review task is created, before the reviewer starts.
+  const files = await waitFor(() => {
+    const f = all('SELECT filename, path FROM task_files WHERE task_id = ? ORDER BY id', review.id);
+    return f.length === 2 && f;
+  }, 'review files');
   assert.deepEqual(files.map((f) => f.filename), ['TUAE-1.pdf', 'output - summary.xlsx']);
   assert.equal(readFileSync(files[1].path, 'utf8'), 'contents of file_sum');
 

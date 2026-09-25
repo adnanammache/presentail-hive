@@ -75,7 +75,8 @@ const ledger = Number(run("INSERT INTO agents (name, title, platform, approval, 
 const kyros = Number(run("INSERT INTO agents (name, title, platform, api_token) VALUES ('Kyros', 'Cyprus Accountant', 'managed', 'k')").lastInsertRowid);
 run("INSERT INTO agents (name, title, status, api_token) VALUES ('Vera', 'Auditor', 'paused', 'v')");
 
-const dm = (text, extra = {}) => ({ type: 'event_callback', event_id: `Ev${Math.random()}`, event: { type: 'message', channel_type: 'im', channel: 'D_ADNAN', user: 'U_ADNAN', ts: `${Date.now() / 1000}`, text, ...extra } });
+let seq = 0; // Slack timestamps are unique per message
+const dm = (text, extra = {}) => ({ type: 'event_callback', event_id: `Ev${++seq}`, event: { type: 'message', channel_type: 'im', channel: 'D_ADNAN', user: 'U_ADNAN', ts: `1790000000.${String(++seq).padStart(6, '0')}`, text, ...extra } });
 
 test('addressing an agent by name or title', () => {
   assert.equal(conv.splitAddressee('Ledger: do Careem').agent.id, ledger);
