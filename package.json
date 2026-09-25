@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.128.0",
+    "@resvg/resvg-js": "^2.6.2",
     "croner": "^10.0.1",
     "express": "^5.2.1",
     "web-push": "^3.6.7"

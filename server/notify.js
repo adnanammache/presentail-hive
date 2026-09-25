@@ -43,15 +43,24 @@ export function alertBlocks({ text, detail, link, linkLabel = 'Open in Hive', bu
   return blocks;
 }
 
-export async function sendSlack({ text, ...rest }) {
-  if (!slackConfigured()) return { ok: false, skipped: true };
+/**
+ * Post an alert. By default to SLACK_ALERT_CHANNEL; with `thread` ({ channel, thread_ts }) into
+ * that conversation instead, and with `as` (an agent) under the agent's own name and face.
+ */
+export async function sendSlack({ text, thread, as, ...rest }) {
+  if (thread ? !process.env.SLACK_BOT_TOKEN : !slackConfigured()) return { ok: false, skipped: true };
   return slackApi('chat.postMessage', {
-    channel: process.env.SLACK_ALERT_CHANNEL,
+    channel: thread?.channel ?? process.env.SLACK_ALERT_CHANNEL,
+    thread_ts: thread?.thread_ts,
     text: text.replace(/[*_`]/g, ''),
     blocks: alertBlocks({ text, ...rest }),
     unfurl_links: false,
+    ...(as ? { username: `${as.name} · ${as.title || 'Agent'}`.slice(0, 80), icon_url: `${baseUrl()}/avatars/${as.id}.png?v=${encodeURIComponent(as.color || '')}` } : {}),
   });
 }
+
+/** The Slack thread a task was started from, if any: its updates go there instead of the alert channel. */
+const taskThread = (taskId) => (taskId ? get('SELECT channel, thread_ts FROM slack_threads WHERE task_id = ? ORDER BY created_at DESC LIMIT 1', taskId) : null);
 
 /** Once an approval is decided (in Hive or Slack), swap the alert's buttons for who decided. */
 export async function settleApprovalAlert(runId, outcome) {
@@ -76,8 +85,10 @@ function approvalText(runId) {
 export function notifyRun(runId, kind, extra = {}) {
   const r = get('SELECT * FROM runs WHERE id = ?', runId);
   if (!r) return;
-  const agent = get('SELECT name, title FROM agents WHERE id = ?', r.agent_id);
+  const agent = get('SELECT id, name, title, color FROM agents WHERE id = ?', r.agent_id);
   const task = r.task_id ? get('SELECT id, title FROM tasks WHERE id = ?', r.task_id) : null;
+  const thread = taskThread(task?.id);
+  const via = thread ? { thread, as: agent } : {};
   const where = task ? `*${esc(task.title)}*` : 'a chat';
   const link = task ? `${baseUrl()}/#/tasks/${task.id}` : `${baseUrl()}/#/inbox/${r.agent_id}`;
   const who = `*${esc(agent?.name ?? 'An agent')}*`;
@@ -106,16 +117,17 @@ export function notifyRun(runId, kind, extra = {}) {
             { type: 'button', style: 'danger', text: { type: 'plain_text', text: 'Reject' }, action_id: 'hive_reject', value },
           ]
         : [];
-    return sendSlack({ text: `🟡 ${who} needs your approval on ${where}`, detail: lines || undefined, link, linkLabel: 'Review in Hive', buttons }).then((json) => {
+    return sendSlack({ text: thread ? '🟡 I need your approval before I go on:' : `🟡 ${who} needs your approval on ${where}`, detail: lines || undefined, link, linkLabel: 'Review in Hive', buttons, ...via }).then((json) => {
       if (json?.ok && json.ts) run('UPDATE runs SET slack_ts = ? WHERE id = ?', `${json.channel}|${json.ts}`, runId);
       return json;
     });
   }
   if (kind === 'done') {
+    if (thread) return sendSlack({ text: esc(clip(r.last_message || 'Done.', 2900)), link, ...via });
     return sendSlack({ text: `✅ ${who} finished a turn on ${where} and is waiting for you`, detail: r.last_message ? `>${esc(clip(r.last_message, 600)).replace(/\n/g, '\n>')}` : undefined, link });
   }
   if (kind === 'failed') {
-    return sendSlack({ text: `🔴 ${who} got stuck on ${where}`, detail: esc(clip(r.error || extra.error || 'Unknown error', 500)), link });
+    return sendSlack({ text: `🔴 ${thread ? 'I got stuck' : `${who} got stuck on ${where}`}`, detail: esc(clip(r.error || extra.error || 'Unknown error', 500)), link, ...via });
   }
 }
 

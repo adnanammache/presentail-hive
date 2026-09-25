@@ -72,6 +72,35 @@ function Connect({ agent, onRotate }) {
   );
 }
 
+/** Messages between this agent and other agents (the message_agent tool). */
+function Colleagues({ agent }) {
+  const { data } = useApi(`/agents/${agent.id}/dms`, ['agent_dm']);
+  if (!data) return <Loading />;
+  if (!data.length)
+    return (
+      <Empty title="No messages with colleagues yet">
+        When {agent.name} asks another agent something (or is asked), the conversation shows here and in Slack.
+      </Empty>
+    );
+  return (
+    <ul className="dm-list">
+      {data.map((d) => (
+        <li key={d.id} className="dm">
+          <div className="dm-q">
+            <b>{d.from_name}</b> → <b>{d.to_name}</b>
+            <span className="muted small"> · {ago(d.created_at)}</span>
+            <p>{d.message}</p>
+          </div>
+          <div className={`dm-a ${d.status}`}>
+            <b>{d.to_name}</b>
+            {d.status === 'asked' ? <p className="muted">Thinking…</p> : <p>{d.reply}</p>}
+          </div>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 export default function AgentDetail({ id, meta }) {
   const { data: agent, setData } = useApi(`/agents/${id}`, ['agent']);
   const { data: tasks } = useApi(`/tasks?agent_id=${id}`, ['task']);
@@ -96,6 +125,7 @@ export default function AgentDetail({ id, meta }) {
     ['skills', 'Skills & tools'],
     ['tasks', `Tasks (${openTasks.length})`],
     ['workflows', `Workflows (${workflows.length})`],
+    ['colleagues', 'Colleagues'],
     ['connect', 'Connect'],
   ];
 
@@ -195,6 +225,12 @@ export default function AgentDetail({ id, meta }) {
           ) : (
             <WorkflowList workflows={workflows} onEdit={(w) => setModal({ kind: 'workflow', workflow: w })} onRuns={() => (location.hash = '#/workflows')} />
           )}
+        </div>
+      )}
+
+      {tab === 'colleagues' && (
+        <div className="tab-body">
+          <Colleagues agent={agent} />
         </div>
       )}
 

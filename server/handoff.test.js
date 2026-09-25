@@ -56,11 +56,18 @@ test('work is handed to the reviewer with its files and outputs, and the verdict
   run('INSERT INTO task_files (task_id, filename, path, size) VALUES (?, ?, ?, 10)', taskId, 'TUAE-1.pdf', join(dir, 'TUAE-1.pdf'));
   assert.equal(reviewerFor(get('SELECT * FROM tasks WHERE id = ?', taskId)).name, 'Vera');
 
+  // Ledger's session has saved a summary file by the time it finishes.
+  const create = fake.beta.sessions.create;
+  fake.beta.sessions.create = async (p) => {
+    const session = await create(p);
+    if (fake.calls.sessions.length === 1) fake.outputs[session.id] = [{ id: 'file_sum', filename: 'summary.xlsx', mime_type: 'application/vnd.ms-excel', size_bytes: 9 }];
+    return session;
+  };
   // Every managed agent gets the task_complete tool.
   const started = managed.startTaskRun(taskId);
-  const ledgerSession = await waitFor(() => fake.calls.sessions[0], 'Ledger session');
-  fake.outputs[ledgerSession.sid] = [{ id: 'file_sum', filename: 'summary.xlsx', mime_type: 'application/vnd.ms-excel', size_bytes: 9 }];
+  await waitFor(() => fake.calls.agentsCreate[0], 'agent created');
   assert.ok(fake.calls.agentsCreate[0].tools.some((t) => t.name === 'task_complete'));
+  assert.ok(fake.calls.agentsCreate[0].tools.some((t) => t.name === 'message_agent'));
 
   // Ledger finishes → a review task for Vera, with the input file and Ledger's output.
   const review = await waitFor(() => get('SELECT * FROM tasks WHERE parent_task_id = ?', taskId), 'review task');
