@@ -1,7 +1,8 @@
 import { useEffect } from 'react';
 
 export const PLATFORM_LABELS = {
-  claude: 'Claude',
+  managed: 'Claude Managed Agent',
+  claude: 'Claude (chat only)',
   make: 'Make',
   replit: 'Replit',
   n8n: 'n8n',
@@ -36,6 +37,9 @@ const PATHS = {
   check: 'M5 12l5 5L20 7',
   edit: 'M4 20h4L19 9l-4-4L4 16zM14 6l4 4',
   menu: 'M4 6h16M4 12h16M4 18h16',
+  paperclip: 'M21 11.5 12.5 20a5 5 0 0 1-7-7l8.5-8.5a3.5 3.5 0 0 1 5 5L10.5 18a2 2 0 0 1-3-3L15 7.5',
+  stop: 'M7 7h10v10H7z',
+  sparkles: 'M12 3l1.8 4.7L18.5 9.5l-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8zM19 15l.9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9z',
 };
 
 export function Icon({ name, size = 18 }) {
@@ -61,7 +65,7 @@ export function Badge({ tone = 'neutral', children }) {
 }
 
 export const agentTone = { active: 'green', idle: 'neutral', paused: 'amber', error: 'red' };
-export const runTone = { running: 'blue', success: 'green', failed: 'red' };
+export const runTone = { running: 'blue', success: 'green', failed: 'red', starting: 'blue', needs_approval: 'amber', waiting: 'green', ended: 'neutral' };
 export const priorityTone = { urgent: 'red', high: 'amber', medium: 'blue', low: 'neutral' };
 
 export function Modal({ title, onClose, children, wide }) {

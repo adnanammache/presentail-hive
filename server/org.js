@@ -110,8 +110,6 @@ export const ORG = [
   },
 ];
 
-db.exec('CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
-
 /** Create the org chart's teams and agents. Runs once per database; returns true if it ran. */
 export function applyOrgChart() {
   if (get('SELECT value FROM app_meta WHERE key = ?', ORG_CHART_VERSION)) return false;

@@ -82,3 +82,26 @@ Hive signs people in with Google and only lets in `@presentail.com` accounts. Un
 Deploy, then open https://hive.presentail.com. You'll see **Continue with Google**. Once that works, you can delete `APP_PASSWORD`.
 
 Sessions last 30 days. **Sign out** is at the bottom of the sidebar.
+
+## Agents that do real work (Claude Managed Agents)
+
+Agents set to **Claude Managed Agent** run on Anthropic's hosted agent service. Each one gets a private sandbox, your skills from `agent-skills/`, and access only to the systems you tick.
+
+### Railway variables
+
+| Variable | Why |
+|---|---|
+| `ANTHROPIC_API_KEY` | Required. A key from console.anthropic.com in a workspace with access to Managed Agents. |
+| `WAFEQ_API_KEY` | Lets agents with the **Wafeq** integration post to Wafeq. It's stored in an Anthropic vault and is never visible to the agent: the sandbox only sees a placeholder, swapped for the real key on requests to `api.wafeq.com`. |
+
+### Turning an agent on
+1. Open the agent → **Skills & tools**.
+2. Tick its skills (e.g. Talabat, Careem, Noon Food, Now Now month-end for the UAE Accountant) and systems (Wafeq).
+3. Choose **Approvals**: *Ask before posting* (it does a dry run and waits for your go-ahead) or *Ask before every command*.
+4. Click **Make it a Managed Agent** / **Save & sync**.
+
+### Running a task
+Create a task for the agent, attach the source files (statement PDFs, spreadsheets) and click **Create & start**. The task window shows the live run: files, what the agent is doing, approval requests (**Approve / Reject**), its answers, a reply box, and the cost so far. When the agent finishes a turn, the task moves to **Needs review** with its summary as the result.
+
+### Adding or changing skills
+Skills are folders in `agent-skills/<name>/` with a `SKILL.md` (plus `scripts/` and `references/`). Commit a change and redeploy. The next time an agent using that skill is synced, Hive uploads the new version automatically.

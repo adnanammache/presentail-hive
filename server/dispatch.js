@@ -9,6 +9,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { all, get, run } from './db.js';
 import { emit } from './events.js';
 import { logActivity } from './activity.js';
+import { chatWithManagedAgent, startTaskRun } from './managed.js';
 
 const DEFAULT_MODEL = process.env.DEFAULT_CLAUDE_MODEL || 'claude-opus-5';
 // Models that accept server-side refusal fallbacks (fallbacks: "default").
@@ -21,8 +22,8 @@ function claude() {
 }
 export const claudeConfigured = () => Boolean(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN);
 
-export function postMessage(agentId, sender, body) {
-  const { lastInsertRowid } = run('INSERT INTO messages (agent_id, sender, body) VALUES (?, ?, ?)', agentId, sender, body);
+export function postMessage(agentId, sender, body, meta = null) {
+  const { lastInsertRowid } = run('INSERT INTO messages (agent_id, sender, body, meta) VALUES (?, ?, ?, ?)', agentId, sender, body, meta ? JSON.stringify(meta) : null);
   const message = get('SELECT * FROM messages WHERE id = ?', lastInsertRowid);
   if (sender === 'agent') run("UPDATE agents SET last_seen_at = datetime('now') WHERE id = ?", agentId);
   emit('message', { agent_id: agentId, message });
@@ -124,7 +125,12 @@ export async function sendToAgent(agentId, body) {
   const agent = get('SELECT * FROM agents WHERE id = ?', agentId);
   const message = postMessage(agentId, 'user', body);
   // Fire and forget: the UI updates over SSE when the reply lands.
-  deliver(agent, { event: 'message', message }).catch(() => {});
+  if (agent.platform === 'managed') {
+    if (agent.status === 'paused') postMessage(agentId, 'system', `${agent.name} is paused. Resume it to get a reply.`);
+    else chatWithManagedAgent(agentId, body);
+  } else {
+    deliver(agent, { event: 'message', message }).catch(() => {});
+  }
   return message;
 }
 
@@ -133,6 +139,16 @@ export async function dispatchTask(taskId, { runId } = {}) {
   const task = get('SELECT * FROM tasks WHERE id = ?', taskId);
   const agent = task?.agent_id && get('SELECT * FROM agents WHERE id = ?', task.agent_id);
   if (!agent) return null;
+  if (agent.platform === 'managed') {
+    try {
+      startTaskRun(task.id); // progress streams into the task's run panel
+    } catch (err) {
+      run("UPDATE tasks SET status = 'blocked', result = ?, updated_at = datetime('now') WHERE id = ?", `Could not start: ${err.message}`, task.id);
+      emit('task', { task_id: task.id });
+      throw err;
+    }
+    return null;
+  }
   postMessage(agent.id, 'system', `New task #${task.id}: ${task.title}${task.description ? `\n\n${task.description}` : ''}`);
   const reply = await deliver(agent, { event: runId ? 'workflow.run' : 'task.assigned', task, run_id: runId ?? null });
   if (reply) {

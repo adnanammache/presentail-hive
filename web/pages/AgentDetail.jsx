@@ -3,6 +3,7 @@ import { ago, api, useApi } from '../api.js';
 import { Avatar, Badge, Empty, Icon, Loading, PLATFORM_LABELS, agentTone } from '../components/ui.jsx';
 import { AgentForm, TaskForm, WorkflowForm } from '../components/forms.jsx';
 import Chat from '../components/Chat.jsx';
+import Capabilities from '../components/Capabilities.jsx';
 import { TaskCard } from './Tasks.jsx';
 import { WorkflowList } from './Workflows.jsx';
 
@@ -92,6 +93,7 @@ export default function AgentDetail({ id, meta }) {
 
   const tabs = [
     ['chat', 'Chat'],
+    ['skills', 'Skills & tools'],
     ['tasks', `Tasks (${openTasks.length})`],
     ['workflows', `Workflows (${workflows.length})`],
     ['connect', 'Connect'],
@@ -148,6 +150,12 @@ export default function AgentDetail({ id, meta }) {
       </header>
 
       {tab === 'chat' && <Chat agent={agent} claudeReady={meta?.claude} />}
+
+      {tab === 'skills' && (
+        <div className="tab-body">
+          <Capabilities agent={agent} onSaved={setData} />
+        </div>
+      )}
 
       {tab === 'tasks' && (
         <div className="tab-body">

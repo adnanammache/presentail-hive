@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { agentRouter, dashboardRouter, errorHandler } from './app.js';
 import { authMode, authRouter, requireAuth } from './auth.js';
 import { startScheduler } from './scheduler.js';
+import { resumeRuns } from './managed.js';
 import { seedIfEmpty } from './seed.js';
 
 const PORT = Number(process.env.PORT) || 3001;
@@ -42,4 +43,5 @@ if (existsSync(dist)) {
 
 seedIfEmpty();
 startScheduler();
+resumeRuns();
 app.listen(PORT, () => console.log(`Presentail Hive listening on http://localhost:${PORT} (sign-in: ${authMode()})`));
