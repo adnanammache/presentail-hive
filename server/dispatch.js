@@ -5,6 +5,7 @@
 //   2. Agents with a webhook URL (Make, n8n, Replit, custom servers) receive a JSON POST.
 //      If the webhook responds with {"reply": "..."} that text is posted back into the thread.
 //   3. Everything else waits in the queue — the agent picks it up via the Agent API (/api/agent/*).
+import { lessonsBlock } from './lessons.js';
 import Anthropic from '@anthropic-ai/sdk';
 import { all, get, run } from './db.js';
 import { emit } from './events.js';
@@ -37,7 +38,8 @@ export async function askClaude(agent, messages) {
     max_tokens: 16000,
     system:
       (agent.system_prompt || `You are ${agent.name}, ${agent.title || 'an AI agent'} at Presentail.`) +
-      '\n\nYou are managed from Presentail Hive, an operations dashboard. Messages marked [System] come from the dashboard itself (task assignments, scheduled workflow runs). Reply concisely with what you did or what you need.',
+      '\n\nYou are managed from Presentail Hive, an operations dashboard. Messages marked [System] come from the dashboard itself (task assignments, scheduled workflow runs). Reply concisely with what you did or what you need.' +
+      (agent.id ? `\n\n${lessonsBlock(agent.id)}` : ''),
     messages,
   };
   if (!model.startsWith('claude-haiku')) params.thinking = { type: 'adaptive' };

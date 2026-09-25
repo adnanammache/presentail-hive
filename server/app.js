@@ -7,6 +7,7 @@ import { integrationList, skillLibrary } from './capabilities.js';
 import { sendSlack, slackButtonsEnabled, slackConfigured } from './notify.js';
 import { approvers } from './slack.js';
 import { finishTask, handOff, reviewerFor } from './handoff.js';
+import { addLesson, deleteLesson, listLessons, updateLesson } from './lessons.js';
 import { closeBoard, dueDate, itemInstructions, monthLabel, saveCloseItem } from './close.js';
 import { briefConfig, latestBrief, nextBriefAt, sendBrief, setBriefConfig } from './brief.js';
 import { pushToAll, removeSubscription, saveSubscription, subscriptionCount, vapidKeys } from './push.js';
@@ -423,6 +424,24 @@ export function dashboardRouter() {
   // Capabilities: what agents can be given
   r.get('/capabilities', wrap(() => ({ skills: skillLibrary(), integrations: integrationList(), managed: managedReady() })));
 
+  // Lessons each agent has learned from corrections
+  r.get('/agents/:id/lessons', wrap((req) => listLessons(req.params.id)));
+  r.post('/agents/:id/lessons', wrap((req) => {
+    try {
+      return addLesson(Number(req.params.id), req.body?.text, { source: req.body?.task_id ? 'task' : 'manual', taskId: req.body?.task_id ?? null, by: req.user?.name || null });
+    } catch (err) {
+      throw bad(err.message);
+    }
+  }));
+  r.patch('/lessons/:id', wrap((req) => {
+    try {
+      return updateLesson(Number(req.params.id), req.body || {});
+    } catch (err) {
+      throw bad(err.message);
+    }
+  }));
+  r.delete('/lessons/:id', wrap((req) => (deleteLesson(Number(req.params.id)), { ok: true })));
+
   // Messages between agents
   r.get('/agents/:id/dms', wrap((req) =>
     all(
@@ -539,6 +558,11 @@ export function dashboardRouter() {
     return { ok: true };
   }));
   r.post('/runs/:id/confirm', wrap(async (req) => {
+    const by = req.user?.name || req.user?.email || 'Hive user';
+    if (req.body.result !== 'allow' && req.body.remember && req.body.deny_message?.trim()) {
+      const runRow = get('SELECT agent_id, task_id FROM runs WHERE id = ?', req.params.id);
+      if (runRow) addLesson(runRow.agent_id, req.body.deny_message, { source: 'rejection', taskId: runRow.task_id, by });
+    }
     await confirmTool(Number(req.params.id), req.body.event_id, req.body.result === 'allow', req.body.deny_message, {
       by: req.user?.name || req.user?.email || 'Hive user',
       approveRest: Boolean(req.body.approve_rest),

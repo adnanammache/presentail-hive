@@ -131,7 +131,9 @@ export default function TaskRun({ task, agentName }) {
   const confirm = act((eventId, allow, approveRest = false) => {
     if (approveRest && !window.confirm('Approve this and every further Odoo change the agent makes in this run?')) return;
     const deny_message = allow ? undefined : prompt('Optional: tell the agent why, or what to do instead') || undefined;
-    return api(`/runs/${current.id}/confirm`, { method: 'POST', body: { event_id: eventId, result: allow ? 'allow' : 'deny', deny_message, approve_rest: approveRest } });
+    // A reason is often a rule worth keeping ("Abu Dhabi fees go to 5104"): offer to make it a lesson.
+    const remember = Boolean(deny_message) && window.confirm(`Should ${agentName} remember this for next time?\n\n"${deny_message}"`);
+    return api(`/runs/${current.id}/confirm`, { method: 'POST', body: { event_id: eventId, result: allow ? 'allow' : 'deny', deny_message, approve_rest: approveRest, remember } });
   });
   const stop = act(() => api(`/runs/${current.id}/interrupt`, { method: 'POST' }));
 

@@ -18,6 +18,7 @@ import { logActivity } from './activity.js';
 import { isAllowed } from './auth.js';
 import { askClaude, dispatchTask, sendToAgent } from './dispatch.js';
 import { baseUrl, slackApi, slackConfigured } from './notify.js';
+import { REMEMBER, addLesson } from './lessons.js';
 
 // ---------------------------------------------------------------- directory
 
@@ -148,6 +149,15 @@ export async function handleSlackMessage(event) {
   }
   if (!agent || /^(help|\?|who)$/i.test(text)) return reply(null, HELP());
   if (agent.status === 'paused') return reply(agent, `I'm not set up yet, so I can't help with this. Ask in Hive: ${baseUrl()}/#/agents/${agent.id}`);
+
+  // "Ledger: remember: Abu Dhabi fees go to 5104" → a lesson.
+  if (REMEMBER.test(rest)) {
+    const lesson = rest.replace(REMEMBER, '').trim();
+    if (lesson) {
+      addLesson(agent.id, lesson, { source: 'slack', taskId: thread?.task_id ?? null, by: person.name });
+      return reply(agent, `🧠 Noted. I'll remember that from now on: _${lesson}_`);
+    }
+  }
 
   const ts = event.thread_ts || event.ts;
   const via = { via: 'slack', channel, thread_ts: ts, user: person.name };

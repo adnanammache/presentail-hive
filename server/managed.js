@@ -17,6 +17,7 @@ import { postMessage } from './dispatch.js';
 import { notifyRun, settleApprovalAlert } from './notify.js';
 import { TASK_TOOL, finishTask } from './handoff.js';
 import { AGENT_DM_TOOL, askAgent } from './conversations.js';
+import { lessonsBlock } from './lessons.js';
 import { ODOO_TOOL, classify, describeCall, formatResult, odooCall } from './odoo.js';
 
 const DEFAULT_MODEL = process.env.DEFAULT_CLAUDE_MODEL || 'claude-opus-5';
@@ -144,6 +145,8 @@ export function composeSystem(agent) {
     '- Save files meant for the user in /mnt/session/outputs/.',
     '- End every turn with a brief summary: what you did, key totals, what is left, and exactly what you need from the user.',
     '- If something is missing (a file, access, a decision), say precisely what and stop rather than guessing.',
+    '',
+    lessonsBlock(agent.id),
   ];
   return lines.filter((l) => l != null).join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }
