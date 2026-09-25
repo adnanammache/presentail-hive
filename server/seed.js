@@ -1,10 +1,11 @@
 // Sample data so the dashboard isn't empty on first launch. Edit or delete freely.
 import { get, run, newToken } from './db.js';
+import { applyOrgChart, ORG_CHART_VERSION } from './org.js';
 
 const AGENTS = [
   {
     name: 'Ledger',
-    role: 'Month-end bookkeeping (Wafeq)',
+    title: 'Month-End Accountant (UAE)',
     description: 'Processes delivery-platform statements — Talabat, Careem, Noon Food, Now Now — into Wafeq bills and sales invoices.',
     platform: 'claude',
     model: 'claude-opus-5',
@@ -15,7 +16,7 @@ const AGENTS = [
   },
   {
     name: 'Odoo Operator',
-    role: 'Odoo reconciliation via Make',
+    title: 'Odoo Reconciliation Specialist',
     description: 'Make scenarios that reconcile BLOM, book Toters fee bills and intercompany SAL ⇄ LTD invoices in Odoo.',
     platform: 'make',
     color: '#8b5cf6',
@@ -23,7 +24,7 @@ const AGENTS = [
   },
   {
     name: 'Morning Briefer',
-    role: 'Daily brief & inbox triage',
+    title: 'Chief of Staff',
     description: 'Summarises calendar, Slack and email every weekday morning.',
     platform: 'claude',
     model: 'claude-opus-5',
@@ -33,7 +34,7 @@ const AGENTS = [
   },
   {
     name: 'Replit Builder',
-    role: 'Internal tools & prototypes',
+    title: 'Internal Tools Engineer',
     description: 'Builds and ships small internal apps on Replit.',
     platform: 'replit',
     color: '#3b82f6',
@@ -68,9 +69,9 @@ export function seed({ demo = true } = {}) {
   const ids = {};
   for (const a of AGENTS) {
     const { lastInsertRowid } = run(
-      `INSERT INTO agents (name, role, description, platform, status, model, system_prompt, color, api_token)
+      `INSERT INTO agents (name, title, description, platform, status, model, system_prompt, color, api_token)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      a.name, a.role, a.description, a.platform, a.status, a.model ?? '', a.system_prompt ?? '', a.color, newToken(),
+      a.name, a.title, a.description, a.platform, a.status, a.model ?? '', a.system_prompt ?? '', a.color, newToken(),
     );
     ids[a.name] = Number(lastInsertRowid);
   }
@@ -103,10 +104,13 @@ export function seed({ demo = true } = {}) {
 export function seedIfEmpty() {
   if (process.env.NO_SEED) return;
   if (get('SELECT COUNT(*) n FROM agents').n === 0) seed({ demo: process.env.NODE_ENV !== 'production' });
+  applyOrgChart();
 }
 
 if (process.argv[1]?.endsWith('seed.js') && process.argv.includes('--force')) {
-  for (const t of ['activity', 'messages', 'workflow_runs', 'tasks', 'workflows', 'agents']) run(`DELETE FROM ${t}`);
+  for (const t of ['activity', 'messages', 'workflow_runs', 'tasks', 'workflows', 'agents', 'teams']) run(`DELETE FROM ${t}`);
+  run('DELETE FROM app_meta WHERE key = ?', ORG_CHART_VERSION);
   seed();
+  applyOrgChart();
   console.log('Seeded sample data.');
 }

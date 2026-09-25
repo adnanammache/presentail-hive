@@ -218,6 +218,22 @@ textarea { resize: vertical; }
 .agent-card footer { display: flex; gap: 12px; align-items: center; font-size: 12.5px; color: var(--muted); flex-wrap: wrap; }
 .agent-card footer strong { color: var(--text); }
 
+.team-section { margin-bottom: 28px; }
+.team-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+.team-head h2 { font-size: 16px; }
+.team-head p { margin: 0; }
+.team-dot { width: 12px; height: 12px; border-radius: 4px; background: var(--c); flex-shrink: 0; }
+.team-empty { border: 1px dashed var(--border); border-radius: var(--radius); padding: 18px; color: var(--muted); text-align: center; }
+.agent-title { font-size: 12.5px; font-weight: 500; color: var(--muted); }
+.hero-title { color: var(--muted); font-weight: 500; }
+.team-chip { display: inline-flex; align-items: center; gap: 6px; color: var(--text); }
+.team-chip::before { content: ''; width: 8px; height: 8px; border-radius: 3px; background: var(--c); }
+.grid-spacer { display: block; }
+@media (max-width: 760px) {
+  .grid-spacer { display: none; }
+  .team-head .grow { flex-basis: calc(100% - 22px); }
+  .team-head > .muted { margin-left: 22px; margin-right: auto; }
+}
 .agent-detail { display: flex; flex-direction: column; height: 100%; }
 .agent-hero { background: var(--panel); border-bottom: 1px solid var(--border); padding: 18px 32px 0; }
 .hero-row { display: flex; gap: 16px; align-items: center; margin-top: 10px; flex-wrap: wrap; }

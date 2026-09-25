@@ -11,8 +11,9 @@ const TASK_STATUSES = ['backlog', 'todo', 'in_progress', 'review', 'done', 'bloc
 const PRIORITIES = ['low', 'medium', 'high', 'urgent'];
 const RUN_STATUSES = ['running', 'success', 'failed'];
 
-const AGENT_FIELDS = ['name', 'role', 'description', 'platform', 'status', 'model', 'system_prompt', 'webhook_url', 'color'];
+const AGENT_FIELDS = ['name', 'title', 'team_id', 'description', 'platform', 'status', 'model', 'system_prompt', 'webhook_url', 'color'];
 const TASK_FIELDS = ['title', 'description', 'status', 'priority', 'agent_id', 'due_date', 'result'];
+const TEAM_FIELDS = ['name', 'description', 'color'];
 const WORKFLOW_FIELDS = ['name', 'description', 'agent_id', 'schedule', 'timezone', 'instructions', 'enabled'];
 
 class HttpError extends Error {
@@ -123,52 +124,103 @@ export function dashboardRouter() {
     ),
   ));
 
+  // Teams
+  const getTeams = () =>
+    all(
+      `SELECT tm.*, (SELECT COUNT(*) FROM agents a WHERE a.team_id = tm.id) AS agent_count
+       FROM teams tm ORDER BY tm.id`,
+    );
+  r.get('/teams', wrap(getTeams));
+
+  r.post('/teams', wrap((req) => {
+    const name = req.body.name?.trim();
+    if (!name) throw bad('Team name is required');
+    if (get('SELECT id FROM teams WHERE name = ?', name)) throw bad(`A team called "${name}" already exists`);
+    const { lastInsertRowid } = run('INSERT INTO teams (name, description, color) VALUES (?, ?, ?)', name, req.body.description ?? '', req.body.color ?? '#6366f1');
+    logActivity(null, 'agent', `Team "${name}" created`);
+    emit('agent');
+    return getTeams().find((t) => t.id === Number(lastInsertRowid));
+  }));
+
+  r.patch('/teams/:id', wrap((req) => {
+    if (!get('SELECT id FROM teams WHERE id = ?', req.params.id)) throw notFound('Team');
+    const patch = { ...req.body };
+    if (patch.name !== undefined) {
+      patch.name = patch.name.trim();
+      if (!patch.name) throw bad('Team name is required');
+      if (get('SELECT id FROM teams WHERE name = ? AND id != ?', patch.name, req.params.id)) throw bad(`A team called "${patch.name}" already exists`);
+    }
+    update('teams', req.params.id, patch, TEAM_FIELDS);
+    emit('agent');
+    return getTeams().find((t) => t.id === Number(req.params.id));
+  }));
+
+  r.delete('/teams/:id', wrap((req) => {
+    run('DELETE FROM teams WHERE id = ?', req.params.id); // agents keep existing, with no team
+    emit('agent');
+    return { ok: true };
+  }));
+
   // Agents
+  const AGENT_SELECT = `SELECT a.*, tm.name AS team_name, tm.color AS team_color FROM agents a LEFT JOIN teams tm ON tm.id = a.team_id`;
+  const getAgent = (id) => get(`${AGENT_SELECT} WHERE a.id = ?`, id);
+  const checkTeam = (teamId) => {
+    if (teamId !== undefined && teamId !== null && !get('SELECT id FROM teams WHERE id = ?', teamId)) throw bad('Unknown team');
+  };
+
   r.get('/agents', wrap(() =>
     all(
-      `SELECT a.*,
+      `SELECT a.*, tm.name AS team_name, tm.color AS team_color,
         (SELECT COUNT(*) FROM tasks t WHERE t.agent_id = a.id AND t.status != 'done') AS open_tasks,
         (SELECT COUNT(*) FROM workflows w WHERE w.agent_id = a.id AND w.enabled = 1) AS workflows,
         (SELECT body FROM messages m WHERE m.agent_id = a.id ORDER BY id DESC LIMIT 1) AS last_message,
         (SELECT created_at FROM messages m WHERE m.agent_id = a.id ORDER BY id DESC LIMIT 1) AS last_message_at
-       FROM agents a ORDER BY a.name`,
+       FROM agents a LEFT JOIN teams tm ON tm.id = a.team_id ORDER BY a.name`,
     ).map(publicAgent),
   ));
 
   r.get('/agents/:id', wrap((req) => {
-    const agent = get('SELECT * FROM agents WHERE id = ?', req.params.id);
+    const agent = getAgent(req.params.id);
     if (!agent) throw notFound('Agent');
     return agent; // includes api_token: the dashboard is the admin surface
   }));
 
   r.post('/agents', wrap((req) => {
     const b = req.body;
-    if (!b.name?.trim()) throw bad('name is required');
+    if (!b.name?.trim()) throw bad('Name is required');
+    if (!b.title?.trim()) throw bad('Title is required');
+    if (!b.team_id) throw bad('Choose a team for this agent');
+    checkTeam(b.team_id);
     check(b.platform, PLATFORMS, 'platform');
     check(b.status, AGENT_STATUSES, 'status');
     const { lastInsertRowid } = run(
-      `INSERT INTO agents (name, role, description, platform, status, model, system_prompt, webhook_url, color, api_token)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      b.name.trim(), b.role ?? '', b.description ?? '', b.platform ?? 'custom', b.status ?? 'idle',
+      `INSERT INTO agents (name, title, team_id, description, platform, status, model, system_prompt, webhook_url, color, api_token)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      b.name.trim(), b.title.trim(), b.team_id, b.description ?? '', b.platform ?? 'custom', b.status ?? 'idle',
       b.model ?? '', b.system_prompt ?? '', b.webhook_url ?? '', b.color ?? '#6366f1', newToken(),
     );
-    logActivity(lastInsertRowid, 'agent', `Agent "${b.name.trim()}" added`);
+    const agent = getAgent(lastInsertRowid);
+    logActivity(agent.id, 'agent', `${agent.name} joined ${agent.team_name} as ${agent.title}`);
     emit('agent');
-    return get('SELECT * FROM agents WHERE id = ?', lastInsertRowid);
+    return agent;
   }));
 
   r.patch('/agents/:id', wrap((req) => {
     if (!get('SELECT id FROM agents WHERE id = ?', req.params.id)) throw notFound('Agent');
-    check(req.body.platform, PLATFORMS, 'platform');
-    check(req.body.status, AGENT_STATUSES, 'status');
-    update('agents', req.params.id, req.body, AGENT_FIELDS);
+    const b = req.body;
+    if (b.name !== undefined && !String(b.name).trim()) throw bad('Name is required');
+    if (b.title !== undefined && !String(b.title).trim()) throw bad('Title is required');
+    checkTeam(b.team_id);
+    check(b.platform, PLATFORMS, 'platform');
+    check(b.status, AGENT_STATUSES, 'status');
+    update('agents', req.params.id, b, AGENT_FIELDS);
     emit('agent', { agent_id: Number(req.params.id) });
-    return get('SELECT * FROM agents WHERE id = ?', req.params.id);
+    return getAgent(req.params.id);
   }));
 
   r.post('/agents/:id/rotate-token', wrap((req) => {
     run('UPDATE agents SET api_token = ? WHERE id = ?', newToken(), req.params.id);
-    return get('SELECT * FROM agents WHERE id = ?', req.params.id);
+    return getAgent(req.params.id);
   }));
 
   r.delete('/agents/:id', wrap((req) => {

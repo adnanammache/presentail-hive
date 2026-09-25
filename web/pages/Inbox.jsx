@@ -19,7 +19,7 @@ export default function Inbox({ id, meta }) {
                 <strong>{a.name}</strong>
                 <span className="muted small">{a.last_message_at ? ago(a.last_message_at) : ''}</span>
               </div>
-              <div className="row-sub clamp-1">{a.last_message ?? a.role}</div>
+              <div className="row-sub clamp-1">{a.last_message ?? a.title}</div>
             </div>
           </a>
         ))}
@@ -31,7 +31,7 @@ export default function Inbox({ id, meta }) {
               <Avatar name={current.name} color={current.color} size={32} status={current.status} />
               <div className="grow">
                 <strong>{current.name}</strong>
-                <div className="muted small">{current.role}</div>
+                <div className="muted small">{current.title}{current.team_name ? ` · ${current.team_name}` : ''}</div>
               </div>
               <a className="btn btn-sm" href={`#/agents/${current.id}`}>
                 Open agent
