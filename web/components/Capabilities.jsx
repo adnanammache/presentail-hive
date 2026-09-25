@@ -114,7 +114,7 @@ export default function Capabilities({ agent, onSaved }) {
           ))}
           <div className="check-card disabled">
             <div className="grow">
-              <div className="check-title">Odoo, Google Drive, Gmail, Slack, Asana</div>
+              <div className="check-title">Google Drive, Gmail, Slack, Asana</div>
               <div className="row-sub">Coming next, as each team's agents go live.</div>
             </div>
           </div>

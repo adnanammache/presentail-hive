@@ -1,0 +1,115 @@
+// Direct Odoo access for agents, executed by Hive (not in the agent's sandbox).
+//
+// Agents get an `odoo` custom tool. When they call it, the session pauses and Hive runs the
+// call against Odoo 19's JSON-2 API with its own API key, so the key never leaves Hive.
+// Reads run straight away; anything that creates, changes, posts or deletes waits for a human
+// to click Approve in Hive. Every call is logged in odoo_actions.
+//
+// Env: ODOO_API_KEY (required), ODOO_URL (default https://presentail.odoo.com),
+//      ODOO_DB (default: the subdomain, e.g. "presentail").
+
+export const odooConfigured = () => Boolean(process.env.ODOO_API_KEY);
+const odooUrl = () => (process.env.ODOO_URL || 'https://presentail.odoo.com').replace(/\/$/, '');
+const odooDb = () => process.env.ODOO_DB || new URL(odooUrl()).hostname.split('.')[0];
+
+export const COMPANIES = {
+  1: 'Presentail LTD (Cyprus, EUR books)',
+  2: 'Presentail SAL (Lebanon)',
+  3: 'Presentail Flowers Trading L.L.C (UAE)',
+};
+
+// Methods that only read. Everything else is treated as a change and needs approval.
+const READ_METHODS = new Set([
+  'search_read', 'read', 'search', 'search_count', 'fields_get', 'name_search', 'read_group',
+  'formatted_read_group', 'web_search_read', 'web_read', 'default_get', 'has_access', 'check_access_rights',
+  'get_views', 'context_get',
+]);
+// Never allowed through the agent tool, even with approval.
+const FORBIDDEN_MODELS = /^(ir\.|res\.users|res\.groups|base\.|auth_|mail\.template|account\.(journal|account|tax)$)/;
+
+/** read: run now · write: needs approval · forbidden: refuse */
+export function classify(model, method) {
+  if (!/^[a-z][a-z0-9_.]*$/.test(model || '') || !/^[a-z][a-z0-9_]*$/.test(method || '')) return 'forbidden';
+  if (READ_METHODS.has(method)) return 'read';
+  if (FORBIDDEN_MODELS.test(model)) return 'forbidden';
+  return 'write';
+}
+
+export const ODOO_TOOL = {
+  type: 'custom',
+  name: 'odoo',
+  description: [
+    "Call Presentail's Odoo 19 (presentail.odoo.com) through Hive. One call = one model method.",
+    'Reads (search_read, read, search, search_count, fields_get, name_search, read_group) run immediately.',
+    'Anything that changes data (create, write, action_post, reconcile, unlink, …) pauses until a human approves it in Hive,',
+    'so batch related changes into as few calls as you sensibly can, and describe them in your message first.',
+    'Configuration models (ir.*, users, groups, journals, chart of accounts, taxes) cannot be changed.',
+    `Companies: ${Object.entries(COMPANIES).map(([id, n]) => `${id} = ${n}`).join('; ')}. Always pass company_id.`,
+    'Arguments follow Odoo JSON-2: record methods take `ids`; other arguments go in `params` by name, e.g.',
+    'search_read → params {domain, fields, limit, order}; create → params {vals_list: [{…}]}; write → ids + params {vals: {…}};',
+    'action_post → ids. Where a skill describes a Make scenario or execute_kw call, make the equivalent call here.',
+  ].join(' '),
+  input_schema: {
+    type: 'object',
+    properties: {
+      model: { type: 'string', description: 'Odoo model, e.g. account.move' },
+      method: { type: 'string', description: 'Model method, e.g. search_read, create, write, action_post' },
+      company_id: { type: 'integer', description: 'Company to act as: 1 LTD, 2 SAL, 3 UAE' },
+      ids: { type: 'array', items: { type: 'integer' }, description: 'Record ids, for methods that act on records' },
+      params: { type: 'object', description: 'Named arguments for the method (domain, fields, vals, vals_list, limit, …)' },
+      reason: { type: 'string', description: 'For changes: one line on what this does and why, shown to the approver' },
+    },
+    required: ['model', 'method', 'company_id'],
+  },
+};
+
+const MAX_RESULT = 60_000;
+
+/** Run one call against Odoo's JSON-2 API. */
+export async function odooCall({ model, method, ids, params = {}, company_id }) {
+  if (!odooConfigured()) throw new Error('Odoo is not connected (ODOO_API_KEY is not set)');
+  if (classify(model, method) === 'forbidden') throw new Error(`${model}.${method} is not allowed through Hive`);
+  const body = { ...(params || {}) };
+  if (Array.isArray(ids)) body.ids = ids;
+  if (company_id) body.context = { ...(body.context || {}), allowed_company_ids: [company_id] };
+  const res = await fetch(`${odooUrl()}/json/2/${model}/${method}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `bearer ${process.env.ODOO_API_KEY}`,
+      'X-Odoo-Database': odooDb(),
+      'User-Agent': 'Presentail-Hive',
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(60_000),
+  });
+  const text = await res.text();
+  let json;
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch {
+    json = text;
+  }
+  if (!res.ok) {
+    const message = (json && (json.message || json.error?.message)) || `HTTP ${res.status}`;
+    throw new Error(`Odoo: ${message}`);
+  }
+  return json;
+}
+
+export function formatResult(result) {
+  const text = JSON.stringify(result);
+  return text.length > MAX_RESULT ? `${text.slice(0, MAX_RESULT)}… [truncated ${text.length - MAX_RESULT} characters; narrow the fields or domain]` : text;
+}
+
+/** For Settings: check the key works and list the companies it can see. */
+export async function testOdoo() {
+  const companies = await odooCall({ model: 'res.company', method: 'search_read', params: { fields: ['id', 'name'], order: 'id' } });
+  return { url: odooUrl(), db: odooDb(), companies };
+}
+
+export function describeCall(input) {
+  const company = input.company_id ? ` · ${COMPANIES[input.company_id]?.split(' (')[0] ?? `company ${input.company_id}`}` : '';
+  const ids = input.ids?.length ? ` [${input.ids.slice(0, 8).join(', ')}${input.ids.length > 8 ? ', …' : ''}]` : '';
+  return `${input.model}.${input.method}${ids}${company}`;
+}

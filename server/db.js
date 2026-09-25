@@ -167,9 +167,28 @@ CREATE TABLE IF NOT EXISTS run_outputs (
   created_at  TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE (run_id, file_id)
 );
+-- Every Odoo call an agent makes through Hive: what, for whom, who approved, what came back.
+CREATE TABLE IF NOT EXISTS odoo_actions (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id       INTEGER REFERENCES runs(id) ON DELETE SET NULL,
+  agent_id     INTEGER REFERENCES agents(id) ON DELETE SET NULL,
+  event_id     TEXT NOT NULL UNIQUE,
+  model        TEXT NOT NULL,
+  method       TEXT NOT NULL,
+  company_id   INTEGER,
+  input        TEXT NOT NULL,
+  kind         TEXT NOT NULL,                     -- read | write | forbidden
+  status       TEXT NOT NULL,                     -- pending | executed | failed | rejected | refused
+  approved_by  TEXT,
+  result       TEXT,
+  created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  finished_at  TEXT
+);
 CREATE INDEX IF NOT EXISTS idx_runs_task ON runs(task_id, id);
 CREATE INDEX IF NOT EXISTS idx_run_events_run ON run_events(run_id, id);
 `);
+
+addColumn('runs', 'auto_approve', 'INTEGER NOT NULL DEFAULT 0'); // "approve the rest of this run"
 
 export const DATA_DIR = DB_PATH === ':memory:' ? './data' : dirname(DB_PATH);
 

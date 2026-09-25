@@ -8,6 +8,7 @@ Presentail's hive of AI agents: see every agent, what it's working on, what's sc
 - **Tasks**: a Kanban board (Backlog → To do → In progress → Needs review → Blocked → Done). Assigning a task to an agent sends it to that agent.
 - **Recurring workflows**: cron schedules with timezones (e.g. "Talabat month-end, 2nd of every month 09:00 Dubai"). Each run creates a task for the agent, sends it the instructions and records the run history.
 - **Inbox / chat**: a conversation thread with every agent. Claude agents reply live. Webhook agents can reply synchronously or later through the API.
+- **Odoo, safely**: agents read Odoo freely. Every create/write/post/reconcile waits for Approve in Hive (or *Approve all for this run*), configuration is off-limits, and every change is logged with who approved it. Hive holds the key (`ODOO_API_KEY`).
 - **Org chart**: Presentail's teams and agents as a tree, with status, open tasks and AI spend per agent.
 - **AI spend**: month-to-date cost of agent runs, daily for 30 days, by team and by agent. It appears on the dashboard, team headers and agent cards.
 - **Agent output files**: reports and spreadsheets an agent saves are downloadable from the task.
@@ -37,6 +38,7 @@ APP_PASSWORD=choose-one ANTHROPIC_API_KEY=sk-ant-... npm start   # serves UI + A
 | Variable | Purpose |
 |---|---|
 | `ANTHROPIC_API_KEY` | Powers Claude agents: chat-only agents, and Claude Managed Agents that run tasks with skills and tools. |
+| `ODOO_API_KEY` (+ optional `ODOO_URL`, `ODOO_DB`) | Odoo for agents, executed by Hive with approvals. |
 | `WAFEQ_API_KEY` | Wafeq integration for managed agents (kept in an Anthropic vault, never shown to the agent). |
 | `DEFAULT_CLAUDE_MODEL` | Model used when an agent doesn't set one (default `claude-opus-5`). |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Turns on **Continue with Google** sign-in (see DEPLOY.md). |

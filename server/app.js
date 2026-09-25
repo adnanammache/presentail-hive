@@ -5,6 +5,7 @@ import { logActivity } from './activity.js';
 import { claudeConfigured, dispatchTask, postMessage, sendToAgent } from './dispatch.js';
 import { integrationList, skillLibrary } from './capabilities.js';
 import { sendSlack, slackConfigured } from './notify.js';
+import { COMPANIES, testOdoo } from './odoo.js';
 import { authMode } from './auth.js';
 import { confirmTool, downloadOutput, interruptRun, managedReady, replyToRun, runWithEvents, startTaskRun, syncAgent } from './managed.js';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -289,6 +290,24 @@ export function dashboardRouter() {
     return { ok: true };
   }));
 
+  r.post('/settings/odoo/test', wrap(async () => {
+    try {
+      return await testOdoo();
+    } catch (err) {
+      throw bad(err.message);
+    }
+  }));
+  // Every Odoo call agents made through Hive, newest first
+  r.get('/odoo/actions', wrap((req) =>
+    all(
+      `SELECT o.id, o.model, o.method, o.company_id, o.kind, o.status, o.approved_by, o.created_at, o.run_id, a.name AS agent_name, r.task_id,
+        substr(o.result, 1, 300) AS result
+       FROM odoo_actions o LEFT JOIN agents a ON a.id = o.agent_id LEFT JOIN runs r ON r.id = o.run_id
+       WHERE (? = 1 OR o.kind != 'read') ORDER BY o.id DESC LIMIT 200`,
+      req.query.reads === '1' ? 1 : 0,
+    ).map((x) => ({ ...x, company: COMPANIES[x.company_id]?.split(' (')[0] ?? null })),
+  ));
+
   // Capabilities: what agents can be given
   r.get('/capabilities', wrap(() => ({ skills: skillLibrary(), integrations: integrationList(), managed: managedReady() })));
 
@@ -382,7 +401,10 @@ export function dashboardRouter() {
     return { ok: true };
   }));
   r.post('/runs/:id/confirm', wrap(async (req) => {
-    await confirmTool(Number(req.params.id), req.body.event_id, req.body.result === 'allow', req.body.deny_message);
+    await confirmTool(Number(req.params.id), req.body.event_id, req.body.result === 'allow', req.body.deny_message, {
+      by: req.user?.name || req.user?.email || 'Hive user',
+      approveRest: Boolean(req.body.approve_rest),
+    });
     return { ok: true };
   }));
   r.get('/runs/:id/outputs/:outputId', async (req, res, next) => {
