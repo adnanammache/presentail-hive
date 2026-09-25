@@ -195,6 +195,23 @@ addColumn('tasks', 'handoff_agent_id', 'INTEGER REFERENCES agents(id) ON DELETE 
 addColumn('tasks', 'parent_task_id', 'INTEGER REFERENCES tasks(id) ON DELETE SET NULL'); // set on "Review: …" tasks
 addColumn('tasks', 'handoff_task_id', 'INTEGER'); // the review task opened for this one
 
+// Month-end close: the recurring jobs per company, and which task did each one for a month.
+db.exec(`
+CREATE TABLE IF NOT EXISTS close_items (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  entity        TEXT NOT NULL,                   -- UAE | Lebanon | Cyprus (free text)
+  name          TEXT NOT NULL,
+  agent_id      INTEGER REFERENCES agents(id) ON DELETE SET NULL,
+  instructions  TEXT NOT NULL DEFAULT '',        -- {month} is replaced with e.g. "August 2026"
+  files_hint    TEXT NOT NULL DEFAULT '',        -- what to attach
+  due_day       INTEGER NOT NULL DEFAULT 10,     -- due on this day of the following month
+  sort          INTEGER NOT NULL DEFAULT 0,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+`);
+addColumn('tasks', 'close_item_id', 'INTEGER REFERENCES close_items(id) ON DELETE SET NULL');
+addColumn('tasks', 'period', 'TEXT'); // YYYY-MM the close task is for
+
 db.exec(`
 CREATE TABLE IF NOT EXISTS briefs (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,

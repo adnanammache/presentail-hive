@@ -8,6 +8,7 @@ import { emit } from './events.js';
 import { baseUrl, sendSlack } from './notify.js';
 import { nextRuns } from './scheduler.js';
 import { pushToAll } from './push.js';
+import { closeSummary } from './close.js';
 
 const CONFIG_KEY = 'brief-config';
 export const DEFAULT_CONFIG = { enabled: true, time: '07:45', days: '1-5', timezone: 'Asia/Dubai' };
@@ -147,7 +148,7 @@ export function buildBrief({ since } = {}) {
       .filter(Boolean)
       .join(' · ') + '.';
 
-  return { since, headline, approvals, review, teams, failed, today, spend };
+  return { since, headline, approvals, review, teams, failed, today, spend, close: closeSummary() };
 }
 
 const usd = (c) => `$${(c / 100).toFixed(2)}`;
@@ -179,6 +180,14 @@ export function renderBrief(b, { slack = false, timezone = 'UTC' } = {}) {
   if (b.today.length) {
     out.push(bold('Scheduled today'));
     for (const w of b.today) out.push(`• ${time(w.at, w.timezone)} ${slack ? esc(w.name) : w.name}${w.agent ? ` (${w.agent})` : ''}`);
+    out.push('');
+  }
+  if (b.close && b.close.done < b.close.total) {
+    const c = b.close;
+    out.push(bold(`${c.label} close: ${c.done} of ${c.total} done`));
+    if (c.overdue.length) out.push(`• Overdue: ${c.overdue.join(', ')}`);
+    if (c.not_started.length) out.push(`• Not started: ${c.not_started.join(', ')}`);
+    out.push(slack ? `<${url}/#/close|Open the close board>` : '');
     out.push('');
   }
   out.push(`AI spend: ${usd(b.spend.since_cents)} since the last brief, ${usd(b.spend.month_cents)} this month.`);
