@@ -32,6 +32,7 @@ const NAV = [
 function Shell() {
   const [section = '', id] = useHashRoute();
   const { data: meta } = useApi('/meta');
+  const { data: me } = useApi('/me');
   const { data: overview } = useApi('/overview', ['task']);
   const [navOpen, setNavOpen] = useState(false);
   const live = useContext(LiveContext);
@@ -66,6 +67,17 @@ function Shell() {
           ))}
         </nav>
         <div className="sidebar-foot">
+          {me?.auth === 'google' && (
+            <div className="me">
+              {me.picture ? <img src={me.picture} alt="" referrerPolicy="no-referrer" /> : <span className="me-initial">{me.name[0]}</span>}
+              <div className="grow">
+                <div className="me-name clamp-1">{me.name}</div>
+                <a href="/auth/logout" className="link small">
+                  Sign out
+                </a>
+              </div>
+            </div>
+          )}
           <span className={`live ${live.connected ? 'on' : ''}`} /> {live.connected ? 'Live' : 'Reconnecting…'}
           {meta && !meta.claude && <div className="warn-note">Claude API key not set — Claude agents can’t reply yet.</div>}
         </div>
