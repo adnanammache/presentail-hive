@@ -211,6 +211,8 @@ CREATE TABLE IF NOT EXISTS close_items (
 `);
 addColumn('tasks', 'close_item_id', 'INTEGER REFERENCES close_items(id) ON DELETE SET NULL');
 addColumn('tasks', 'period', 'TEXT'); // YYYY-MM the close task is for
+addColumn('agents', 'budget_cents', 'INTEGER'); // monthly AI budget; NULL = no limit
+addColumn('teams', 'budget_cents', 'INTEGER');
 
 db.exec(`
 -- Slack threads started with an agent (a chat, or a task created from files)

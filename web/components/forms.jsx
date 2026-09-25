@@ -62,9 +62,9 @@ const numOrNull = (v) => (v === '' || v == null ? null : Number(v));
 
 // ---------------- Team ----------------
 export function TeamForm({ team, onClose, onSaved }) {
-  const { values, set, submit, error, saving } = useForm({ name: '', description: '', color: COLORS[1], ...team });
+  const { values, set, submit, error, saving } = useForm({ name: '', description: '', color: COLORS[1], ...team, budget: team?.budget_cents != null ? team.budget_cents / 100 : '' });
   const save = submit(async (v) => {
-    const body = { name: v.name, description: v.description, color: v.color };
+    const body = { name: v.name, description: v.description, color: v.color, budget: v.budget };
     const saved = team ? await api(`/teams/${team.id}`, { method: 'PATCH', body }) : await api('/teams', { method: 'POST', body });
     onSaved?.(saved);
     onClose();
@@ -82,6 +82,9 @@ export function TeamForm({ team, onClose, onSaved }) {
         </Field>
         <Field label="What this team does">
           <textarea rows={2} value={values.description} onChange={set('description')} />
+        </Field>
+        <Field label="Monthly AI budget (USD)" hint="For the whole team. Alert at 80%; new runs pause at 100% until you raise it. Leave empty for no limit.">
+          <input type="number" min="0" step="1" inputMode="decimal" value={values.budget} onChange={set('budget')} placeholder="No limit" />
         </Field>
         <Field label="Colour">
           <Swatches value={values.color} onChange={set('color')} />
@@ -112,6 +115,7 @@ export function AgentForm({ agent, defaults = {}, onClose, onSaved }) {
     name: '', title: '', team_id: '', new_team: '', description: '', platform: 'claude', model: '', system_prompt: '', webhook_url: '', color: COLORS[0], status: 'idle', reviewer_id: '',
     ...defaults,
     ...agent,
+    budget: agent?.budget_cents != null ? agent.budget_cents / 100 : '',
   });
   const save = submit(async (v) => {
     let teamId = v.team_id;
@@ -123,6 +127,7 @@ export function AgentForm({ agent, defaults = {}, onClose, onSaved }) {
       name: v.name, title: v.title, team_id: numOrNull(teamId), description: v.description, platform: v.platform,
       model: v.model, system_prompt: v.system_prompt, webhook_url: v.webhook_url, color: v.color, status: v.status,
       reviewer_id: numOrNull(v.reviewer_id),
+      budget: v.budget,
     };
     const saved = agent ? await api(`/agents/${agent.id}`, { method: 'PATCH', body }) : await api('/agents', { method: 'POST', body });
     onSaved?.(saved);
@@ -178,6 +183,9 @@ export function AgentForm({ agent, defaults = {}, onClose, onSaved }) {
         </div>
         <Field label="Description">
           <textarea rows={2} value={values.description} onChange={set('description')} />
+        </Field>
+        <Field label="Monthly AI budget (USD)" hint="Alert at 80%; new runs pause at 100% until you raise it. Leave empty for no limit.">
+          <input type="number" min="0" step="1" inputMode="decimal" value={values.budget} onChange={set('budget')} placeholder="No limit" />
         </Field>
         <Field label="Work reviewed by" hint="When this agent finishes a task, it goes to this agent to check before it comes to you.">
           <select value={values.reviewer_id ?? ''} onChange={set('reviewer_id')}>

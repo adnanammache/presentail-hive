@@ -230,6 +230,12 @@ export default function AgentDetail({ id, meta }) {
               <span className="pill">{PLATFORM_LABELS[agent.platform]}</span>
               {agent.platform === 'claude' && <span className="pill mono">{agent.model || 'claude-opus-5'}</span>}
               <span className="muted small">last seen {ago(agent.last_seen_at)}</span>
+              {(agent.month_cents > 0 || agent.budget_cents != null) && (
+                <span className={`muted small ${agent.budget_cents != null && agent.month_cents >= agent.budget_cents ? 'over-budget' : ''}`}>
+                  · ${((agent.month_cents || 0) / 100).toFixed(2)}
+                  {agent.budget_cents != null && ` of $${(agent.budget_cents / 100).toFixed(2)}`} this month
+                </span>
+              )}
             </div>
           </div>
           <div className="page-actions">

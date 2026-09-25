@@ -139,7 +139,10 @@ function Panel({ a, onClose, onAssign }) {
         </div>
         <div>
           <dt>This month</dt>
-          <dd>{money(a.month_cents || 0)}</dd>
+          <dd>
+            {money(a.month_cents || 0)}
+            {a.budget_cents != null && <span className="muted"> / {money(a.budget_cents)}</span>}
+          </dd>
         </div>
         <div>
           <dt>Runs on</dt>

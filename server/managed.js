@@ -18,6 +18,7 @@ import { notifyRun, settleApprovalAlert } from './notify.js';
 import { TASK_TOOL, finishTask } from './handoff.js';
 import { AGENT_DM_TOOL, askAgent } from './conversations.js';
 import { lessonsBlock } from './lessons.js';
+import { checkBudget, checkThresholds } from './budget.js';
 import { ODOO_TOOL, classify, describeCall, formatResult, odooCall } from './odoo.js';
 
 const DEFAULT_MODEL = process.env.DEFAULT_CLAUDE_MODEL || 'claude-opus-5';
@@ -287,6 +288,7 @@ export function startTaskRun(taskId) {
   if (!agent || agent.platform !== 'managed') throw new Error('This task is not assigned to a Claude Managed Agent');
   if (agent.status === 'paused') throw new Error(`${agent.name} is paused`);
   if (!managedReady()) throw new Error('ANTHROPIC_API_KEY is not set on the server');
+  checkBudget(agent.id);
   if (get(`SELECT id FROM runs WHERE task_id = ? AND status IN (${ACTIVE.map(() => '?').join(',')})`, taskId, ...ACTIVE)) {
     throw new Error('This task is already running');
   }
@@ -310,6 +312,12 @@ export async function chatWithManagedAgent(agentId, text) {
   const agent = get('SELECT * FROM agents WHERE id = ?', agentId);
   let r = get("SELECT * FROM runs WHERE kind = 'chat' AND agent_id = ? AND status NOT IN ('failed', 'ended') ORDER BY id DESC LIMIT 1", agentId);
   try {
+    checkBudget(agentId);
+  } catch (err) {
+    postMessage(agentId, 'system', err.message);
+    return;
+  }
+  try {
     if (!r) {
       const runId = Number(run("INSERT INTO runs (kind, agent_id, status) VALUES ('chat', ?, 'starting')", agentId).lastInsertRowid);
       const session = await createSession(agent, { title: `Chat with ${agent.name}`, metadata: { hive_chat_agent_id: String(agentId) } });
@@ -328,6 +336,7 @@ export async function chatWithManagedAgent(agentId, text) {
  */
 export async function consultManagedAgent(agentId, text, { timeoutMs = 15 * 60 * 1000, title = 'Question from a colleague' } = {}) {
   const agent = get('SELECT * FROM agents WHERE id = ?', agentId);
+  checkBudget(agentId);
   const runId = Number(run("INSERT INTO runs (kind, agent_id, status) VALUES ('consult', ?, 'starting')", agentId).lastInsertRowid);
   try {
     const session = await createSession(agent, { title, metadata: { hive_consult_run_id: String(runId) } });
@@ -651,6 +660,7 @@ export function handleEvent(runId, ev) {
       break;
     case 'session.usage':
       setRun(runId, { cost_cents: data.cost_cents });
+      checkThresholds(r.agent_id);
       break;
     default:
       emit('run', { run_id: runId, task_id: r.task_id, agent_id: r.agent_id });
