@@ -486,3 +486,13 @@ textarea { resize: vertical; }
     .composer { padding-bottom: max(16px, env(safe-area-inset-bottom)); }
   }
 }
+
+.approval.odoo { border-color: var(--accent); background: var(--accent-soft); }
+.odoo-call code { font-size: 13px; background: var(--panel); }
+.approval details summary { cursor: pointer; color: var(--accent); }
+.tl-tool.odoo-write code { background: var(--amber-soft); color: var(--amber); }
+.tl-tool .badge { flex-shrink: 0; }
+.audit { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.audit td, .audit th { padding: 6px 8px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+.audit th { color: var(--muted); font-weight: 600; }
+.audit td.mono { font-family: ui-monospace, Menlo, monospace; }

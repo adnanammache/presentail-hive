@@ -15,6 +15,7 @@ import { logActivity } from './activity.js';
 import { INTEGRATIONS, parseList, skillFiles, skillHash, skillLibrary } from './capabilities.js';
 import { postMessage } from './dispatch.js';
 import { notifyRun } from './notify.js';
+import { ODOO_TOOL, classify, describeCall, formatResult, odooCall } from './odoo.js';
 
 const DEFAULT_MODEL = process.env.DEFAULT_CLAUDE_MODEL || 'claude-opus-5';
 const ENV_NAME = process.env.HIVE_ENVIRONMENT_NAME || (process.env.NODE_ENV === 'production' ? 'presentail-hive' : 'presentail-hive-dev');
@@ -71,7 +72,8 @@ export async function ensureEnvironment() {
 
 /** A vault holding integration secrets. The sandbox only ever sees placeholders; Anthropic swaps the real value in at egress. */
 export async function ensureVault() {
-  const integrations = configuredIntegrations();
+  // Integrations Hive runs itself (Odoo) never go to the vault.
+  const integrations = configuredIntegrations().filter(([, i]) => i.via !== 'hive');
   if (!integrations.length) return null;
   let vault = meta.get('ma:vault');
   if (!vault) {
@@ -127,7 +129,13 @@ export function composeSystem(agent) {
     '## How you work (Presentail Hive)',
     '- Your work arrives as tasks from Presentail Hive. Files attached to a task are in /workspace/inputs/.',
     available.length
-      ? `- Systems you can reach: ${available.map((k) => `${INTEGRATIONS[k].name} (credentials are in $${INTEGRATIONS[k].env}; use it exactly as your skills describe)`).join('; ')}.`
+      ? `- Systems you can reach: ${available
+          .map((k) =>
+            INTEGRATIONS[k].via === 'hive'
+              ? `${INTEGRATIONS[k].name} (through the \`${k}\` tool; Hive runs each call, reads are immediate and every change waits for a person to approve it, so say what you are about to change and why before calling)`
+              : `${INTEGRATIONS[k].name} (credentials are in $${INTEGRATIONS[k].env}; use it exactly as your skills describe)`,
+          )
+          .join('; ')}.`
       : '- You have no live system access yet; work from the files and information you are given.',
     missing.length ? `- Not connected yet: ${missing.map((k) => INTEGRATIONS[k]?.name ?? k).join(', ')}. If a task needs them, say so and stop.` : '',
     '- Before writing to any live system (bills, invoices, payments, journal entries, emails), do a dry run, show a short summary (counts, totals, anything unusual) and stop to ask for an explicit go-ahead. Only write after the user approves in this conversation.',
@@ -141,7 +149,10 @@ export function composeSystem(agent) {
 async function buildAgentConfig(agent) {
   const library = skillLibrary();
   const skills = [];
-  for (const key of parseList(agent.skills)) {
+  const keys = parseList(agent.skills);
+  // Agents with Odoo always get the guide to using the odoo tool.
+  if (parseList(agent.integrations).includes('odoo') && !keys.includes('hive-odoo')) keys.unshift('hive-odoo');
+  for (const key of keys) {
     const item = library.find((s) => s.key === key);
     if (item) skills.push(await ensureSkill(item));
   }
@@ -158,6 +169,7 @@ async function buildAgentConfig(agent) {
         // "Ask before every command": anything that can change state waits for a click in Hive.
         configs: agent.approval === 'every_command' ? ['bash', 'write', 'edit'].map((name) => ({ name, permission_policy: ask })) : [],
       },
+      ...(parseList(agent.integrations).includes('odoo') ? [ODOO_TOOL] : []),
     ],
     metadata: { hive_agent_id: String(agent.id) },
   };
@@ -311,16 +323,111 @@ export async function replyToRun(runId, text) {
   sendAndFollow(runId, [{ type: 'user.message', content: [{ type: 'text', text }] }]).catch((err) => failRun(runId, err));
 }
 
-export async function confirmTool(runId, eventId, allow, denyMessage) {
+export async function confirmTool(runId, eventId, allow, denyMessage, { by = 'Hive user', approveRest = false } = {}) {
   const r = getRun(runId);
   const pending = parseList(r?.pending);
-  if (!pending.some((p) => p.event_id === eventId)) throw new Error('That approval is no longer pending');
-  const rest = pending.filter((p) => p.event_id !== eventId);
+  const item = pending.find((p) => p.event_id === eventId);
+  if (!item) throw new Error('That approval is no longer pending');
+  // "Approve all for this run": this and every other Odoo change in the run go through without asking.
+  if (allow && approveRest) run('UPDATE runs SET auto_approve = 1 WHERE id = ?', runId);
+  const resolving = allow && approveRest ? pending.filter((p) => p.event_id === eventId || p.kind === 'odoo') : [item];
+  const rest = pending.filter((p) => !resolving.includes(p));
   setRun(runId, { pending: JSON.stringify(rest), status: rest.length ? 'needs_approval' : 'running' });
   if (!rest.length) setTask(r.task_id, 'in_progress');
-  const event = { type: 'user.tool_confirmation', tool_use_id: eventId, result: allow ? 'allow' : 'deny' };
-  if (!allow && denyMessage) event.deny_message = denyMessage;
-  sendAndFollow(runId, [event]).catch((err) => failRun(runId, err));
+
+  const events = [];
+  for (const p of resolving) {
+    if (p.kind === 'odoo') {
+      if (allow) events.push(await executeOdoo(runId, p.event_id, by));
+      else {
+        const why = `Rejected by ${by}${denyMessage ? `: ${denyMessage}` : ''}. Nothing was changed in Odoo.`;
+        run("UPDATE odoo_actions SET status = 'rejected', approved_by = ?, result = ?, finished_at = datetime('now') WHERE event_id = ?", by, why, p.event_id);
+        events.push({ type: 'user.custom_tool_result', custom_tool_use_id: p.event_id, content: [{ type: 'text', text: why }], is_error: true });
+      }
+    } else {
+      const event = { type: 'user.tool_confirmation', tool_use_id: p.event_id, result: allow ? 'allow' : 'deny' };
+      if (!allow && denyMessage) event.deny_message = denyMessage;
+      events.push(event);
+    }
+  }
+  sendAndFollow(runId, events).catch((err) => failRun(runId, err));
+}
+
+// ---------------------------------------------------------------- Odoo calls (custom tool)
+
+function recordOdooCall(runId, agentId, eventId, input) {
+  const kind = classify(input?.model, input?.method);
+  run(
+    `INSERT OR IGNORE INTO odoo_actions (run_id, agent_id, event_id, model, method, company_id, input, kind, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued')`,
+    runId, agentId, eventId, String(input?.model ?? ''), String(input?.method ?? ''), Number(input?.company_id) || null, JSON.stringify(input ?? {}), kind,
+  );
+}
+
+async function executeOdoo(runId, eventId, by) {
+  const action = get('SELECT * FROM odoo_actions WHERE event_id = ?', eventId);
+  const result = (text, isError) => ({ type: 'user.custom_tool_result', custom_tool_use_id: eventId, content: [{ type: 'text', text }], ...(isError ? { is_error: true } : {}) });
+  if (!action) return result('Unknown tool call', true);
+  try {
+    const text = formatResult(await odooCall(JSON.parse(action.input)));
+    run("UPDATE odoo_actions SET status = 'executed', approved_by = ?, result = ?, finished_at = datetime('now') WHERE id = ?", by, text.slice(0, 20000), action.id);
+    if (action.kind === 'write') logActivity(action.agent_id, 'task', `Odoo ${action.model}.${action.method} approved by ${by}`);
+    return result(text);
+  } catch (err) {
+    run("UPDATE odoo_actions SET status = 'failed', approved_by = ?, result = ?, finished_at = datetime('now') WHERE id = ?", by, err.message, action.id);
+    return result(err.message, true);
+  }
+}
+
+function odooPendingItem(action) {
+  const input = JSON.parse(action.input);
+  const payload = { ...(input.ids ? { ids: input.ids } : {}), ...(input.params ?? {}) };
+  return {
+    event_id: action.event_id,
+    kind: 'odoo',
+    name: 'odoo',
+    detail: describeCall(input),
+    reason: input.reason ?? '',
+    preview: JSON.stringify(payload, null, 2).slice(0, 4000),
+  };
+}
+
+/** The agent is paused on tool calls: answer Odoo reads now, queue Odoo changes for approval. */
+async function resolveToolCalls(runId, customIds, builtinPending) {
+  const r = getRun(runId);
+  const results = [];
+  const waiting = [];
+  for (const id of customIds) {
+    const action = get('SELECT * FROM odoo_actions WHERE event_id = ?', id);
+    if (!action) {
+      results.push({ type: 'user.custom_tool_result', custom_tool_use_id: id, content: [{ type: 'text', text: 'Unknown tool' }], is_error: true });
+    } else if (action.kind === 'forbidden') {
+      const msg = `${action.model}.${action.method} is not allowed through Hive (configuration, users, journals, accounts and taxes are off-limits). Ask the user to do this in Odoo.`;
+      run("UPDATE odoo_actions SET status = 'refused', result = ?, finished_at = datetime('now') WHERE id = ?", msg, action.id);
+      results.push({ type: 'user.custom_tool_result', custom_tool_use_id: id, content: [{ type: 'text', text: msg }], is_error: true });
+    } else if (action.kind === 'read' || r.auto_approve) {
+      results.push(await executeOdoo(runId, id, action.kind === 'read' ? 'automatic (read-only)' : 'approved for this run'));
+    } else {
+      run("UPDATE odoo_actions SET status = 'pending' WHERE id = ?", action.id);
+      waiting.push(odooPendingItem(action));
+    }
+  }
+  const pending = [...builtinPending, ...waiting];
+  if (pending.length) askForApproval(runId, pending);
+  else setRun(runId, { status: 'running', pending: '[]' });
+  if (results.length) await sendAndFollow(runId, results);
+}
+
+function askForApproval(runId, pending) {
+  const r = setRun(runId, { status: 'needs_approval', pending: JSON.stringify(pending) });
+  setTask(r.task_id, 'review');
+  notifyRun(runId, 'approval', { pending });
+  if (r.kind === 'chat') {
+    for (const p of pending) {
+      const text = p.kind === 'odoo' ? `Approval needed: change Odoo, ${p.detail}${p.reason ? `\n${p.reason}` : ''}` : `Approval needed: ${p.name}${p.detail ? `\n${p.detail}` : ''}`;
+      postMessage(r.agent_id, 'system', text, { type: 'approval', run_id: runId, event_id: p.event_id });
+    }
+  }
 }
 
 export async function interruptRun(runId) {
@@ -394,6 +501,10 @@ function summarize(ev) {
     case 'agent.tool_use':
     case 'agent.mcp_tool_use':
       return toolSummary(ev);
+    case 'agent.custom_tool_use':
+      return { name: ev.name, detail: ev.name === 'odoo' ? describeCall(ev.input || {}) : '', kind: ev.name === 'odoo' ? classify(ev.input?.model, ev.input?.method) : 'custom' };
+    case 'user.custom_tool_result':
+      return { is_error: Boolean(ev.is_error), preview: text(ev.content).slice(0, 300) };
     case 'agent.tool_result':
     case 'agent.mcp_tool_result':
       return { is_error: Boolean(ev.is_error), preview: text(ev.content).slice(0, 400) };
@@ -424,6 +535,10 @@ export function handleEvent(runId, ev) {
     case 'session.status_running':
       if (r.status !== 'needs_approval') setRun(runId, { status: 'running' });
       break;
+    case 'agent.custom_tool_use':
+      if (ev.name === 'odoo') recordOdooCall(runId, r.agent_id, ev.id, ev.input);
+      emit('run', { run_id: runId, task_id: r.task_id, agent_id: r.agent_id });
+      break;
     case 'agent.message':
       if (!data.text) break;
       setRun(runId, { last_message: data.text });
@@ -432,19 +547,13 @@ export function handleEvent(runId, ev) {
     case 'session.status_idle': {
       const reason = ev.stop_reason?.type;
       if (reason === 'requires_action') {
-        const ids = ev.stop_reason.event_ids ?? [];
-        const pending = ids.map((id) => {
-          const call = get('SELECT data FROM run_events WHERE run_id = ? AND event_id = ?', runId, id);
-          return { event_id: id, ...(call ? JSON.parse(call.data) : { name: 'tool', detail: '' }) };
-        });
-        setRun(runId, { status: 'needs_approval', pending: JSON.stringify(pending) });
-        setTask(r.task_id, 'review');
-        notifyRun(runId, 'approval', { pending });
-        if (r.kind === 'chat') {
-          for (const p of pending) {
-            postMessage(r.agent_id, 'system', `Approval needed: ${p.name}${p.detail ? `\n${p.detail}` : ''}`, { type: 'approval', run_id: runId, event_id: p.event_id });
-          }
-        }
+        const calls = (ev.stop_reason.event_ids ?? []).map((id) => ({ id, row: get('SELECT type, data FROM run_events WHERE run_id = ? AND event_id = ?', runId, id) }));
+        const custom = calls.filter((c) => c.row?.type === 'agent.custom_tool_use').map((c) => c.id);
+        const builtin = calls
+          .filter((c) => c.row?.type !== 'agent.custom_tool_use')
+          .map((c) => ({ event_id: c.id, ...(c.row ? JSON.parse(c.row.data) : { name: 'tool', detail: '' }) }));
+        if (custom.length) resolveToolCalls(runId, custom, builtin).catch((err) => failRun(runId, err));
+        else askForApproval(runId, builtin);
       } else {
         const latest = getRun(runId);
         setRun(runId, { status: 'waiting', pending: '[]', error: reason === 'budget_reached' ? 'Budget reached' : latest.error });

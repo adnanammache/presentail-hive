@@ -1,17 +1,62 @@
 import { useState } from 'react';
-import { api, useApi } from '../api.js';
+import { ago, api, useApi } from '../api.js';
 import { Badge, Loading, PageHeader } from '../components/ui.jsx';
 
 const HOW = {
   anthropic: 'Create a key at console.anthropic.com (a workspace with Managed Agents access) and add it in Railway as ANTHROPIC_API_KEY.',
+  odoo: 'In Odoo: click your avatar → My Profile → Account Security → New API Key (use a user with accounting rights on all companies). Add it in Railway as ODOO_API_KEY. Optional: ODOO_URL (default https://presentail.odoo.com) and ODOO_DB (default presentail). The key stays in Hive; agents never see it.',
   wafeq: 'In Wafeq: Settings → API keys → create a key. Add it in Railway as WAFEQ_API_KEY. It is stored in an Anthropic vault; agents never see it.',
   slack: 'At api.slack.com/apps: Create app → From scratch → OAuth & Permissions → add the chat:write scope → Install to workspace. Copy the Bot token (xoxb-…) into SLACK_BOT_TOKEN. Put your Slack member ID (Profile → ⋯ → Copy member ID) or a channel ID into SLACK_ALERT_CHANNEL; for a channel, invite the app to it first.',
   google: 'See DEPLOY.md → Continue with Google.',
 };
 
+function OdooLog() {
+  const { data } = useApi('/odoo/actions', ['run']);
+  if (!data?.length) return <p className="muted small">No changes yet. Every Odoo change an agent makes shows up here, with who approved it.</p>;
+  return (
+    <div className="table-wrap">
+      <table className="audit">
+        <thead>
+          <tr>
+            <th>When</th>
+            <th>Agent</th>
+            <th>Call</th>
+            <th>Company</th>
+            <th>Status</th>
+            <th>Approved by</th>
+          </tr>
+        </thead>
+        <tbody>
+          {data.map((a) => (
+            <tr key={a.id} title={a.result || ''}>
+              <td className="nowrap">{ago(a.created_at)}</td>
+              <td>{a.task_id ? <a className="link" href={`#/tasks/${a.task_id}`}>{a.agent_name}</a> : a.agent_name}</td>
+              <td className="mono">{a.model}.{a.method}</td>
+              <td>{a.company ?? '—'}</td>
+              <td>
+                <Badge tone={{ executed: 'green', pending: 'amber', rejected: 'neutral', refused: 'red', failed: 'red' }[a.status] ?? 'neutral'}>{a.status}</Badge>
+              </td>
+              <td>{a.approved_by ?? '—'}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 export default function Settings() {
   const { data } = useApi('/settings');
   const [slack, setSlack] = useState(null);
+  const [odoo, setOdoo] = useState(null);
+  const testOdoo = async () => {
+    setOdoo({ busy: true });
+    try {
+      setOdoo(await api('/settings/odoo/test', { method: 'POST' }));
+    } catch (err) {
+      setOdoo({ error: err.message });
+    }
+  };
   if (!data) return <Loading />;
   const test = async () => {
     setSlack('Sending…');
@@ -43,6 +88,19 @@ export default function Settings() {
                 </details>
               )}
             </div>
+            {c.key === 'odoo' && c.connected && (
+              <div className="settings-action">
+                <button className="btn btn-sm" onClick={testOdoo}>
+                  {odoo?.busy ? 'Testing…' : 'Test connection'}
+                </button>
+                {odoo?.error && <span className="small text-red">{odoo.error}</span>}
+                {odoo?.companies && (
+                  <span className="small muted">
+                    ✓ {odoo.db} · {odoo.companies.map((co) => co.name).join(', ')}
+                  </span>
+                )}
+              </div>
+            )}
             {c.key === 'slack' && c.connected && (
               <div className="settings-action">
                 <button className="btn btn-sm" onClick={test}>
@@ -54,6 +112,11 @@ export default function Settings() {
           </section>
         ))}
       </div>
+      <section className="card settings-note">
+        <h2>Odoo changes by agents</h2>
+        <p className="muted small">Reads aren't listed. Hover a row to see what Odoo returned.</p>
+        <OdooLog />
+      </section>
       <section className="card settings-note">
         <h2>Slack alerts</h2>
         <p className="muted">When Slack is connected, Hive messages you when:</p>

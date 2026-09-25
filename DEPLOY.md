@@ -105,3 +105,31 @@ Create a task for the agent, attach the source files (statement PDFs, spreadshee
 
 ### Adding or changing skills
 Skills are folders in `agent-skills/<name>/` with a `SKILL.md` (plus `scripts/` and `references/`). Commit a change and redeploy. The next time an agent using that skill is synced, Hive uploads the new version automatically.
+
+## Odoo (Lebanon, Cyprus and UAE books)
+
+Agents reach Odoo through Hive, not directly. Hive holds the key, runs each call itself, and applies the rules:
+
+- **Reads** (search, read, counts) run immediately.
+- **Changes** (create, write, post, reconcile, delete) pause the agent and show an **Approve / Reject** card on the task, with the exact payload. **Approve all for this run** lets the rest of that run's changes through.
+- **Off-limits:** chart of accounts, journals, taxes, users, groups and system settings (`ir.*`) can never be changed by an agent.
+- Every change is logged in **Settings → Odoo changes by agents**, with who approved it.
+
+### Railway variables
+
+| Variable | Value |
+|---|---|
+| `ODOO_API_KEY` | In Odoo: avatar → **My Profile** → **Account Security** → **New API Key**. Use a user with accounting access to all companies. |
+| `ODOO_URL` | Optional, default `https://presentail.odoo.com` |
+| `ODOO_DB` | Optional, default `presentail` |
+
+Then **Settings → Odoo → Test connection** should list Presentail LTD, Presentail SAL and Presentail Flowers Trading.
+
+### Turning on an accountant
+Open the agent → **Skills & tools** → tick **Odoo** and its skills, then **Save & sync**. The *hive-odoo* guide skill is added automatically. It tells the agent to use the Odoo tool wherever an older skill mentions Make scenarios.
+
+| Agent | Suggested skills |
+|---|---|
+| Lebanon Accountant | Toters Fee Bills, Blom Bank Feed, Sal Supplier Statement Reconciliation, Intercompany Sal Ltd, PDF, Excel |
+| Cyprus Accountant | Odoo Supplier Invoices, Intercompany Sal Ltd, PDF |
+| Auditor | Blom Bank Feed, Sal Supplier Statement Reconciliation, Odoo Supplier Invoices (it reads freely; any fix it proposes waits for you) |

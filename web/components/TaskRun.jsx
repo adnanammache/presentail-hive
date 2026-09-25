@@ -72,7 +72,9 @@ function Timeline({ events, agentName }) {
   useEffect(() => {
     box.current?.scrollTo({ top: box.current.scrollHeight });
   }, [events.length]);
-  const shown = events.filter((e) => ['agent.message', 'agent.tool_use', 'agent.mcp_tool_use', 'agent.tool_result', 'session.error', 'user.message', 'user.tool_confirmation'].includes(e.type));
+  const shown = events.filter((e) =>
+    ['agent.message', 'agent.tool_use', 'agent.mcp_tool_use', 'agent.custom_tool_use', 'agent.tool_result', 'user.custom_tool_result', 'session.error', 'user.message', 'user.tool_confirmation'].includes(e.type),
+  );
   return (
     <div className="timeline" ref={box}>
       {shown.length === 0 && <div className="muted small">Waiting for {agentName} to start…</div>}
@@ -87,6 +89,15 @@ function Timeline({ events, agentName }) {
               <code>{d.name}</code> <span className="tl-detail">{d.detail}</span>
             </div>
           );
+        if (e.type === 'agent.custom_tool_use')
+          return (
+            <div key={e.event_id} className={`tl-tool ${d.kind === 'write' ? 'odoo-write' : ''}`}>
+              <span className="tl-time">{time(e.created_at)}</span>
+              <code>{d.name}</code> <span className="tl-detail">{d.detail}</span>
+              {d.kind === 'write' && <span className="badge badge-amber">change</span>}
+            </div>
+          );
+        if (e.type === 'user.custom_tool_result') return d.is_error ? <div key={e.event_id} className="tl-tool error">↳ {d.preview}</div> : null;
         if (e.type === 'agent.tool_result') return d.is_error ? <div key={e.event_id} className="tl-tool error">↳ {d.preview || 'Command failed'}</div> : null;
         if (e.type === 'user.tool_confirmation') return <div key={e.event_id} className={`tl-tool ${d.result === 'allow' ? 'ok' : 'error'}`}>{d.result === 'allow' ? '✓ You approved' : '✕ You rejected'}</div>;
         if (e.type === 'session.error') return <div key={e.event_id} className="tl-tool error">⚠ {d.message}</div>;
@@ -117,9 +128,10 @@ export default function TaskRun({ task, agentName }) {
     await api(`/runs/${current.id}/reply`, { method: 'POST', body: { text } });
     setReply('');
   });
-  const confirm = act((eventId, allow) => {
+  const confirm = act((eventId, allow, approveRest = false) => {
+    if (approveRest && !window.confirm('Approve this and every further Odoo change the agent makes in this run?')) return;
     const deny_message = allow ? undefined : prompt('Optional: tell the agent why, or what to do instead') || undefined;
-    return api(`/runs/${current.id}/confirm`, { method: 'POST', body: { event_id: eventId, result: allow ? 'allow' : 'deny', deny_message } });
+    return api(`/runs/${current.id}/confirm`, { method: 'POST', body: { event_id: eventId, result: allow ? 'allow' : 'deny', deny_message, approve_rest: approveRest } });
   });
   const stop = act(() => api(`/runs/${current.id}/interrupt`, { method: 'POST' }));
 
@@ -162,22 +174,49 @@ export default function TaskRun({ task, agentName }) {
             </div>
           )}
 
-          {current.pending.map((p) => (
-            <div key={p.event_id} className="approval">
-              <div className="small strong">
-                {agentName} wants to run <code>{p.name}</code>
+          {current.pending.map((p) =>
+            p.kind === 'odoo' ? (
+              <div key={p.event_id} className="approval odoo">
+                <div className="small strong">{agentName} wants to change Odoo</div>
+                <div className="odoo-call">
+                  <code>{p.detail}</code>
+                </div>
+                {p.reason && <div className="small">{p.reason}</div>}
+                {p.preview && p.preview !== '{}' && (
+                  <details>
+                    <summary className="small">Show the exact change</summary>
+                    <pre className="code">{p.preview}</pre>
+                  </details>
+                )}
+                <div className="approval-actions">
+                  <button type="button" className="btn btn-sm btn-danger-ghost" onClick={() => confirm(p.event_id, false)}>
+                    Reject
+                  </button>
+                  <button type="button" className="btn btn-sm" onClick={() => confirm(p.event_id, true, true)} title="Approve this and every further Odoo change in this run">
+                    Approve all for this run
+                  </button>
+                  <button type="button" className="btn btn-sm btn-primary" onClick={() => confirm(p.event_id, true)}>
+                    <Icon name="check" size={13} /> Approve
+                  </button>
+                </div>
               </div>
-              {p.detail && <pre className="code">{p.detail}</pre>}
-              <div className="approval-actions">
-                <button type="button" className="btn btn-sm btn-danger-ghost" onClick={() => confirm(p.event_id, false)}>
-                  Reject
-                </button>
-                <button type="button" className="btn btn-sm btn-primary" onClick={() => confirm(p.event_id, true)}>
-                  <Icon name="check" size={13} /> Approve
-                </button>
+            ) : (
+              <div key={p.event_id} className="approval">
+                <div className="small strong">
+                  {agentName} wants to run <code>{p.name}</code>
+                </div>
+                {p.detail && <pre className="code">{p.detail}</pre>}
+                <div className="approval-actions">
+                  <button type="button" className="btn btn-sm btn-danger-ghost" onClick={() => confirm(p.event_id, false)}>
+                    Reject
+                  </button>
+                  <button type="button" className="btn btn-sm btn-primary" onClick={() => confirm(p.event_id, true)}>
+                    <Icon name="check" size={13} /> Approve
+                  </button>
+                </div>
               </div>
-            </div>
-          ))}
+            ),
+          )}
 
           {['waiting', 'needs_approval', 'running'].includes(current.status) && (
             <div className="run-reply">

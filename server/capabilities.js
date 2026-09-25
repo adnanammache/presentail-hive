@@ -11,6 +11,13 @@ export const SKILLS_DIR = join(process.cwd(), 'agent-skills');
 
 /** Systems an agent can reach. The secret comes from Hive's environment (Railway variables). */
 export const INTEGRATIONS = {
+  odoo: {
+    name: 'Odoo',
+    description: 'Presentail SAL, LTD and UAE books. Reads run freely; every change waits for your approval in Hive.',
+    env: 'ODOO_API_KEY',
+    hosts: [], // Hive makes the calls itself; the agent's sandbox never talks to Odoo
+    via: 'hive',
+  },
   wafeq: {
     name: 'Wafeq',
     description: 'UAE accounting: bills, sales invoices, payments and attachments.',
@@ -81,7 +88,7 @@ export function skillLibrary() {
             name: key.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
             description: description.split(/(?<=\.)\s/)[0] || description,
             source: 'presentail',
-            integrations: /wafeq/i.test(description) ? ['wafeq'] : [],
+            integrations: [/wafeq/i.test(description) && 'wafeq', /odoo/i.test(description) && 'odoo'].filter(Boolean),
           };
         })
     : [];
