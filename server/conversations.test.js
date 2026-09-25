@@ -78,13 +78,14 @@ run("INSERT INTO agents (name, title, status, api_token) VALUES ('Vera', 'Audito
 let seq = 0; // Slack timestamps are unique per message
 const dm = (text, extra = {}) => ({ type: 'event_callback', event_id: `Ev${++seq}`, event: { type: 'message', channel_type: 'im', channel: 'D_ADNAN', user: 'U_ADNAN', ts: `1790000000.${String(++seq).padStart(6, '0')}`, text, ...extra } });
 
-test('addressing an agent by name or title', () => {
+test('addressing an agent by name or title', async () => {
+  assert.equal((await agentAvatarPng(ledger)).subarray(1, 4).toString(), 'PNG');
   assert.equal(conv.splitAddressee('Ledger: do Careem').agent.id, ledger);
   assert.equal(conv.splitAddressee('ledger, do Careem').rest, 'do Careem');
   assert.equal(conv.splitAddressee('@Kyros what is the balance').agent.id, kyros);
   assert.equal(conv.splitAddressee('Cyprus Accountant: hi').agent.id, kyros);
   assert.equal(conv.splitAddressee('Note: this is not an agent').agent, null);
-  assert.ok(agentAvatarPng(ledger).subarray(1, 4).toString() === 'PNG');
+  
 });
 
 test('only Presentail people are served', async () => {

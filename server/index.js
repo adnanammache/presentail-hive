@@ -38,8 +38,8 @@ for (const file of ['manifest.webmanifest', 'sw.js', 'icon.svg', 'icon-192.png',
 }
 
 // Agent faces as PNGs, for Slack to show next to each agent's messages (public: no names in them).
-app.get('/avatars/:file', (req, res) => {
-  const png = agentAvatarPng(Number.parseInt(req.params.file, 10));
+app.get('/avatars/:file', async (req, res) => {
+  const png = await agentAvatarPng(Number.parseInt(req.params.file, 10));
   if (!png) return res.status(404).end();
   res.type('png').set('Cache-Control', 'public, max-age=86400').send(png);
 });
