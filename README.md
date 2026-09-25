@@ -8,6 +8,12 @@ Presentail's hive of AI agents: see every agent, what it's working on, what's sc
 - **Tasks**: a Kanban board (Backlog → To do → In progress → Needs review → Blocked → Done). Assigning a task to an agent sends it to that agent.
 - **Recurring workflows**: cron schedules with timezones (e.g. "Talabat month-end, 2nd of every month 09:00 Dubai"). Each run creates a task for the agent, sends it the instructions and records the run history.
 - **Inbox / chat**: a conversation thread with every agent. Claude agents reply live. Webhook agents can reply synchronously or later through the API.
+- **Org chart**: Presentail's teams and agents as a tree, with status, open tasks and AI spend per agent.
+- **AI spend**: month-to-date cost of agent runs, daily for 30 days, by team and by agent. It appears on the dashboard, team headers and agent cards.
+- **Agent output files**: reports and spreadsheets an agent saves are downloadable from the task.
+- **Slack alerts**: messages you when an agent needs approval, finishes a turn, gets stuck, or a scheduled workflow fails (`SLACK_BOT_TOKEN`, `SLACK_ALERT_CHANNEL`). Links open the task directly (`#/tasks/<id>`).
+- **Settings**: what's connected, how to connect the rest, and a *Send test alert* button.
+- **Install on your phone**: Add to Home Screen opens Hive as an app.
 - **Live updates**: the UI refreshes itself (Server-Sent Events) whenever an agent replies or moves a task.
 
 ## Quick start
@@ -36,6 +42,7 @@ APP_PASSWORD=choose-one ANTHROPIC_API_KEY=sk-ant-... npm start   # serves UI + A
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Turns on **Continue with Google** sign-in (see DEPLOY.md). |
 | `ALLOWED_EMAIL_DOMAIN` | Google accounts allowed in (default `presentail.com`, comma-separated). |
 | `ALLOWED_EMAILS` | Extra individual addresses allowed in. |
+| `SLACK_BOT_TOKEN` / `SLACK_ALERT_CHANNEL` | Slack alerts: a bot token with `chat:write`, and your member ID (for DMs) or a channel ID. |
 | `SESSION_SECRET` | Signs the login cookie. Set a long random value in production. |
 | `APP_PASSWORD` | Protects the dashboard with a password (browser login prompt, any username). Fallback sign-in when Google isn't configured. Production refuses to start with neither. |
 | `PUBLIC_URL` | Public base URL (e.g. `https://hive.presentail.com`), included in webhook payloads so agents know where to call back. |

@@ -5,6 +5,7 @@ import { all, get, run } from './db.js';
 import { emit } from './events.js';
 import { logActivity } from './activity.js';
 import { dispatchTask } from './dispatch.js';
+import { notifyWorkflowFailed } from './notify.js';
 
 const jobs = new Map();
 
@@ -60,6 +61,10 @@ export function startScheduler() {
 export function finishRun(runId, status, output = '') {
   run("UPDATE workflow_runs SET status = ?, output = ?, finished_at = datetime('now') WHERE id = ?", status, output, runId);
   emit('workflow', { run_id: runId });
+  if (status === 'failed') {
+    const r = get('SELECT r.task_id, w.name FROM workflow_runs r JOIN workflows w ON w.id = r.workflow_id WHERE r.id = ?', runId);
+    if (r) notifyWorkflowFailed(r.name, output, r.task_id);
+  }
 }
 
 export async function runWorkflow(workflowId, trigger = 'manual') {

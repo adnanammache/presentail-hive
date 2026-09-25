@@ -4,7 +4,9 @@ import { emit, subscribe } from './events.js';
 import { logActivity } from './activity.js';
 import { claudeConfigured, dispatchTask, postMessage, sendToAgent } from './dispatch.js';
 import { integrationList, skillLibrary } from './capabilities.js';
-import { confirmTool, interruptRun, managedReady, replyToRun, runWithEvents, startTaskRun, syncAgent } from './managed.js';
+import { sendSlack, slackConfigured } from './notify.js';
+import { authMode } from './auth.js';
+import { confirmTool, downloadOutput, interruptRun, managedReady, replyToRun, runWithEvents, startTaskRun, syncAgent } from './managed.js';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { finishRun, nextRuns, runWorkflow, schedule, unschedule, validateSchedule } from './scheduler.js';
@@ -121,6 +123,31 @@ export function dashboardRouter() {
     };
   }));
 
+  // AI spend: what Claude Managed Agents runs cost (list price, as reported by Anthropic).
+  r.get('/spend', wrap(() => {
+    const monthStart = "date('now', 'start of month')";
+    const sum = (where) => get(`SELECT COALESCE(SUM(cost_cents), 0) AS c FROM runs WHERE ${where}`).c;
+    return {
+      month_cents: sum(`created_at >= ${monthStart}`),
+      last_month_cents: sum(`created_at >= date('now', 'start of month', '-1 month') AND created_at < ${monthStart}`),
+      runs_this_month: get(`SELECT COUNT(*) n FROM runs WHERE created_at >= ${monthStart}`).n,
+      daily: all(
+        `SELECT date(created_at) AS day, SUM(cost_cents) AS cents, COUNT(*) AS runs FROM runs
+         WHERE created_at >= date('now', '-29 days') GROUP BY day ORDER BY day`,
+      ),
+      by_agent: all(
+        `SELECT a.id, a.name, a.title, a.color, tm.name AS team_name, SUM(r.cost_cents) AS cents, COUNT(r.id) AS runs
+         FROM runs r JOIN agents a ON a.id = r.agent_id LEFT JOIN teams tm ON tm.id = a.team_id
+         WHERE r.created_at >= ${monthStart} GROUP BY a.id HAVING cents > 0 ORDER BY cents DESC`,
+      ),
+      by_team: all(
+        `SELECT COALESCE(tm.id, 0) AS id, COALESCE(tm.name, 'No team') AS name, COALESCE(tm.color, '#94a3b8') AS color, SUM(r.cost_cents) AS cents
+         FROM runs r JOIN agents a ON a.id = r.agent_id LEFT JOIN teams tm ON tm.id = a.team_id
+         WHERE r.created_at >= ${monthStart} GROUP BY tm.id HAVING cents > 0 ORDER BY cents DESC`,
+      ),
+    };
+  }));
+
   r.get('/activity', wrap((req) =>
     all(
       `SELECT ac.*, a.name AS agent_name, a.color AS agent_color FROM activity ac LEFT JOIN agents a ON a.id = ac.agent_id
@@ -179,7 +206,8 @@ export function dashboardRouter() {
         (SELECT COUNT(*) FROM tasks t WHERE t.agent_id = a.id AND t.status != 'done') AS open_tasks,
         (SELECT COUNT(*) FROM workflows w WHERE w.agent_id = a.id AND w.enabled = 1) AS workflows,
         (SELECT body FROM messages m WHERE m.agent_id = a.id ORDER BY id DESC LIMIT 1) AS last_message,
-        (SELECT created_at FROM messages m WHERE m.agent_id = a.id ORDER BY id DESC LIMIT 1) AS last_message_at
+        (SELECT created_at FROM messages m WHERE m.agent_id = a.id ORDER BY id DESC LIMIT 1) AS last_message_at,
+        (SELECT COALESCE(SUM(cost_cents), 0) FROM runs r WHERE r.agent_id = a.id AND r.created_at >= date('now', 'start of month')) AS month_cents
        FROM agents a LEFT JOIN teams tm ON tm.id = a.team_id ORDER BY a.name`,
     ).map(publicAgent),
   ));
@@ -243,6 +271,22 @@ export function dashboardRouter() {
   r.post('/agents/:id/sync', wrap(async (req) => {
     const agent = await syncAgent(Number(req.params.id));
     return getAgent(agent.id);
+  }));
+
+  // Settings: what's connected
+  r.get('/settings', wrap(() => ({
+    connections: [
+      { key: 'anthropic', name: 'Anthropic (Claude)', connected: managedReady(), env: 'ANTHROPIC_API_KEY', purpose: 'Powers every agent.' },
+      ...integrationList().map((i) => ({ key: i.key, name: i.name, connected: i.configured, env: i.env, purpose: i.description })),
+      { key: 'slack', name: 'Slack alerts', connected: slackConfigured(), env: 'SLACK_BOT_TOKEN + SLACK_ALERT_CHANNEL', purpose: 'Pings you when an agent needs approval, finishes, or gets stuck.' },
+      { key: 'google', name: 'Google sign-in', connected: authMode() === 'google', env: 'GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET', purpose: 'Continue with Google for @presentail.com accounts.' },
+    ],
+  })));
+  r.post('/settings/slack/test', wrap(async (req) => {
+    if (!slackConfigured()) throw bad('Slack is not configured: set SLACK_BOT_TOKEN and SLACK_ALERT_CHANNEL in Railway');
+    const result = await sendSlack({ text: `👋 Test alert from *Presentail Hive*${req.user?.name ? `, sent by ${req.user.name}` : ''}. Alerts are working.` });
+    if (!result.ok) throw bad(`Slack said: ${result.error}`);
+    return { ok: true };
   }));
 
   // Capabilities: what agents can be given
@@ -341,6 +385,17 @@ export function dashboardRouter() {
     await confirmTool(Number(req.params.id), req.body.event_id, req.body.result === 'allow', req.body.deny_message);
     return { ok: true };
   }));
+  r.get('/runs/:id/outputs/:outputId', async (req, res, next) => {
+    try {
+      const file = await downloadOutput(Number(req.params.id), Number(req.params.outputId));
+      if (!file) return res.status(404).json({ error: 'File not found' });
+      res.set('Content-Type', file.mime_type);
+      res.set('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(file.filename)}`);
+      res.send(file.body);
+    } catch (err) {
+      next(err);
+    }
+  });
   r.post('/runs/:id/interrupt', wrap(async (req) => {
     await interruptRun(Number(req.params.id));
     return { ok: true };

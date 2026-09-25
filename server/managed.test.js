@@ -112,6 +112,13 @@ test('a Talabat task runs on Managed Agents: skills, vault, files, approval, res
   assert.ok(view.events.some((e) => e.type === 'agent.tool_use' && /post_talabat/.test(e.data.detail)));
   assert.equal(new Set(view.events.map((e) => e.event_id)).size, view.events.length);
 
+  // Files the agent saved become downloadable outputs of the run.
+  fake.outputs[session.sid] = [{ id: 'file_out1', filename: 'august-talabat-summary.xlsx', mime_type: 'application/vnd.ms-excel', size_bytes: 2048 }];
+  const outputs = await managed.syncOutputs(started.id, [0]);
+  assert.deepEqual(outputs.map((o) => o.filename), ['august-talabat-summary.xlsx']);
+  const dl = await managed.downloadOutput(started.id, outputs[0].id);
+  assert.equal(dl.body.toString(), 'contents of file_out1');
+
   // Replying continues the same session.
   fake.script.push(() => [{ type: 'session.status_idle', stop_reason: { type: 'end_turn' } }]);
   await managed.replyToRun(started.id, 'Great, also do Careem.');

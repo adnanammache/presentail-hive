@@ -22,6 +22,7 @@ export const statusLabel = (s) => TASK_COLUMNS.find((c) => c.id === s)?.label ??
 
 const PATHS = {
   home: 'M3 10.5 12 3l9 7.5V21a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1z',
+  org: 'M9 3h6v5H9zM3 16h6v5H3zm12 0h6v5h-6zM12 8v4M6 16v-4h12v4',
   bot: 'M12 3v3m-6 3h12a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2Zm3 5h.01M15 14h.01M9 17h6',
   board: 'M4 4h5v16H4zM10 4h4v10h-4zM15 4h5v7h-5z',
   repeat: 'M17 2l4 4-4 4M3 11V9a3 3 0 0 1 3-3h15M7 22l-4-4 4-4M21 13v2a3 3 0 0 1-3 3H3',

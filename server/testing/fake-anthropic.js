@@ -19,6 +19,7 @@ export function fakeAnthropic() {
   const client = {
     calls,
     script,
+    outputs: {}, // session id -> [{ id, filename, mime_type, size_bytes }]
     skills: {
       create: async ({ files, display_name }) => {
         calls.skills.push({ names: files.map((f) => f.name), display_name });
@@ -44,7 +45,14 @@ export function fakeAnthropic() {
         update: async (agentId, p) => (calls.agentsUpdate.push({ agentId, ...p }), { id: agentId, version: p.version + 1 }),
         retrieve: async (agentId) => ({ id: agentId, version: 1 }),
       },
-      files: { upload: async ({ file }) => (calls.uploads.push(file.name), { id: id('file') }) },
+      files: {
+        upload: async ({ file }) => (calls.uploads.push(file.name), { id: id('file') }),
+        // Files the agent "saved" to /mnt/session/outputs/, per session.
+        list: async function* ({ scope_id }) {
+          for (const f of client.outputs[scope_id] ?? []) yield f;
+        },
+        download: async (fileId) => new Response(`contents of ${fileId}`),
+      },
       sessions: {
         create: async (p) => {
           const sid = id('sesn');
