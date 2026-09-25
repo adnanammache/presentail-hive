@@ -1,0 +1,104 @@
+import { test, before, after } from 'node:test';
+import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
+
+process.env.DB_PATH = ':memory:';
+delete process.env.ANTHROPIC_API_KEY;
+delete process.env.ANTHROPIC_AUTH_TOKEN;
+
+const express = (await import('express')).default;
+const { agentRouter, dashboardRouter, errorHandler } = await import('./app.js');
+const { stopScheduler } = await import('./scheduler.js');
+
+let base;
+let server;
+let hook;
+let hookUrl;
+const hookCalls = [];
+
+before(async () => {
+  const app = express();
+  app.use(express.json());
+  app.use('/api/agent', agentRouter());
+  app.use('/api', dashboardRouter());
+  app.use(errorHandler);
+  server = app.listen(0);
+  base = `http://localhost:${server.address().port}/api`;
+
+  // A fake Make-style webhook that answers synchronously.
+  hook = createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => {
+      hookCalls.push(JSON.parse(body));
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ reply: 'On it.' }));
+    });
+  }).listen(0);
+  hookUrl = `http://localhost:${hook.address().port}/`;
+});
+
+after(() => {
+  stopScheduler();
+  server.closeAllConnections();
+  server.close();
+  hook.closeAllConnections();
+  hook.close();
+});
+
+const call = async (path, { method = 'GET', body, token } = {}) => {
+  const res = await fetch(base + path, {
+    method,
+    headers: { 'Content-Type': 'application/json', ...(token && { Authorization: `Bearer ${token}` }) },
+    body: body && JSON.stringify(body),
+  });
+  return { status: res.status, body: await res.json() };
+};
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+test('agent lifecycle, chat via webhook, and the Agent API', async () => {
+  const { body: agent } = await call('/agents', { method: 'POST', body: { name: 'Hooky', platform: 'make', webhook_url: hookUrl } });
+  assert.match(agent.api_token, /^agt_/);
+
+  // The list endpoint never leaks tokens.
+  const { body: list } = await call('/agents');
+  assert.equal(list[0].api_token, undefined);
+
+  await call(`/agents/${agent.id}/messages`, { method: 'POST', body: { body: 'Hello' } });
+  await wait(100);
+  const { body: thread } = await call(`/agents/${agent.id}/messages`);
+  assert.deepEqual(thread.map((m) => [m.sender, m.body]), [['user', 'Hello'], ['agent', 'On it.']]);
+  assert.equal(hookCalls.at(-1).event, 'message');
+
+  // Agent API: bad token is rejected, good token sees its tasks.
+  assert.equal((await call('/agent/tasks', { token: 'nope' })).status, 401);
+  const { body: task } = await call('/tasks', { method: 'POST', body: { title: 'Reconcile', agent_id: agent.id } });
+  await wait(100);
+  assert.equal(hookCalls.at(-1).event, 'task.assigned');
+  const { body: mine } = await call('/agent/tasks?status=todo,review', { token: agent.api_token });
+  assert.ok(mine.some((t) => t.id === task.id));
+
+  const { body: done } = await call(`/agent/tasks/${task.id}`, { method: 'PATCH', token: agent.api_token, body: { status: 'done', result: 'All matched' } });
+  assert.equal(done.status, 'done');
+  assert.ok(done.completed_at);
+});
+
+test('workflows validate cron and complete runs when the task is done', async () => {
+  const { body: agent } = await call('/agents', { method: 'POST', body: { name: 'Poller', platform: 'custom' } });
+  assert.equal((await call('/workflows', { method: 'POST', body: { name: 'Bad', schedule: 'every day' } })).status, 400);
+
+  const { body: wf } = await call('/workflows', { method: 'POST', body: { name: 'Weekly report', schedule: '0 9 * * 1', timezone: 'Asia/Dubai', agent_id: agent.id } });
+  assert.ok(wf.next_run_at);
+
+  await call(`/workflows/${wf.id}/run`, { method: 'POST' });
+  await wait(100);
+  let { body: runs } = await call(`/workflows/${wf.id}/runs`);
+  assert.equal(runs[0].status, 'running');
+
+  const { body: tasks } = await call('/agent/tasks', { token: (await call(`/agents/${agent.id}`)).body.api_token });
+  const runTask = tasks.find((t) => t.workflow_id === wf.id);
+  await call(`/agent/tasks/${runTask.id}`, { method: 'PATCH', token: (await call(`/agents/${agent.id}`)).body.api_token, body: { status: 'done', result: 'Sent' } });
+  ({ body: runs } = await call(`/workflows/${wf.id}/runs`));
+  assert.equal(runs[0].status, 'success');
+  assert.equal(runs[0].output, 'Sent');
+});

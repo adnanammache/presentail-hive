@@ -1,0 +1,194 @@
+import { useState } from 'react';
+import { ago, api, useApi } from '../api.js';
+import { Avatar, Badge, Empty, Icon, Loading, PLATFORM_LABELS, agentTone } from '../components/ui.jsx';
+import { AgentForm, TaskForm, WorkflowForm } from '../components/forms.jsx';
+import Chat from '../components/Chat.jsx';
+import { TaskCard } from './Tasks.jsx';
+import { WorkflowList } from './Workflows.jsx';
+
+function Connect({ agent, onRotate }) {
+  const [show, setShow] = useState(false);
+  const base = `${location.origin}/api/agent`;
+  const token = show ? agent.api_token : agent.api_token.slice(0, 8) + '•'.repeat(24);
+  const auth = `-H "Authorization: Bearer ${agent.api_token}"`;
+  const examples = [
+    ['Fetch my open tasks', `curl ${base}/tasks ${auth}`],
+    ['Report progress on a task', `curl -X PATCH ${base}/tasks/TASK_ID ${auth} \\\n  -H "Content-Type: application/json" \\\n  -d '{"status":"done","result":"Posted 6 invoices, total AED 18,420"}'`],
+    ['Send a chat message', `curl -X POST ${base}/messages ${auth} \\\n  -H "Content-Type: application/json" -d '{"body":"Month-end finished ✅"}'`],
+    ['Read new messages (poll)', `curl "${base}/messages?since_id=0" ${auth}`],
+    ['Heartbeat / set status', `curl -X POST ${base}/heartbeat ${auth} \\\n  -H "Content-Type: application/json" -d '{"status":"active"}'`],
+  ];
+  return (
+    <div className="connect">
+      <section className="card">
+        <h3>API token</h3>
+        <p className="muted small">The agent uses this token to talk back to Presentail OS. Keep it secret.</p>
+        <div className="token-row">
+          <code className="token">{token}</code>
+          <button className="btn btn-sm" onClick={() => setShow((s) => !s)}>
+            {show ? 'Hide' : 'Reveal'}
+          </button>
+          <button className="btn btn-sm" onClick={() => navigator.clipboard?.writeText(agent.api_token)}>
+            Copy
+          </button>
+          <button className="btn btn-sm btn-danger-ghost" onClick={() => confirm('Rotate the token? The old one stops working immediately.') && onRotate()}>
+            Rotate
+          </button>
+        </div>
+      </section>
+      <section className="card">
+        <h3>How messages reach {agent.name}</h3>
+        {agent.platform === 'claude' ? (
+          <p>Claude agent — every message and task is answered directly through the Anthropic API using the system prompt and model on this agent.</p>
+        ) : agent.webhook_url ? (
+          <>
+            <p>
+              Each message, task and workflow run is POSTed to <code>{agent.webhook_url}</code>. Respond with <code>{'{"reply": "…"}'}</code> to answer in the chat, or call the API below later.
+            </p>
+            <pre className="code">{`{
+  "event": "message" | "task.assigned" | "workflow.run",
+  "message": { "id": 12, "body": "…" },           // for "message"
+  "task": { "id": 7, "title": "…", "description": "…" }, // for tasks & runs
+  "run_id": 3,                                        // for "workflow.run"
+  "agent": { "id": ${agent.id}, "name": "${agent.name}" },
+  "callback": { "api": "${base}" }
+}`}</pre>
+          </>
+        ) : (
+          <p>No webhook set — {agent.name} should poll the API below for new tasks and messages. Add a webhook in Settings to push work to it instead.</p>
+        )}
+      </section>
+      <section className="card">
+        <h3>Agent API</h3>
+        {examples.map(([label, cmd]) => (
+          <div key={label} className="example">
+            <div className="small strong">{label}</div>
+            <pre className="code">{cmd}</pre>
+          </div>
+        ))}
+      </section>
+    </div>
+  );
+}
+
+export default function AgentDetail({ id, meta }) {
+  const { data: agent, setData } = useApi(`/agents/${id}`, ['agent']);
+  const { data: tasks } = useApi(`/tasks?agent_id=${id}`, ['task']);
+  const { data: allWorkflows } = useApi('/workflows', ['workflow']);
+  const [tab, setTab] = useState('chat');
+  const [modal, setModal] = useState(null);
+
+  if (!agent) return <Loading />;
+  const workflows = allWorkflows?.filter((w) => w.agent_id === agent.id) ?? [];
+  const openTasks = tasks?.filter((t) => t.status !== 'done') ?? [];
+  const doneTasks = tasks?.filter((t) => t.status === 'done') ?? [];
+
+  const remove = async () => {
+    if (!confirm(`Delete ${agent.name}? Its chat history goes with it; tasks become unassigned.`)) return;
+    await api(`/agents/${agent.id}`, { method: 'DELETE' });
+    location.hash = '#/agents';
+  };
+  const togglePause = () => api(`/agents/${agent.id}`, { method: 'PATCH', body: { status: agent.status === 'paused' ? 'idle' : 'paused' } }).then(setData);
+
+  const tabs = [
+    ['chat', 'Chat'],
+    ['tasks', `Tasks (${openTasks.length})`],
+    ['workflows', `Workflows (${workflows.length})`],
+    ['connect', 'Connect'],
+  ];
+
+  return (
+    <div className="agent-detail">
+      <header className="agent-hero" style={{ '--c': agent.color }}>
+        <a href="#/agents" className="link small">
+          ← Agents
+        </a>
+        <div className="hero-row">
+          <Avatar name={agent.name} color={agent.color} size={56} status={agent.status} />
+          <div className="grow">
+            <h1>{agent.name}</h1>
+            <div className="muted">{agent.role}</div>
+            <div className="hero-meta">
+              <Badge tone={agentTone[agent.status]}>{agent.status}</Badge>
+              <span className="pill">{PLATFORM_LABELS[agent.platform]}</span>
+              {agent.platform === 'claude' && <span className="pill mono">{agent.model || 'claude-opus-5'}</span>}
+              <span className="muted small">last seen {ago(agent.last_seen_at)}</span>
+            </div>
+          </div>
+          <div className="page-actions">
+            <button className="btn" onClick={togglePause}>
+              {agent.status === 'paused' ? 'Resume' : 'Pause'}
+            </button>
+            <button className="btn" onClick={() => setModal({ kind: 'agent' })}>
+              <Icon name="edit" size={16} /> Settings
+            </button>
+            <button className="icon-btn" title="Delete agent" onClick={remove}>
+              <Icon name="trash" />
+            </button>
+          </div>
+        </div>
+        {agent.description && <p className="hero-desc">{agent.description}</p>}
+        <nav className="tabs" role="tablist">
+          {tabs.map(([k, l]) => (
+            <button key={k} role="tab" aria-selected={tab === k} className={tab === k ? 'on' : ''} onClick={() => setTab(k)}>
+              {l}
+            </button>
+          ))}
+        </nav>
+      </header>
+
+      {tab === 'chat' && <Chat agent={agent} claudeReady={meta?.claude} />}
+
+      {tab === 'tasks' && (
+        <div className="tab-body">
+          <div className="tab-actions">
+            <button className="btn btn-primary" onClick={() => setModal({ kind: 'task', defaults: { agent_id: agent.id } })}>
+              <Icon name="plus" size={16} /> Assign task
+            </button>
+          </div>
+          {openTasks.length === 0 && <Empty title="No open tasks" />}
+          <div className="task-list">
+            {openTasks.map((t) => (
+              <TaskCard key={t.id} task={t} onOpen={(task) => setModal({ kind: 'task', task })} />
+            ))}
+          </div>
+          {doneTasks.length > 0 && (
+            <>
+              <h3 className="section-title">Completed</h3>
+              <div className="task-list faded">
+                {doneTasks.slice(0, 20).map((t) => (
+                  <TaskCard key={t.id} task={t} onOpen={(task) => setModal({ kind: 'task', task })} />
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {tab === 'workflows' && (
+        <div className="tab-body">
+          <div className="tab-actions">
+            <button className="btn btn-primary" onClick={() => setModal({ kind: 'workflow', defaults: { agent_id: agent.id } })}>
+              <Icon name="plus" size={16} /> New workflow
+            </button>
+          </div>
+          {workflows.length === 0 ? (
+            <Empty title="No recurring workflows" />
+          ) : (
+            <WorkflowList workflows={workflows} onEdit={(w) => setModal({ kind: 'workflow', workflow: w })} onRuns={() => (location.hash = '#/workflows')} />
+          )}
+        </div>
+      )}
+
+      {tab === 'connect' && (
+        <div className="tab-body">
+          <Connect agent={agent} onRotate={() => api(`/agents/${agent.id}/rotate-token`, { method: 'POST' }).then(setData)} />
+        </div>
+      )}
+
+      {modal?.kind === 'agent' && <AgentForm agent={agent} onClose={() => setModal(null)} onSaved={setData} />}
+      {modal?.kind === 'task' && <TaskForm task={modal.task} defaults={modal.defaults} onClose={() => setModal(null)} />}
+      {modal?.kind === 'workflow' && <WorkflowForm workflow={modal.workflow} defaults={modal.defaults} onClose={() => setModal(null)} />}
+    </div>
+  );
+}

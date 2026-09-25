@@ -1,0 +1,29 @@
+{
+  "name": "presentail-os",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Presentail OS — mission control for AI agents: tasks, recurring workflows and chat.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.5"
+  },
+  "scripts": {
+    "dev": "concurrently -k -n api,web -c blue,magenta \"node --watch --disable-warning=ExperimentalWarning server/index.js\" \"vite\"",
+    "build": "vite build",
+    "start": "NODE_ENV=production node --disable-warning=ExperimentalWarning server/index.js",
+    "seed": "node --disable-warning=ExperimentalWarning server/seed.js --force",
+    "test": "node --disable-warning=ExperimentalWarning --test server/*.test.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.128.0",
+    "croner": "^10.0.1",
+    "express": "^5.2.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^6.1.1",
+    "concurrently": "^10.0.5",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "vite": "^8.3.1"
+  }
+}
