@@ -190,6 +190,10 @@ CREATE INDEX IF NOT EXISTS idx_run_events_run ON run_events(run_id, id);
 
 addColumn('runs', 'auto_approve', 'INTEGER NOT NULL DEFAULT 0'); // "approve the rest of this run"
 addColumn('runs', 'slack_ts', 'TEXT'); // the approval alert in Slack, updated once someone decides
+addColumn('agents', 'reviewer_id', 'INTEGER REFERENCES agents(id) ON DELETE SET NULL'); // default reviewer of this agent's work
+addColumn('tasks', 'handoff_agent_id', 'INTEGER REFERENCES agents(id) ON DELETE SET NULL'); // this task's reviewer, overriding the default
+addColumn('tasks', 'parent_task_id', 'INTEGER REFERENCES tasks(id) ON DELETE SET NULL'); // set on "Review: …" tasks
+addColumn('tasks', 'handoff_task_id', 'INTEGER'); // the review task opened for this one
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS briefs (

@@ -1,6 +1,6 @@
 // Sample data so the dashboard isn't empty on first launch. Edit or delete freely.
 import { get, run, newToken } from './db.js';
-import { applyOrgChart, ORG_CHART_VERSION } from './org.js';
+import { applyDefaultReviewers, applyOrgChart, ORG_CHART_VERSION, REVIEWERS_VERSION } from './org.js';
 
 const AGENTS = [
   {
@@ -105,12 +105,14 @@ export function seedIfEmpty() {
   if (process.env.NO_SEED) return;
   if (get('SELECT COUNT(*) n FROM agents').n === 0) seed({ demo: process.env.NODE_ENV !== 'production' });
   applyOrgChart();
+  applyDefaultReviewers();
 }
 
 if (process.argv[1]?.endsWith('seed.js') && process.argv.includes('--force')) {
   for (const t of ['activity', 'messages', 'workflow_runs', 'tasks', 'workflows', 'agents', 'teams']) run(`DELETE FROM ${t}`);
-  run('DELETE FROM app_meta WHERE key = ?', ORG_CHART_VERSION);
+  run('DELETE FROM app_meta WHERE key IN (?, ?)', ORG_CHART_VERSION, REVIEWERS_VERSION);
   seed();
   applyOrgChart();
+  applyDefaultReviewers();
   console.log('Seeded sample data.');
 }

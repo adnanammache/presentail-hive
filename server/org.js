@@ -148,3 +148,23 @@ export function applyOrgChart() {
   console.log('[org] Presentail org chart applied');
   return true;
 }
+
+export const REVIEWERS_VERSION = 'org-reviewers-v1';
+
+/**
+ * The Auditor reviews the accountants' work before it reaches you. Applied once; only fills in
+ * agents that have no reviewer yet, so your own choices are never overwritten.
+ */
+export function applyDefaultReviewers() {
+  if (get('SELECT value FROM app_meta WHERE key = ?', REVIEWERS_VERSION)) return false;
+  const auditor = get("SELECT id FROM agents WHERE title = 'Auditor' ORDER BY id LIMIT 1");
+  if (auditor) {
+    run(
+      "UPDATE agents SET reviewer_id = ? WHERE title IN ('Lebanon Accountant', 'UAE Accountant', 'Cyprus Accountant') AND reviewer_id IS NULL AND id != ?",
+      auditor.id,
+      auditor.id,
+    );
+  }
+  run('INSERT INTO app_meta (key, value) VALUES (?, ?)', REVIEWERS_VERSION, new Date().toISOString());
+  return true;
+}

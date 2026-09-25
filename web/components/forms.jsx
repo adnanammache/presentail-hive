@@ -107,8 +107,9 @@ const NEW_TEAM = '__new';
 
 export function AgentForm({ agent, defaults = {}, onClose, onSaved }) {
   const { data: teams } = useApi('/teams', ['agent']);
+  const { data: allAgents } = useApi('/agents', ['agent']);
   const { values, set, submit, error, saving } = useForm({
-    name: '', title: '', team_id: '', new_team: '', description: '', platform: 'claude', model: '', system_prompt: '', webhook_url: '', color: COLORS[0], status: 'idle',
+    name: '', title: '', team_id: '', new_team: '', description: '', platform: 'claude', model: '', system_prompt: '', webhook_url: '', color: COLORS[0], status: 'idle', reviewer_id: '',
     ...defaults,
     ...agent,
   });
@@ -121,6 +122,7 @@ export function AgentForm({ agent, defaults = {}, onClose, onSaved }) {
     const body = {
       name: v.name, title: v.title, team_id: numOrNull(teamId), description: v.description, platform: v.platform,
       model: v.model, system_prompt: v.system_prompt, webhook_url: v.webhook_url, color: v.color, status: v.status,
+      reviewer_id: numOrNull(v.reviewer_id),
     };
     const saved = agent ? await api(`/agents/${agent.id}`, { method: 'PATCH', body }) : await api('/agents', { method: 'POST', body });
     onSaved?.(saved);
@@ -177,6 +179,18 @@ export function AgentForm({ agent, defaults = {}, onClose, onSaved }) {
         <Field label="Description">
           <textarea rows={2} value={values.description} onChange={set('description')} />
         </Field>
+        <Field label="Work reviewed by" hint="When this agent finishes a task, it goes to this agent to check before it comes to you.">
+          <select value={values.reviewer_id ?? ''} onChange={set('reviewer_id')}>
+            <option value="">Nobody, it comes straight to me</option>
+            {allAgents
+              ?.filter((a) => a.id !== agent?.id)
+              .map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.name} · {a.title}
+                </option>
+              ))}
+          </select>
+        </Field>
         {['claude', 'managed'].includes(values.platform) ? (
           <>
             <Field label="Model" hint="Leave blank for the default (claude-opus-5).">
@@ -205,17 +219,22 @@ export function TaskForm({ task, defaults = {}, onClose }) {
   const { data: agents } = useApi('/agents', ['agent']);
   const [newFiles, setNewFiles] = useState([]);
   const { values, set, submit, error, saving } = useForm({
-    title: '', description: '', status: 'todo', priority: 'medium', agent_id: '', due_date: '', result: '',
+    title: '', description: '', status: 'todo', priority: 'medium', agent_id: '', due_date: '', result: '', handoff_agent_id: '',
     ...defaults,
     ...task,
   });
   const agent = agents?.find((a) => a.id === Number(values.agent_id));
+  const defaultReviewer = agents?.find((a) => a.id === agent?.reviewer_id);
   const managed = agent?.platform === 'managed';
   const save = submit(async (v) => {
-    const body = { title: v.title, description: v.description, status: v.status, priority: v.priority, agent_id: numOrNull(v.agent_id), due_date: v.due_date || null, result: v.result };
+    const body = {
+      title: v.title, description: v.description, status: v.status, priority: v.priority, agent_id: numOrNull(v.agent_id), due_date: v.due_date || null, result: v.result,
+      handoff_agent_id: numOrNull(v.handoff_agent_id),
+    };
     if (task) {
       // Only send what you changed: an agent may have updated status/result while this was open.
-      const changed = Object.fromEntries(Object.entries(body).filter(([k, v]) => v !== (k === 'agent_id' ? numOrNull(task[k]) : task[k] ?? (k === 'due_date' ? null : ''))));
+      const ids = ['agent_id', 'handoff_agent_id'];
+      const changed = Object.fromEntries(Object.entries(body).filter(([k, v]) => v !== (ids.includes(k) ? numOrNull(task[k]) : task[k] ?? (k === 'due_date' ? null : ''))));
       if (Object.keys(changed).length) await api(`/tasks/${task.id}`, { method: 'PATCH', body: changed });
     } else if (managed) {
       // Managed agents need their files before they start.
@@ -265,6 +284,21 @@ export function TaskForm({ task, defaults = {}, onClose }) {
             <input type="date" value={values.due_date ?? ''} onChange={set('due_date')} />
           </Field>
         </div>
+        {values.agent_id && !task?.parent_task_id && (
+          <Field label="Reviewed by" hint="When the agent says it's finished, this agent checks the work before it comes back to you.">
+            <select value={values.handoff_agent_id ?? ''} onChange={set('handoff_agent_id')}>
+              <option value="">{defaultReviewer ? `${defaultReviewer.name} (${agent.name}'s usual reviewer)` : 'Nobody, it comes straight to me'}</option>
+              {agents
+                ?.filter((a) => a.id !== Number(values.agent_id) && a.id !== defaultReviewer?.id)
+                .map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name} · {a.title}
+                  </option>
+                ))}
+            </select>
+          </Field>
+        )}
+        {task && <HandoffBar taskId={task.id} />}
         {task && (
           <Field label="Result / agent report">
             <textarea rows={4} value={values.result} onChange={set('result')} placeholder="The agent's output lands here." />
@@ -298,6 +332,61 @@ export function TaskForm({ task, defaults = {}, onClose }) {
       </form>
       {task && managed && Number(task.agent_id) === agent.id && <TaskRun task={task} agentName={agent.name} />}
     </Modal>
+  );
+}
+
+/** Where this task sits in a review chain, and a one-click hand-off. */
+function HandoffBar({ taskId }) {
+  const { data: t } = useApi(`/tasks/${taskId}`, ['task']);
+  const { data: agents } = useApi('/agents', ['agent']);
+  const [to, setTo] = useState('');
+  const [msg, setMsg] = useState('');
+  if (!t) return null;
+  if (t.parent_task_id)
+    return (
+      <div className="handoff-bar">
+        🔎 This is a review of <a href={`#/tasks/${t.parent_task_id}`}>{t.parent_title}</a>. The verdict is added to that task.
+      </div>
+    );
+  if (t.handoff_task_id)
+    return (
+      <div className="handoff-bar">
+        → Handed to <b>{t.handoff_agent_name}</b> for review:{' '}
+        <a href={`#/tasks/${t.handoff_task_id}`}>
+          {{ todo: 'waiting to start', in_progress: 'reviewing now', review: 'review needs you', blocked: 'review blocked', done: 'review done' }[t.handoff_status] ?? 'open the review'}
+        </a>
+      </div>
+    );
+  if (!t.agent_id || t.status === 'done') return null;
+  const pick = to || t.reviewer_id || '';
+  const send = async () => {
+    setMsg('');
+    try {
+      await api(`/tasks/${taskId}/handoff`, { method: 'POST', body: { agent_id: Number(pick) } });
+    } catch (err) {
+      setMsg(err.message);
+    }
+  };
+  return (
+    <div className="handoff-bar">
+      <span>Hand off for review to</span>
+      <select value={pick} onChange={(e) => setTo(e.target.value)} aria-label="Reviewer">
+        <option value="" disabled>
+          Choose…
+        </option>
+        {agents
+          ?.filter((a) => a.id !== t.agent_id)
+          .map((a) => (
+            <option key={a.id} value={a.id}>
+              {a.name} · {a.title}
+            </option>
+          ))}
+      </select>
+      <button type="button" className="btn btn-sm" disabled={!pick} onClick={send}>
+        Send now
+      </button>
+      {msg && <span className="small" style={{ color: 'var(--red)' }}>{msg}</span>}
+    </div>
   );
 }
 
