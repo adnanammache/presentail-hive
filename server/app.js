@@ -26,7 +26,8 @@ import { confirmTool, downloadOutput, interruptRun, managedReady, replyToRun, ru
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { finishRun } from './scheduler.js';
-import { canViewSchedule, suspendSchedulesFor, cancelSchedule, createSchedule, listSchedules, pauseSchedule, previewSchedule, resumeSchedule, runNow, scheduleDetails, updateSchedule } from './schedules.js';
+import { SCHEDULE_TOOLS, SCHEDULE_TOOL_NAMES, chatContext, handleScheduleTool, taskContext } from './scheduleTools.js';
+import { canViewSchedule, suspendSchedulesFor, suspendSchedulesForPerson, cancelSchedule, createSchedule, listSchedules, pauseSchedule, previewSchedule, resumeSchedule, runNow, scheduleDetails, updateSchedule } from './schedules.js';
 import { cleanSchedule } from './taskSchedule.js';
 import {
   PRIORITIES, TASK_STATUSES, addLinks, agentActor, agentView, attention, board, clearBlocker, createTask, getTask, listTasks, needsMe,
@@ -170,7 +171,12 @@ export function dashboardRouter() {
   r.delete('/people/:email/photo', wrap((req) => removePhoto(req.params.email, req.hive)));
   r.post('/people/:email/photo/account', wrap((req) => useAccountPhoto(req.params.email, req.hive)));
   r.patch('/people/:email/membership', wrap((req) => setMembership(req.params.email, req.body ?? {}, req.hive)));
-  r.post('/people/:email/deactivate', wrap((req) => deactivate(req.params.email, req.hive)));
+  r.post('/people/:email/deactivate', wrap((req) => {
+    const out = deactivate(req.params.email, req.hive);
+    // Their recurring tasks (for them, or authorized by them) stop now, with the reason; nothing is reassigned.
+    suspendSchedulesForPerson(req.params.email);
+    return out;
+  }));
   r.post('/people/:email/reactivate', wrap((req) => reactivate(req.params.email, req.hive)));
 
   // Team & agents: teams with their people and agents; membership changes.
@@ -1122,6 +1128,37 @@ export function agentRouter() {
     if (!req.body.body?.trim()) throw bad('body is required');
     return postMessage(req.agent.id, 'agent', req.body.body.trim());
   }));
+
+  // Recurring tasks, for agents that run outside Hive: the same tools managed agents get, answered by
+  // Hive. To create or change one, pass the Hive message (message_id) or task (task_id) you're acting
+  // on; who is asking is taken from there, and user_request must quote that person's own words.
+  r.get('/recurring/tools', (req, res) => res.json(SCHEDULE_TOOLS.map(({ type, ...t }) => t)));
+  r.get('/recurring', wrap((req) => agentTool(req, 'list_recurring_tasks', { assigned_to: 'you', ...req.query })));
+  r.post('/recurring/:tool', wrap((req) => {
+    if (!SCHEDULE_TOOL_NAMES.has(req.params.tool)) throw notFound('Tool');
+    const { message_id, task_id, key, ...input } = req.body ?? {};
+    return agentTool(req, req.params.tool, input, { message_id, task_id, key });
+  }));
+  function agentTool(req, name, input, { message_id, task_id, key } = {}) {
+    const agent = req.agent;
+    let ctx;
+    if (task_id != null) {
+      const task = get('SELECT * FROM tasks WHERE id = ? AND agent_id = ?', Number(task_id), agent.id);
+      if (!task) throw notFound('Task');
+      ctx = taskContext(agent, task);
+    } else if (message_id != null) {
+      const m = get("SELECT * FROM messages WHERE id = ? AND agent_id = ? AND sender = 'user'", Number(message_id), agent.id);
+      if (!m) throw notFound('Message');
+      const meta = m.meta ? JSON.parse(m.meta) : {};
+      ctx = chatContext(agent, { origin: meta.origin ?? 'hive', readerEmail: meta.by ?? meta.email ?? null });
+    } else {
+      ctx = { agent, actor: { type: 'agent', ref: String(agent.id), name: agent.name }, readOnly: 'Pass message_id (the Hive message you are answering) or task_id to create or change recurring tasks.' };
+    }
+    const out = handleScheduleTool(ctx, name, input, { eventId: key ? `api:${agent.id}:${String(key).slice(0, 80)}` : undefined });
+    const body = JSON.parse(out.text);
+    if (out.is_error) throw bad(body.error);
+    return body;
+  }
 
   r.patch('/runs/:id', wrap((req) => {
     const wfRun = get(

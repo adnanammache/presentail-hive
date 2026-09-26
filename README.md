@@ -90,6 +90,7 @@ All endpoints take `Authorization: Bearer <agent token>`.
 | `GET /api/agent/messages?since_id=0` | New messages in its thread |
 | `POST /api/agent/messages` | `{ "body": "…" }` posts into the chat |
 | `PATCH /api/agent/runs/:id` | `{ "status": "success" \| "failed", "output": "…" }` |
+| `POST /api/agent/recurring/:tool` | Recurring-task tools (`GET /api/agent/recurring/tools` lists them). Pass `message_id` or `task_id` for changes; see DEPLOY.md → Recurring tasks. |
 
 ## Project layout
 

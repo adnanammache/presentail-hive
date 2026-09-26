@@ -1090,7 +1090,7 @@ details.panel-section[open] > summary::before { content: '▾ '; }
 .comment-head { align-items: center; }
 .activity-text { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 
-/* ==============================================================
+/* =====================================================================
    People: profile menu and panel, directory, invitations
    ===================================================================== */
 .me-menu { position: relative; margin-bottom: 10px; }
@@ -1232,7 +1232,6 @@ label.chip { cursor: pointer; }
 .msg.mine .md .md-copy:hover { background: rgb(255 255 255 / 0.2); color: #fff; }
 .msg.mine .md .task-list-item input { accent-color: #fff; }
 .dm-q .md, .dm-a .md { margin-top: 4px; }
-=======
 
 /* ---------- recurring tasks ---------- */
 .recurring .tab-actions { align-items: center; gap: 12px; }

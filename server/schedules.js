@@ -96,11 +96,22 @@ function event(workflowId, actor, kind, text, data) {
 // ---------------------------------------------------------------- who
 
 const userRow = (email) => (email ? get('SELECT * FROM users WHERE email = ?', String(email).toLowerCase()) : null);
+/** A person who can use Hive now: in this workspace and not deactivated. */
+const memberRow = (email) => {
+  const u = userRow(email);
+  return u && (u.status ?? 'active') !== 'deactivated' ? u : null;
+};
+/** Why this email can't take or authorize work, in words: never a member, or access turned off. */
+const notMember = (email, what = 'is not a member of this workspace') => {
+  const u = userRow(email);
+  return u ? `${u.name || u.email}'s access to Hive is turned off` : `${email || 'That person'} ${what}`;
+};
 const agentRow = (id) => (id ? get('SELECT * FROM agents WHERE id = ?', id) : null);
 const projectRow = (id) => (id ? get('SELECT * FROM projects WHERE id = ?', id) : null);
 const withTeams = (u) => (u ? { ...u, teams: JSON.parse(u.teams || '[]') } : null);
 /** Who authorizes a schedule. Workflows from before this was recorded were set up by owners: the first owner. */
-const authorizerOf = (email) => withTeams(email ? userRow(email) : get("SELECT * FROM users WHERE role = 'owner' ORDER BY created_at, email LIMIT 1"));
+const authorizerOf = (email) =>
+  withTeams(email ? memberRow(email) : get("SELECT * FROM users WHERE role = 'owner' AND COALESCE(status, 'active') != 'deactivated' ORDER BY created_at, email LIMIT 1"));
 /** An owner acting on a workflow from before authorization was recorded becomes its authorizer. */
 function adopt(wf, ctx) {
   if (!wf.authorized_by && ctx.user?.email) {
@@ -111,7 +122,7 @@ function adopt(wf, ctx) {
 
 /** A person may be given work in a project if they can contribute to it or are its member. */
 function personInProject(email, project) {
-  const u = withTeams(userRow(email));
+  const u = withTeams(memberRow(email));
   return Boolean(u && (u.role === 'owner' || canContribute(u, project)));
 }
 
@@ -138,7 +149,7 @@ export function canManageSchedule(user, wf) {
 
 /** Why this person may not give recurring work to this assignee (in this project), or null. */
 function assignmentProblem(user, { agent_id, assignee_email, project_id }) {
-  if (!userRow(user?.email)) return 'Only members of this workspace can schedule work';
+  if (!memberRow(user?.email)) return 'Only active members of this workspace can schedule work';
   const project = project_id ? projectRow(project_id) : null;
   if (project_id && !project) return 'Unknown project';
   if (project && project.status !== 'active') return `The project “${project.name}” is archived`;
@@ -148,8 +159,8 @@ function assignmentProblem(user, { agent_id, assignee_email, project_id }) {
     if (!a) return 'Unknown agent';
     if (a.status === 'paused') return `${a.name} is paused, so it can't take recurring work. Resume it first.`;
   } else if (assignee_email) {
-    const u = userRow(assignee_email);
-    if (!u) return `${assignee_email} is not a member of this workspace`;
+    const u = memberRow(assignee_email);
+    if (!u) return notMember(assignee_email);
     if (project && !personInProject(u.email, project)) return `${u.name || u.email} is not a member of the project “${project.name}”`;
   } else return 'Choose who gets the task: a person or an AI agent';
   return null;
@@ -158,13 +169,13 @@ function assignmentProblem(user, { agent_id, assignee_email, project_id }) {
 /** Why the next occurrence can't be delivered as authorized, or null. Checked before every occurrence. */
 export function eligibilityProblem(wf, snap = wf) {
   const authorizer = authorizerOf(wf.authorized_by);
-  if (!authorizer) return wf.authorized_by ? `${wf.authorized_by} is no longer a member of this workspace, so the schedule has no one authorizing it` : 'No workspace owner can authorize this older workflow';
+  if (!authorizer) return wf.authorized_by ? `${notMember(wf.authorized_by, 'is no longer a member of this workspace')}, so the schedule has no one authorizing it` : 'No workspace owner can authorize this older workflow';
   if (snap.agent_id) {
     const a = agentRow(snap.agent_id);
     if (!a) return 'The assigned agent was removed';
     if (a.status === 'paused') return `${a.name} is paused`;
   } else if (snap.assignee_email) {
-    if (!userRow(snap.assignee_email)) return `${snap.assignee_email} is no longer a member of this workspace`;
+    if (!memberRow(snap.assignee_email)) return notMember(snap.assignee_email, 'is no longer a member of this workspace');
   } else return 'The schedule has no assignee (the agent was removed)';
   if (snap.project_id) {
     const p = projectRow(snap.project_id);
@@ -190,7 +201,7 @@ export function parseAssigneeRef(value) {
   }
   if (v?.type === 'user' || v?.type === 'person') {
     const email = String(v.email ?? v.id ?? '').toLowerCase();
-    if (!userRow(email)) throw bad(`${email || 'That person'} is not a member of this workspace`);
+    if (!memberRow(email)) throw bad(notMember(email));
     return { agent_id: null, assignee_email: email };
   }
   throw bad('The assignee must be a person or an AI agent');
@@ -458,7 +469,7 @@ export function listSchedules(f = {}, user) {
  * role), via: 'ui' | 'chat' | 'slack' | 'task', provenance: {…} }. Returns { schedule, notes, existing }.
  */
 export function createSchedule(input, ctx, { now = new Date(), dedupe = false } = {}) {
-  if (!ctx?.user?.email || !userRow(ctx.user.email)) throw forbidden('Only a member of this workspace can authorize a recurring task');
+  if (!ctx?.user?.email || !memberRow(ctx.user.email)) throw forbidden('Only an active member of this workspace can authorize a recurring task');
   if (input.client_key) {
     const existing = get('SELECT * FROM workflows WHERE client_key = ?', String(input.client_key));
     if (existing) return { schedule: scheduleView(existing, ctx.user), notes: [], existing: true };
@@ -576,6 +587,12 @@ function suspend(wf, reason) {
   notifyWorkflowFailed(wf.name, `Suspended: ${reason}`, null);
   if (userRow(wf.authorized_by)) notifyUser(wf.authorized_by, { title: 'Recurring task suspended', text: `“${wf.name}” is suspended: ${reason}. Fix it, then resume it: ${manageUrl(wf.id)}` });
   emit('workflow', { workflow_id: wf.id });
+}
+
+/** A person's access is turned off: suspend what's assigned to them or authorized by them, with the reason. */
+export function suspendSchedulesForPerson(email) {
+  const e = String(email ?? '').toLowerCase();
+  for (const wf of all("SELECT * FROM workflows WHERE (assignee_email = ? OR authorized_by = ?) AND status = 'active'", e, e)) suspend(wf, eligibilityProblem(wf) ?? `${e}'s access to Hive is turned off`);
 }
 
 /** An agent is going away: suspend what's assigned to it now, so the reason is visible (never reassigned). */

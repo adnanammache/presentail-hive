@@ -200,16 +200,16 @@ test('scheduling needs the person’s own words: documents and the agent’s ide
     title: 'Bank reconciliation', instructions: 'Reconcile the bank', recurrence: { frequency: 'weekly', weekdays: ['fri'] },
   }, T0);
   assert.equal(r.is_error, true);
-  assert.match(r.error, /doesn't match anything the person wrote/);
+  assert.match(r.error, /doesn't match anything a person wrote/);
   assert.equal(get("SELECT COUNT(*) AS n FROM workflows WHERE name = 'Bank reconciliation'").n, 0);
 
   // Another agent asking (a consult) can look but not schedule.
   const consult = Number(run("INSERT INTO runs (kind, agent_id, status) VALUES ('consult', ?, 'ended')", LEDGER).lastInsertRowid);
   const c = tool(consult, 'schedule_recurring_task', { user_request: 'x', title: 'X', instructions: 'X', recurrence: { frequency: 'daily' } }, T0);
   assert.match(c.error, /asked this by another agent/);
-  // A chat with no known person behind it (e.g. a system message) can't either.
+  // Words nobody wrote in this conversation authorize nothing, whoever the chat is with.
   const anon = Number(run("INSERT INTO runs (kind, agent_id, status, origin) VALUES ('chat', ?, 'ended', 'hive')", LEDGER).lastInsertRowid);
-  assert.match(tool(anon, 'pause_recurring_task', { schedule_id: 1, user_request: 'pause it' }, T0).error, /can't tell which workspace member/);
+  assert.match(tool(anon, 'pause_recurring_task', { schedule_id: 1, user_request: 'pause every recurring task you have' }, T0).error, /doesn't match anything a person wrote/);
 });
 
 test('an agent schedules work for another agent and for people, resolving names first', () => {
@@ -649,6 +649,114 @@ test('workflows from before this change keep working: cron rule, status, owner a
   await S.tickSchedules(T('2026-10-05T05:00:30Z'));
   const [task] = tasksOf(other);
   assert.equal(task.created_by, 'adnan@presentail.com');
+});
+
+test('two people in one chat: the person whose words are quoted is the one authorizing', () => {
+  // Omar asks; then Sara sends a message before the agent's tool call lands (the chat's latest sender is Sara).
+  chat(LEDGER, 'omar@presentail.com', 'Every Thursday at 4 PM, remind me to send the payroll file');
+  const runId = chat(LEDGER, 'sara@presentail.com', 'Unrelated: what was the Careem total last month?');
+  const r = tool(runId, 'schedule_recurring_task', {
+    user_request: 'Every Thursday at 4 PM, remind me to send the payroll file', assignee: { type: 'person', name: 'me' }, mode: 'create_only',
+    title: 'Send the payroll file', instructions: 'Send it.', recurrence: { frequency: 'weekly', weekdays: ['thu'], time: '16:00' }, timezone: 'Asia/Dubai',
+  }, T0);
+  assert.equal(r.ok, true, r.error);
+  const s = wf(r.schedule_id);
+  assert.equal(s.authorized_by, 'omar@presentail.com', 'Omar asked, so Omar authorizes');
+  assert.equal(s.assignee_email, 'omar@presentail.com', '"me" is Omar, not the latest sender');
+  // Sara can't borrow Omar's words by quoting something only he wrote… and identical words from two people are refused.
+  chat(LEDGER, 'sara@presentail.com', 'pause it');
+  chat(LEDGER, 'omar@presentail.com', 'pause it');
+  const both = tool(runId, 'pause_recurring_task', { schedule_id: r.schedule_id, user_request: 'pause it' }, T0);
+  assert.match(both.error, /More than one person wrote those words/);
+  assert.equal(wf(r.schedule_id).status, 'active');
+});
+
+test('deactivated people can’t receive, authorize or keep recurring work', async () => {
+  run("INSERT INTO users (email, name, role) VALUES ('nour@presentail.com', 'Nour Saad', 'member')");
+  const theirs = S.createSchedule({ title: 'Nour weekly', instructions: 'Do it.', assignee: 'user:nour@presentail.com', rule: WEEKLY_MON, timezone: 'Asia/Dubai' }, person('adnan@presentail.com'), { now: T0 }).schedule;
+  const byThem = S.createSchedule({ title: 'Nour authorized', instructions: 'Do it.', assignee: `agent:${POLLER}`, mode: 'create_only', rule: WEEKLY_MON, timezone: 'Asia/Dubai' }, person('nour@presentail.com'), { now: T0 }).schedule;
+  const askedByNour = chat(LEDGER, 'nour@presentail.com', 'every Friday, remind me to file receipts');
+  const res = await call('/people/nour@presentail.com/deactivate', { method: 'POST' });
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  // Suspended at once, with the reason; nothing reassigned.
+  assert.equal(wf(theirs.id).status, 'error');
+  assert.match(wf(theirs.id).status_reason, /Nour Saad's access to Hive is turned off/);
+  assert.equal(wf(theirs.id).assignee_email, 'nour@presentail.com');
+  assert.equal(wf(byThem.id).status, 'error');
+  assert.match(wf(byThem.id).status_reason, /no one authorizing it/);
+  // Can't be given new recurring work, and their earlier words no longer authorize anything.
+  assert.throws(() => S.createSchedule({ title: 'X', assignee: 'user:nour@presentail.com', rule: WEEKLY_MON }, person('adnan@presentail.com')), /access to Hive is turned off/);
+  const r = tool(askedByNour, 'schedule_recurring_task', { user_request: 'every Friday, remind me to file receipts', title: 'Receipts', instructions: 'File.', recurrence: { frequency: 'weekly', weekdays: ['fri'] } }, T0);
+  assert.match(r.error, /can't authorize this/);
+  assert.ok(!tool(askedByNour, 'find_assignees', { query: 'nour' }, T0).candidates.some((c) => c.id === 'nour@presentail.com'), 'not offered as an assignee');
+});
+
+test('plain Claude API agents get the same tools, answered by Hive in a loop', async () => {
+  const { setClaudeClient, sendToAgent } = await import('./dispatch.js');
+  const PLAIN = agent('Clerk', 'Office Clerk', 'claude');
+  const requests = [];
+  setClaudeClient({
+    beta: {
+      messages: {
+        create: async (p) => {
+          requests.push(JSON.parse(JSON.stringify(p)));
+          const last = p.messages.at(-1);
+          if (Array.isArray(last.content) && last.content[0]?.type === 'tool_result') {
+            const out = JSON.parse(last.content[0].content);
+            return { stop_reason: 'end_turn', content: [{ type: 'text', text: out.ok ? out.confirmation : `Couldn't: ${out.error}` }] };
+          }
+          return {
+            stop_reason: 'tool_use',
+            content: [
+              { type: 'thinking', thinking: '', signature: 'sig' },
+              { type: 'tool_use', id: 'toolu_1', name: 'schedule_recurring_task', input: { user_request: 'Every weekday at 8 AM, check the shared inbox', title: 'Check the shared inbox', instructions: 'Check it and flag anything urgent.', recurrence: { frequency: 'daily', weekdays: ['mon', 'tue', 'wed', 'thu', 'fri'], time: '08:00' }, timezone: 'Asia/Dubai' } },
+            ],
+          };
+        },
+      },
+    },
+  });
+  const key = process.env.ANTHROPIC_API_KEY;
+  process.env.ANTHROPIC_API_KEY = 'test-key';
+  try {
+    await sendToAgent(PLAIN, 'Every weekday at 8 AM, check the shared inbox', { by: 'sara@presentail.com' });
+    const reply = await waitFor(() => get("SELECT body FROM messages WHERE agent_id = ? AND sender = 'agent'", PLAIN), 'the reply');
+    const s = get("SELECT * FROM workflows WHERE name = 'Check the shared inbox'");
+    assert.ok(s, 'saved');
+    assert.equal(s.agent_id, PLAIN);
+    assert.equal(s.authorized_by, 'sara@presentail.com');
+    assert.match(reply.body, /^Scheduled: every weekday at 8:00 AM, Asia\/Dubai\. I'll check the shared inbox\./);
+    // The tools were offered, and the whole assistant turn (thinking included) went back with the result.
+    assert.ok(requests[0].tools.some((t) => t.name === 'schedule_recurring_task' && !t.type));
+    assert.match(requests[0].system, /## Recurring tasks/);
+    assert.deepEqual(requests[1].messages.at(-2).content.map((b) => b.type), ['thinking', 'tool_use']);
+    assert.equal(requests[1].messages.at(-1).content[0].tool_use_id, 'toolu_1');
+  } finally {
+    if (key === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = key;
+    setClaudeClient(null);
+  }
+});
+
+test('webhook agents use the tools through the Agent API, authorized by the message they answer', async () => {
+  const hook = agent('Maker', 'Make scenario', 'make');
+  const token = `agt_Maker`;
+  const agentCall = async (path, { method = 'GET', body } = {}) => {
+    const res = await fetch(`${base}/agent${path}`, { method, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: body ? JSON.stringify(body) : undefined });
+    return { status: res.status, body: await res.json() };
+  };
+  const msg = get('SELECT id FROM messages WHERE id = ?', Number(run("INSERT INTO messages (agent_id, sender, body, meta) VALUES (?, 'user', 'On the 1st of every month, pull the bank statements', ?)", hook, JSON.stringify({ by: 'lina@presentail.com', origin: 'hive' })).lastInsertRowid));
+  assert.equal((await agentCall('/recurring/tools')).body.length, 8);
+  const input = { user_request: 'On the 1st of every month, pull the bank statements', title: 'Pull bank statements', instructions: 'Pull them.', recurrence: { frequency: 'monthly', day_of_month: 1 }, timezone: 'Asia/Dubai' };
+  assert.equal((await agentCall('/recurring/schedule_recurring_task', { method: 'POST', body: input })).status, 400, 'no message or task: read only');
+  const other = Number(run("INSERT INTO messages (agent_id, sender, body) VALUES (?, 'user', 'x')", LEDGER).lastInsertRowid);
+  assert.equal((await agentCall('/recurring/schedule_recurring_task', { method: 'POST', body: { ...input, message_id: other } })).status, 404, "another agent's message");
+  const made = await agentCall('/recurring/schedule_recurring_task', { method: 'POST', body: { ...input, message_id: msg.id, key: 'run-1' } });
+  assert.equal(made.status, 200, JSON.stringify(made.body));
+  assert.equal(wf(made.body.schedule_id).authorized_by, 'lina@presentail.com');
+  assert.equal(wf(made.body.schedule_id).agent_id, hook);
+  assert.equal((await agentCall('/recurring/schedule_recurring_task', { method: 'POST', body: { ...input, message_id: msg.id, key: 'run-1' } })).body.schedule_id, made.body.schedule_id, 'a retried call is the same schedule');
+  assert.ok((await agentCall('/recurring')).body.recurring_tasks.some((t) => t.schedule_id === made.body.schedule_id));
 });
 
 // ---------------------------------------------------------------- HTTP API (people)
