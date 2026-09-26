@@ -18,6 +18,8 @@ import { notifyRun, settleApprovalAlert } from './notify.js';
 import { TASK_TOOL, finishTask } from './handoff.js';
 import { AGENT_DM_TOOL, askAgent } from './conversations.js';
 import { lessonsBlock } from './lessons.js';
+import { briefExtras, readyStatus } from './taskSchedule.js';
+import { formatDay } from './recurrence.js';
 import { WAFEQ_TOOL, clearPlan, executePlan, gatewayConfig, planSummary } from './wafeq.js';
 import { baseUrl } from './notify.js';
 import { checkBudget, checkThresholds } from './budget.js';
@@ -310,17 +312,20 @@ async function createSession(agent, { title, files = [], metadata, runId }) {
   });
 }
 
-function taskPrompt(task, files) {
+function taskPrompt(task, files, note) {
+  const extras = briefExtras(task);
   return [
     `Task #${task.id}: ${task.title}`,
     task.description ? `\n${task.description}` : '',
-    task.due_date ? `\nDue: ${task.due_date}` : '',
+    task.due_date ? `\nDue: ${formatDay(task.due_date)}` : '',
+    extras.length ? `\n${extras.join('\n')}` : '',
+    note ? `\n\n${note}` : '',
     files.length ? `\nAttached files (in /workspace/inputs/):\n${files.map((f) => `- ${f.filename}`).join('\n')}` : '\nNo files are attached to this task.',
   ].join('');
 }
 
 /** Start a Managed Agents session working on a task. Returns immediately; progress arrives as run events. */
-export function startTaskRun(taskId) {
+export function startTaskRun(taskId, { note } = {}) {
   const task = get('SELECT * FROM tasks WHERE id = ?', taskId);
   if (!task) throw new Error('Task not found');
   const agent = task.agent_id && get('SELECT * FROM agents WHERE id = ?', task.agent_id);
@@ -341,7 +346,7 @@ export function startTaskRun(taskId) {
     const session = await createSession(agent, { title: task.title, files, runId, metadata: { hive_task_id: String(taskId), hive_run_id: String(runId) } });
     setRun(runId, { session_id: session.id, status: 'running' });
     recordHealth('anthropic', true);
-    await sendAndFollow(runId, [{ type: 'user.message', content: [{ type: 'text', text: taskPrompt(task, files) }] }]);
+    await sendAndFollow(runId, [{ type: 'user.message', content: [{ type: 'text', text: taskPrompt(task, files, note) }] }]);
   })().catch((err) => failRun(runId, err));
 
   return getRun(runId);
@@ -754,7 +759,7 @@ export function handleEvent(runId, ev) {
         );
         if (finished.done && finished.done > (finished.spoke ?? 0)) break;
         if (r.kind === 'task') notifyRun(runId, 'done');
-        setTask(r.task_id, 'review', latest.last_message || undefined);
+        setTask(r.task_id, readyStatus(r.task_id), latest.last_message || undefined);
         if (r.task_id) logActivity(r.agent_id, 'task', `Run #${runId} is waiting for your review`);
       }
       break;

@@ -11,6 +11,7 @@ import { all, get, run } from './db.js';
 import { emit } from './events.js';
 import { logActivity } from './activity.js';
 import { chatWithManagedAgent, startTaskRun } from './managed.js';
+import { briefExtras, setDispatcher } from './taskSchedule.js';
 
 const DEFAULT_MODEL = process.env.DEFAULT_CLAUDE_MODEL || 'claude-opus-5';
 // Models that accept server-side refusal fallbacks (fallbacks: "default").
@@ -153,7 +154,8 @@ export async function dispatchTask(taskId, { runId } = {}) {
     }
     return null;
   }
-  postMessage(agent.id, 'system', `New task #${task.id}: ${task.title}${task.description ? `\n\n${task.description}` : ''}`);
+  const extras = briefExtras(task);
+  postMessage(agent.id, 'system', `New task #${task.id}: ${task.title}${task.description ? `\n\n${task.description}` : ''}${extras.length ? `\n\n${extras.join('\n')}` : ''}`);
   const reply = await deliver(agent, { event: runId ? 'workflow.run' : 'task.assigned', task, run_id: runId ?? null });
   if (reply) {
     run("UPDATE tasks SET result = ?, status = 'review', updated_at = datetime('now') WHERE id = ?", reply, task.id);
@@ -161,3 +163,6 @@ export async function dispatchTask(taskId, { runId } = {}) {
   }
   return reply;
 }
+
+// Scheduled and repeating tasks are started through here too.
+setDispatcher(dispatchTask);

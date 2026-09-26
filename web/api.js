@@ -98,6 +98,18 @@ export function until(s) {
   return `in ${Math.round(sec / 86400)}d`;
 }
 
+// ---- calendar dates (YYYY-MM-DD, Dubai) ----
+const dayUTC = (s) => new Date(`${String(s).slice(0, 10)}T00:00:00Z`);
+/** "28 Oct 2026" */
+export const fmtDay = (s) => {
+  if (!s) return '';
+  const d = dayUTC(s);
+  return Number.isNaN(d.getTime()) ? s : d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
+};
+export const addDaysISO = (s, n) => new Date(dayUTC(s).getTime() + n * 86400000).toISOString().slice(0, 10);
+export const daysBetweenISO = (a, b) => Math.round((dayUTC(b) - dayUTC(a)) / 86400000);
+export const dubaiToday = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Dubai' }).format(new Date());
+
 /** Format a timestamp; pass a timezone to show it in that zone (e.g. a workflow's own timezone). */
 export const fmtDateTime = (s, timeZone) =>
   toDate(s)?.toLocaleString(undefined, { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone }) ?? '—';

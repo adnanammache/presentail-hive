@@ -1,4 +1,4 @@
-import { usePhoto } from '../api.js';
+import { fmtDay, usePhoto } from '../api.js';
 import { useEffect } from 'react';
 
 export const PLATFORM_LABELS = {
@@ -12,10 +12,12 @@ export const PLATFORM_LABELS = {
 };
 
 export const TASK_COLUMNS = [
+  { id: 'scheduled', label: 'Scheduled' },
   { id: 'backlog', label: 'Backlog' },
   { id: 'todo', label: 'To do' },
   { id: 'in_progress', label: 'In progress' },
   { id: 'review', label: 'Needs review' },
+  { id: 'waiting_approval', label: 'Waiting for approval' },
   { id: 'blocked', label: 'Blocked' },
   { id: 'done', label: 'Done' },
 ];
@@ -28,6 +30,7 @@ const PATHS = {
   bot: 'M12 3v3m-6 3h12a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2Zm3 5h.01M15 14h.01M9 17h6',
   board: 'M4 4h5v16H4zM10 4h4v10h-4zM15 4h5v7h-5z',
   repeat: 'M17 2l4 4-4 4M3 11V9a3 3 0 0 1 3-3h15M7 22l-4-4 4-4M21 13v2a3 3 0 0 1-3 3H3',
+  calendar: 'M5 5h14a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1zM4 10h16M8 3v4M16 3v4',
   chat: 'M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z',
   plus: 'M12 5v14M5 12h14',
   play: 'M7 4v16l13-8z',
@@ -100,6 +103,33 @@ export function Field({ label, hint, children }) {
       {children}
       {hint && <span className="field-hint">{hint}</span>}
     </label>
+  );
+}
+
+/** A date picker that shows "28 Oct 2026" (the browser's own field shows dd/mm/yyyy). */
+export function DateInput({ value, onChange, placeholder = 'Pick a date', clearable, label, min }) {
+  return (
+    <span className={`date-input ${value ? '' : 'empty'}`}>
+      <input
+        type="date"
+        value={value ?? ''}
+        min={min}
+        aria-label={label}
+        onChange={(e) => onChange(e.target.value || null)}
+        onClick={(e) => {
+          try {
+            e.currentTarget.showPicker?.();
+          } catch {}
+        }}
+      />
+      <Icon name="calendar" size={15} />
+      <span className="date-text">{value ? fmtDay(value) : placeholder}</span>
+      {clearable && value && (
+        <button type="button" className="date-clear" aria-label={`Clear ${label ?? 'date'}`} onClick={(e) => (e.preventDefault(), onChange(null))}>
+          <Icon name="x" size={12} />
+        </button>
+      )}
+    </span>
   );
 }
 

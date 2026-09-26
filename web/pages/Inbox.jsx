@@ -1,4 +1,4 @@
-import { ago, useApi } from '../api.js';
+import { ago, api, useApi } from '../api.js';
 import { Avatar, Empty, Loading } from '../components/ui.jsx';
 import Chat from '../components/Chat.jsx';
 
@@ -11,6 +11,7 @@ export default function Inbox({ id, meta }) {
     <div className="inbox">
       <aside className="inbox-list">
         <h1 className="inbox-title">Inbox</h1>
+        <Reminders />
         {sorted.map((a) => (
           <a key={a.id} href={`#/inbox/${a.id}`} className={`inbox-item ${current?.id === a.id ? 'on' : ''}`}>
             <Avatar name={a.name} color={a.color} size={36} status={a.status} />
@@ -43,6 +44,29 @@ export default function Inbox({ id, meta }) {
           <Empty title="No agents yet" />
         )}
       </section>
+    </div>
+  );
+}
+
+/** Due-date reminders for tasks, above the conversations. */
+function Reminders() {
+  const { data: reminders } = useApi('/reminders', ['reminder', 'task']);
+  if (!reminders?.length) return null;
+  const dismiss = (id) => api(`/reminders/${id}/read`, { method: 'POST' });
+  return (
+    <div className="reminders">
+      <div className="reminders-head small strong">⏰ Reminders</div>
+      {reminders.map((r) => (
+        <div key={r.id} className="reminder">
+          <a href={`#/tasks/${r.task_id}`} className="grow">
+            <div className="clamp-2">{r.text}</div>
+            <div className="muted small">{ago(r.created_at)}</div>
+          </a>
+          <button type="button" className="icon-btn sm" aria-label="Dismiss reminder" title="Dismiss" onClick={() => dismiss(r.id)}>
+            ✕
+          </button>
+        </div>
+      ))}
     </div>
   );
 }
