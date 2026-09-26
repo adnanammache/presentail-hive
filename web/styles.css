@@ -1232,3 +1232,16 @@ label.chip { cursor: pointer; }
 .msg.mine .md .md-copy:hover { background: rgb(255 255 255 / 0.2); color: #fff; }
 .msg.mine .md .task-list-item input { accent-color: #fff; }
 .dm-q .md, .dm-a .md { margin-top: 4px; }
+
+/* Settings → Agents in Slack */
+.slack-bots .notice { margin: 10px 0; }
+.slack-bots form input { min-width: 0; }
+.slack-bots-actions { margin: 12px 0 6px; }
+.settings-note .slack-bot-list { list-style: none; margin: 8px 0; padding: 0; border-top: 1px solid var(--border); }
+.slack-bot-row { display: flex; gap: 12px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--border); }
+.slack-bot-row .grow { min-width: 0; }
+.slack-bot-name { font-weight: 600; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+@media (max-width: 640px) {
+  .slack-bot-row { flex-wrap: wrap; }
+  .slack-bot-row > .row-gap { width: 100%; padding-left: 44px; }
+}

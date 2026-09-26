@@ -686,3 +686,34 @@ CREATE TABLE IF NOT EXISTS invitations (
 );
 CREATE INDEX IF NOT EXISTS idx_invitations_email ON invitations(email, status);
 `);
+
+db.exec(`
+-- Each agent's own Slack app (a real bot user in Slack), created and installed by Hive.
+-- Secrets stay here and are never sent to the browser.
+CREATE TABLE IF NOT EXISTS agent_slack_apps (
+  agent_id        INTEGER PRIMARY KEY REFERENCES agents(id) ON DELETE CASCADE,
+  app_id          TEXT NOT NULL UNIQUE,
+  client_id       TEXT NOT NULL,
+  client_secret   TEXT NOT NULL,
+  signing_secret  TEXT NOT NULL,
+  bot_token       TEXT,                           -- set once someone installs it
+  bot_user_id     TEXT,
+  team_id         TEXT,
+  profile         TEXT,                           -- what Slack last got (name, title, photo), to know when to update
+  error           TEXT,                           -- the last thing that went wrong, in words
+  created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  installed_at    TEXT,
+  updated_at      TEXT
+);
+-- One-time install links (Slack sends people back here after "Allow").
+CREATE TABLE IF NOT EXISTS slack_oauth_states (
+  state       TEXT PRIMARY KEY,
+  agent_id    INTEGER NOT NULL,
+  user_email  TEXT NOT NULL,
+  next        TEXT NOT NULL DEFAULT '[]',         -- agents still to install after this one ("Install all")
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+`);
+// Which agent's own bot a Slack conversation lives in (NULL: the shared Hive app).
+addColumn('slack_threads', 'bot_agent_id', 'INTEGER');
+addColumn('agent_slack_apps', 'scopes', 'TEXT'); // the bot scopes Slack accepted for this app (asked for again at install)

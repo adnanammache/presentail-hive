@@ -18,11 +18,12 @@ const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replac
 
 export const slackButtonsEnabled = () => slackConfigured() && Boolean(process.env.SLACK_SIGNING_SECRET);
 
-export async function slackApi(method, body) {
+/** Call Slack's Web API as the shared Hive app, or as an agent's own bot with `token`. */
+export async function slackApi(method, body, { token } = {}) {
   try {
     const res = await fetch(`https://slack.com/api/${method}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json; charset=utf-8', Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` },
+      headers: { 'Content-Type': 'application/json; charset=utf-8', Authorization: `Bearer ${token || process.env.SLACK_BOT_TOKEN}` },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(10000),
     });
@@ -48,19 +49,64 @@ export function alertBlocks({ text, detail, link, linkLabel = 'Open in Hive', bu
   return blocks;
 }
 
+// ---------------------------------------------------------------- who speaks
+
+const avatarFor = (agent) => `${baseUrl()}/avatars/${agent.id}.png?v=${encodeURIComponent(`${agent.photo_version ?? ''}${agent.color ?? ''}`)}`;
+const dressedAs = (agent) =>
+  agent ? { username: `${agent.name} · ${agent.title || 'Agent'}`.slice(0, 80), icon_url: avatarFor(agent) } : { username: 'Presentail Hive' };
+
+/** An agent's own Slack bot, once it's installed (see slackBots.js). */
+export const agentBot = (agentId) =>
+  agentId ? get('SELECT agent_id, app_id, bot_token, bot_user_id, team_id FROM agent_slack_apps WHERE agent_id = ? AND bot_token IS NOT NULL', agentId) ?? null : null;
+
+/** The bot a Slack conversation lives in: an agent's own bot, or null for the shared Hive app. */
+export function conversationBot(channel, thread_ts) {
+  const row = thread_ts ? get('SELECT bot_agent_id FROM slack_threads WHERE channel = ? AND thread_ts = ?', channel, thread_ts) : null;
+  return agentBot(row?.bot_agent_id);
+}
+
+/**
+ * Post a message in Slack as `agent` (or as Hive when null), from the right bot:
+ * - in a conversation that lives in an agent's own bot, that bot answers (another agent speaking there
+ *   is shown under its own name and face);
+ * - anywhere else, an agent with its own bot posts as itself; if that bot can't post there (a private
+ *   channel it isn't in, or a DM with the Hive app), the Hive app posts under the agent's name and face.
+ * `bot` forces the bot (an agent_slack_apps row), for replies to an event that bot received.
+ * Returns Slack's answer plus `bot_agent_id` (who posted), so the message can be updated later.
+ */
+export async function postMessage(agent, { channel, thread_ts, text, blocks, bot } = {}) {
+  const body = { channel, thread_ts, text: String(text ?? '').slice(0, 3900), blocks, unfurl_links: false };
+  const owner = bot ?? conversationBot(channel, thread_ts);
+  const dm = String(channel).startsWith('D'); // only the bot in a DM can post in it
+  const own = agent && !dm ? agentBot(agent.id) : null;
+  const asOwner = async () => {
+    const self = !agent || agent.id === owner.agent_id;
+    const json = await slackApi('chat.postMessage', { ...body, ...(self ? {} : dressedAs(agent)) }, { token: owner.bot_token });
+    return { ...json, bot_agent_id: owner.agent_id };
+  };
+  if (owner && (dm || !own || own.agent_id === owner.agent_id)) return asOwner();
+  if (own) {
+    const json = await slackApi('chat.postMessage', body, { token: own.bot_token });
+    if (json.ok || !/not_in_channel|channel_not_found|restricted_action|is_archived/.test(json.error)) return { ...json, bot_agent_id: own.agent_id };
+  }
+  if (owner) return asOwner();
+  if (!process.env.SLACK_BOT_TOKEN) return { ok: false, skipped: true };
+  return { ...(await slackApi('chat.postMessage', { ...body, ...dressedAs(agent) })), bot_agent_id: null };
+}
+
 /**
  * Post an alert. By default to SLACK_ALERT_CHANNEL; with `thread` ({ channel, thread_ts }) into
  * that conversation instead, and with `as` (an agent) under the agent's own name and face.
  */
 export async function sendSlack({ text, thread, as, ...rest }) {
-  if (thread ? !process.env.SLACK_BOT_TOKEN : !slackConfigured()) return { ok: false, skipped: true };
+  if (thread) return postMessage(as ?? null, { channel: thread.channel, thread_ts: thread.thread_ts, text: text.replace(/[*_`]/g, ''), blocks: alertBlocks({ text, ...rest }) });
+  if (!slackConfigured()) return { ok: false, skipped: true };
   return slackApi('chat.postMessage', {
-    channel: thread?.channel ?? process.env.SLACK_ALERT_CHANNEL,
-    thread_ts: thread?.thread_ts,
+    channel: process.env.SLACK_ALERT_CHANNEL,
     text: text.replace(/[*_`]/g, ''),
     blocks: alertBlocks({ text, ...rest }),
     unfurl_links: false,
-    ...(as ? { username: `${as.name} · ${as.title || 'Agent'}`.slice(0, 80), icon_url: `${baseUrl()}/avatars/${as.id}.png?v=${encodeURIComponent(`${as.photo_version ?? ''}${as.color ?? ''}`)}` } : {}),
+    ...(as ? dressedAs(as) : {}),
   });
 }
 
@@ -70,11 +116,14 @@ const taskThread = (taskId) => (taskId ? get('SELECT channel, thread_ts FROM sla
 /** Once an approval is decided (in Hive or Slack), swap the alert's buttons for who decided. */
 export async function settleApprovalAlert(runId, outcome) {
   const r = get('SELECT slack_ts FROM runs WHERE id = ?', runId);
-  if (!r?.slack_ts || !slackConfigured()) return;
+  if (!r?.slack_ts) return;
+  // "channel|ts", plus "|<agent id>" when the alert was posted by that agent's own bot.
+  const [channel, ts, botAgentId] = r.slack_ts.split('|');
+  const bot = botAgentId ? agentBot(Number(botAgentId)) : null;
+  if (!bot && !process.env.SLACK_BOT_TOKEN) return;
   run('UPDATE runs SET slack_ts = NULL WHERE id = ?', runId);
-  const [channel, ts] = r.slack_ts.split('|');
   const { text, link } = approvalText(runId);
-  return slackApi('chat.update', { channel, ts, text: `${outcome}: ${text}`.replace(/[*_`]/g, ''), blocks: alertBlocks({ text, detail: esc(outcome), link }) });
+  return slackApi('chat.update', { channel, ts, text: `${outcome}: ${text}`.replace(/[*_`]/g, ''), blocks: alertBlocks({ text, detail: esc(outcome), link }) }, { token: bot?.bot_token });
 }
 
 function approvalText(runId) {
@@ -123,7 +172,8 @@ export function notifyRun(runId, kind, extra = {}) {
     const value = `${runId}:${pending.map((p) => p.event_id).join(',')}`;
     const n = pending.length > 1 ? ` all ${pending.length}` : '';
     const buttons =
-      fits && slackButtonsEnabled() && value.length < 2000
+      // An agent's own bot carries its own signing secret, so its buttons always work.
+      fits && (slackButtonsEnabled() || (thread && (conversationBot(thread.channel, thread.thread_ts) || agentBot(agent?.id)))) && value.length < 2000
         ? [
             { type: 'button', style: 'primary', text: { type: 'plain_text', text: `Approve${n}` }, action_id: 'hive_approve', value,
               confirm: { title: { type: 'plain_text', text: 'Approve?' }, text: { type: 'mrkdwn', text: `Let ${who} go ahead with${n || ' this'}?` }, confirm: { type: 'plain_text', text: 'Approve' }, deny: { type: 'plain_text', text: 'Cancel' } } },
@@ -131,7 +181,7 @@ export function notifyRun(runId, kind, extra = {}) {
           ]
         : [];
     return sendSlack({ text: thread ? '🟡 I need your approval before I go on:' : `🟡 ${who} needs your approval on ${where}`, detail: lines || undefined, link, linkLabel: 'Review in Hive', buttons, ...via }).then((json) => {
-      if (json?.ok && json.ts) run('UPDATE runs SET slack_ts = ? WHERE id = ?', `${json.channel}|${json.ts}`, runId);
+      if (json?.ok && json.ts) run('UPDATE runs SET slack_ts = ? WHERE id = ?', `${json.channel}|${json.ts}${json.bot_agent_id ? `|${json.bot_agent_id}` : ''}`, runId);
       return json;
     });
   }

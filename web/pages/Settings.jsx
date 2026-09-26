@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { ago, api, useApi } from '../api.js';
 import { Badge, Loading, PageHeader } from '../components/ui.jsx';
+import SlackBots from '../components/SlackBots.jsx';
 import { BackupSettings, BriefSettings, HealthCard, NotificationSettings, PeopleSettings } from '../components/Notifications.jsx';
 
 const HOW = {
@@ -164,6 +165,7 @@ export default function Settings() {
       </div>
       <NotificationSettings />
       <BriefSettings />
+      {me?.role === 'owner' && <SlackBots />}
       {me?.role === 'owner' && <BackupSettings />}
       <PeopleSettings me={me} />
       <EntitySettings canEdit={me?.role === 'owner'} />
@@ -199,7 +201,7 @@ export default function Settings() {
         )}
         <h3>Talk to agents in Slack</h3>
         <p className="muted">
-          DM the Hive app with an agent's name first, e.g. <i>Ledger: can you do Careem for August?</i> The agent answers in the thread under its own name and face. Attach files to give it a task; progress and approvals come back to the same thread. Only people with a Presentail email can use it.
+          Each agent can have its own bot (see <b>Agents in Slack</b> above). You can also DM the Hive app with an agent's name first, e.g. <i>Ledger: can you do Careem for August?</i> The agent answers in the thread under its own name and face. Attach files to give it a task; progress and approvals come back to the same thread. Only people with a Presentail email can use it.
         </p>
         {data.slack?.conversations ? (
           <p className="muted">✅ On. Hive has received messages from Slack.</p>

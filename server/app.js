@@ -7,6 +7,7 @@ import { claudeConfigured, dispatchTask, postMessage, sendToAgent } from './disp
 import { integrationList, skillLibrary } from './capabilities.js';
 import { sendSlack, slackButtonsEnabled, slackConfigured } from './notify.js';
 import { approvers } from './slack.js';
+import * as slackBots from './slackBots.js';
 import { finishTask, handOff, reviewerFor } from './handoff.js';
 import { agentSpend, parseBudget, teamSpend } from './budget.js';
 import { removeAgentPhoto, saveAgentPhoto } from './avatars.js';
@@ -52,7 +53,7 @@ const TEAM_FIELDS = ['name', 'description', 'color', 'budget_cents'];
 const WORKFLOW_FIELDS = ['name', 'description', 'agent_id', 'schedule', 'timezone', 'instructions', 'enabled'];
 
 // ---------- serializers ----------
-const publicAgent = ({ api_token, ...a }) => a;
+const publicAgent = ({ api_token, ...a }) => ({ ...a, slack_url: a.slack_url ?? slackBots.slackLink(slackBots.appFor(a.id)) });
 const withNext = (wf) => ({ ...wf, enabled: Boolean(wf.enabled), next_run_at: wf.enabled ? nextRuns(wf.schedule, wf.timezone)[0] ?? null : null });
 
 /** Approve or send back a task that is waiting for approval, and tell the agent. */
@@ -114,6 +115,8 @@ const OWNER_ONLY = [
   ['put', '/brief/config'], ['post', '/setup'],
   ['get', '/backups'], ['post', '/backups'], ['get', '/backups/:name'],
   ['post', '/settings/slack/test'], ['post', '/settings/odoo/test'],
+  ['get', '/slack/bots'], ['post', '/slack/bots/connect'], ['delete', '/slack/bots/connect'], ['post', '/slack/bots/create'],
+  ['post', '/slack/bots/install'], ['get', '/slack/bots/callback'], ['post', '/slack/bots/:agentId/sync'], ['delete', '/slack/bots/:agentId'],
   ['get', '/users'], ['patch', '/users/:email'],
   ['get', '/invitations'], ['post', '/invitations'], ['post', '/invitations/:id/resend'], ['delete', '/invitations/:id'],
 ];
@@ -312,7 +315,10 @@ export function dashboardRouter() {
   const AGENT_SELECT = `SELECT a.*, tm.name AS team_name, tm.color AS team_color,
     (SELECT COALESCE(SUM(cost_cents), 0) FROM runs r WHERE r.agent_id = a.id AND r.created_at >= date('now', 'start of month')) AS month_cents
     FROM agents a LEFT JOIN teams tm ON tm.id = a.team_id`;
-  const getAgent = (id) => get(`${AGENT_SELECT} WHERE a.id = ?`, id);
+  const getAgent = (id) => {
+    const a = get(`${AGENT_SELECT} WHERE a.id = ?`, id);
+    return a && { ...a, slack_url: slackBots.slackLink(slackBots.appFor(a.id)) }; // opens its DM in Slack, once installed
+  };
   const checkTeam = (teamId) => {
     if (teamId !== undefined && teamId !== null && !get('SELECT id FROM teams WHERE id = ?', teamId)) throw bad('Unknown team');
   };
@@ -391,6 +397,7 @@ export function dashboardRouter() {
     check(b.status, AGENT_STATUSES, 'status');
     update('agents', req.params.id, b, AGENT_FIELDS);
     emit('agent', { agent_id: Number(req.params.id) });
+    slackBots.syncSoon(Number(req.params.id)); // its Slack bot's name, title and photo follow
     return getAgent(req.params.id);
   }));
 
@@ -418,7 +425,13 @@ export function dashboardRouter() {
     return getAgent(req.params.id);
   }));
 
-  r.delete('/agents/:id', wrap((req) => {
+  r.delete('/agents/:id', wrap(async (req) => {
+    // Its Slack bot leaves Slack too. If Slack can't be reached, say so rather than leave a bot behind.
+    try {
+      await slackBots.removeApp(Number(req.params.id));
+    } catch (err) {
+      throw bad(`Couldn't remove this agent's Slack bot: ${err.message}. Try again, or remove the bot in Settings → Slack bots first.`);
+    }
     removeAgentPhoto(Number(req.params.id));
     run('DELETE FROM agents WHERE id = ?', req.params.id);
     emit('agent');
@@ -447,6 +460,78 @@ export function dashboardRouter() {
       agents_channel: Boolean(process.env.SLACK_AGENTS_CHANNEL),
     },
   })));
+  // Each agent as its own Slack bot (owners). See slackBots.js.
+  const hereUrl = (req) => `${req.protocol}://${req.get('host')}`;
+  r.get('/slack/bots', wrap(() => slackBots.status()));
+  r.post('/slack/bots/connect', wrap(async (req) => {
+    slackBots.setOrigin(hereUrl(req)); // Slack sends people and messages back to the address Hive is used at
+    try {
+      await slackBots.connect(req.body?.token);
+    } catch (err) {
+      throw bad(err.message);
+    }
+    emit('slack_bots');
+    return slackBots.status();
+  }));
+  r.delete('/slack/bots/connect', wrap(() => {
+    slackBots.disconnect();
+    emit('slack_bots');
+    return slackBots.status();
+  }));
+  // Create the agent's bot, or every missing one.
+  r.post('/slack/bots/create', wrap(async (req) => {
+    slackBots.setOrigin(hereUrl(req));
+    const agentId = req.body?.agent_id;
+    let failed = [];
+    try {
+      if (agentId) {
+        if (!get('SELECT id FROM agents WHERE id = ?', agentId)) throw notFound('Agent');
+        await slackBots.createApp(Number(agentId));
+      } else ({ failed } = await slackBots.createAll());
+    } catch (err) {
+      if (err.status) throw err;
+      throw bad(err.message);
+    }
+    emit('slack_bots');
+    return { ...slackBots.status(), failed };
+  }));
+  // Where to send the owner to press Allow in Slack: one agent, or every created-but-not-installed one in turn.
+  r.post('/slack/bots/install', wrap((req) => {
+    const agentId = req.body?.agent_id ? Number(req.body.agent_id) : null;
+    const queue = agentId ? [agentId] : slackBots.notInstalled();
+    if (!queue.length) throw bad('Every bot is installed already.');
+    try {
+      return { url: slackBots.installUrl(queue[0], req.hive.email, queue.slice(1)) };
+    } catch (err) {
+      throw bad(err.message);
+    }
+  }));
+  // Slack sends the browser back here after Allow; go on to the next agent, or back to Settings.
+  r.get('/slack/bots/callback', async (req, res) => {
+    try {
+      const { next } = await slackBots.finishInstall(req.query, req.hive.email);
+      emit('slack_bots');
+      res.redirect(next ?? '/?slack=installed#/settings');
+    } catch (err) {
+      res.redirect(`/?slack_error=${encodeURIComponent(err.message)}#/settings`);
+    }
+  });
+  r.post('/slack/bots/:agentId/sync', wrap(async (req) => {
+    const result = await slackBots.syncApp(Number(req.params.agentId), { force: true }).catch((err) => ({ ok: false, error: err.message }));
+    emit('slack_bots');
+    if (!result.ok && result.error) throw bad(result.error);
+    return slackBots.status();
+  }));
+  r.delete('/slack/bots/:agentId', wrap(async (req) => {
+    try {
+      await slackBots.removeApp(Number(req.params.agentId));
+    } catch (err) {
+      throw bad(err.message);
+    }
+    emit('slack_bots');
+    return slackBots.status();
+  }));
+
   // Claude models for the agent form
   r.get('/models', wrap(async () => ({ models: await listModels() })));
 
@@ -578,11 +663,13 @@ export function dashboardRouter() {
       throw bad(err.message);
     }
     emit('agent', { agent_id: Number(req.params.id) });
+    slackBots.syncSoon(Number(req.params.id));
     return getAgent(req.params.id);
   }));
   r.delete('/agents/:id/photo', wrap((req) => {
     removeAgentPhoto(Number(req.params.id));
     emit('agent', { agent_id: Number(req.params.id) });
+    slackBots.syncSoon(Number(req.params.id));
     return getAgent(req.params.id);
   }));
 

@@ -242,6 +242,11 @@ export default function AgentDetail({ id, meta }) {
             </div>
           </div>
           <div className="page-actions">
+            {agent.slack_url && (
+              <a className="btn" href={agent.slack_url} target="_blank" rel="noreferrer" title={`Open your DM with ${agent.name} in Slack`}>
+                <Icon name="chat" size={16} /> Message in Slack
+              </a>
+            )}
             <button className="btn" onClick={togglePause}>
               {agent.status === 'paused' ? 'Resume' : 'Pause'}
             </button>

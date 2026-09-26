@@ -13,6 +13,7 @@ Presentail's hive of AI agents: see every agent, what it's working on, what's sc
 - **Org chart**: Presentail's teams and agents as a tree, with status, open tasks and AI spend per agent.
 - **AI spend**: month-to-date cost of agent runs, daily for 30 days, by team and by agent. It appears on the dashboard, team headers and agent cards.
 - **Agent output files**: reports and spreadsheets an agent saves are downloadable from the task.
+- **Agents in Slack**: every agent can be its own Slack bot (own name, photo and DM; @mention it or invite it to channels). Hive creates and installs them from Settings → Agents in Slack. See DEPLOY.md.
 - **Slack alerts**: messages you when an agent needs approval, finishes a turn, gets stuck, or a scheduled workflow fails (`SLACK_BOT_TOKEN`, `SLACK_ALERT_CHANNEL`). Links open the task directly (`#/tasks/<id>`).
 - **Settings**: what's connected, how to connect the rest, and a *Send test alert* button.
 - **Install on your phone**: Add to Home Screen opens Hive as an app.
