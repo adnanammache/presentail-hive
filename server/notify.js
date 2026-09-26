@@ -20,12 +20,16 @@ const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replac
 export const slackButtonsEnabled = () => slackConfigured() && Boolean(process.env.SLACK_SIGNING_SECRET);
 
 /** Call Slack's Web API as the shared Hive app, or as an agent's own bot with `token`. */
+// Slack's read methods don't accept a JSON body (they answer as if no arguments were sent); they take a form.
+const FORM_METHODS = new Set(['users.info']);
+
 export async function slackApi(method, body, { token } = {}) {
   try {
+    const form = FORM_METHODS.has(method);
     const res = await fetch(`https://slack.com/api/${method}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json; charset=utf-8', Authorization: `Bearer ${token || process.env.SLACK_BOT_TOKEN}` },
-      body: JSON.stringify(body),
+      headers: { 'Content-Type': form ? 'application/x-www-form-urlencoded' : 'application/json; charset=utf-8', Authorization: `Bearer ${token || process.env.SLACK_BOT_TOKEN}` },
+      body: form ? new URLSearchParams(Object.entries(body).filter(([, v]) => v !== undefined)).toString() : JSON.stringify(body),
       signal: AbortSignal.timeout(10000),
     });
     const json = await res.json();

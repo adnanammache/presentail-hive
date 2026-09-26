@@ -21,7 +21,9 @@ const posts = [];
 globalThis.fetch = async (url, init = {}) => {
   url = String(url);
   if (url.endsWith('/users.info')) {
-    const { user } = JSON.parse(init.body);
+    // Like Slack: read methods ignore a JSON body.
+    if (!/x-www-form-urlencoded/.test(init.headers['Content-Type'])) return Response.json({ ok: false, error: 'user_not_found' });
+    const user = new URLSearchParams(init.body).get('user');
     const email = { U_ADNAN: 'adnan@presentail.com', U_GUEST: 'guest@gmail.com' }[user];
     return Response.json({ ok: true, user: { id: user, real_name: user === 'U_ADNAN' ? 'Adnan' : 'Guest', profile: { email } } });
   }

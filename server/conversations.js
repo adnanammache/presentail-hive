@@ -99,10 +99,12 @@ export async function slackPerson(userId, { token } = {}) {
     name: u?.profile?.display_name || u?.real_name || u?.name || 'Someone',
     email,
     // Without the users:read.email scope Slack hides everyone's email: say so rather than refuse silently.
-    why: res?.ok && !email && !u?.is_bot ? 'no-email' : null,
+    // If Slack couldn't be asked at all, say that too: it's not the person's fault.
+    why: !res?.ok ? 'lookup-failed' : !email && !u?.is_bot ? 'no-email' : null,
+    error: res?.ok ? null : res?.error ?? 'unknown',
     at: Date.now(),
   };
-  people.set(userId, person);
+  if (person.why !== 'lookup-failed') people.set(userId, person); // a failed lookup is asked again next time
   return person;
 }
 export const forgetPeople = () => people.clear(); // tests
@@ -155,6 +157,10 @@ export async function handleSlackMessage(event, { bot = null } = {}) {
   const person = await slackPerson(event.user, { token: bot?.bot_token });
   if (!person.ok) {
     if (person.why === 'no-email') return reply(null, "Hive can't see your email in Slack, so it can't check you're from Presentail. An admin needs to add the users:read.email scope to the Hive app and reinstall it.");
+    if (person.why === 'lookup-failed') {
+      console.error(`[slack] couldn't look up ${event.user}: ${person.error}`);
+      return reply(null, `Hive couldn't check who you are in Slack just now (Slack said: ${person.error}). Please try again in a minute; if it keeps happening, tell a Hive owner.`);
+    }
     return reply(null, 'Sorry, Hive only works with Presentail accounts.');
   }
 

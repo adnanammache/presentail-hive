@@ -27,18 +27,34 @@ const ORIGIN = 'slack_bots_origin'; // app_meta: the address Slack sends people 
 // ---------------------------------------------------------------- talking to Slack's app-management API
 
 /** Slack's app-management methods take the token and arguments as a form. */
+let pause = (ms) => new Promise((r) => setTimeout(r, ms));
+export const setPause = (fn) => (pause = fn); // tests
+
+/**
+ * Slack's app-management methods take the token and arguments as a form. Creating many apps in a row
+ * hits Slack's speed limit: wait as long as Slack asks (up to a minute) and try again, a few times.
+ */
 async function slackForm(method, fields, file) {
-  let body;
-  if (file) {
-    body = new FormData();
-    for (const [k, v] of Object.entries(fields)) body.append(k, v);
-    body.append('file', new Blob([file.body], { type: file.type }), file.name);
-  } else body = new URLSearchParams(Object.entries(fields).filter(([, v]) => v !== undefined));
-  try {
-    const res = await fetch(`https://slack.com/api/${method}`, { method: 'POST', body, signal: AbortSignal.timeout(20000) });
-    return await res.json();
-  } catch (err) {
-    return { ok: false, error: err.message };
+  const build = () => {
+    if (!file) return new URLSearchParams(Object.entries(fields).filter(([, v]) => v !== undefined));
+    const form = new FormData();
+    for (const [k, v] of Object.entries(fields)) form.append(k, v);
+    form.append('file', new Blob([file.body], { type: file.type }), file.name);
+    return form;
+  };
+  for (let attempt = 1; ; attempt++) {
+    let res;
+    let json;
+    try {
+      res = await fetch(`https://slack.com/api/${method}`, { method: 'POST', body: build(), signal: AbortSignal.timeout(20000) });
+      json = await res.json();
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+    const limited = res.status === 429 || json?.error === 'ratelimited';
+    if (!limited || attempt >= 4) return json;
+    const seconds = Math.min(60, Math.max(1, Number(res.headers.get('retry-after')) || 20));
+    await pause(seconds * 1000);
   }
 }
 
