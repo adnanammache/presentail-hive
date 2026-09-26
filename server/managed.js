@@ -18,6 +18,7 @@ import { notifyRun, settleApprovalAlert } from './notify.js';
 import { TASK_TOOL, finishTask } from './handoff.js';
 import { AGENT_DM_TOOL, askAgent } from './conversations.js';
 import { lessonsBlock } from './lessons.js';
+import { CHAT_DIR } from './chatFiles.js';
 import { briefExtras, readyStatus } from './taskSchedule.js';
 import { clearBlocker, setBlocker } from './tasks.js';
 import { formatDay } from './recurrence.js';
@@ -154,7 +155,8 @@ export function composeSystem(agent) {
     agent.system_prompt,
     '',
     '## How you work (Presentail Hive)',
-    '- Your work arrives as tasks from Presentail Hive. Files attached to a task are in /workspace/inputs/.',
+    '- Your work arrives as tasks from Presentail Hive. Files attached to a task are in /workspace/inputs/; files sent to you in a chat are in /workspace/inputs/chat/.',
+    '- A chat message that starts "(Voice note" was spoken and transcribed automatically: read past small transcription slips, and ask if a figure or name is unclear.',
     available.length
       ? `- Systems you can reach: ${available
           .map((k) =>
@@ -365,7 +367,7 @@ export function startTaskRun(taskId, { note } = {}) {
  * Chat with a managed agent. Each conversation has its own session: Hive's chat is one, and every
  * Slack thread is another, so people never see each other's conversations or get each other's answers.
  */
-export async function chatWithManagedAgent(agentId, text, { origin = 'hive' } = {}) {
+export async function chatWithManagedAgent(agentId, text, { origin = 'hive', files = [] } = {}) {
   const agent = get('SELECT * FROM agents WHERE id = ?', agentId);
   const say = (msg) => postMessage(agentId, 'system', msg, { origin });
   let r = get("SELECT * FROM runs WHERE kind = 'chat' AND agent_id = ? AND COALESCE(origin, 'hive') = ? AND status NOT IN ('failed', 'ended') ORDER BY id DESC LIMIT 1", agentId, origin);
@@ -382,11 +384,25 @@ export async function chatWithManagedAgent(agentId, text, { origin = 'hive' } = 
       r = setRun(runId, { session_id: session.id, status: 'running' });
     }
     run('UPDATE runs SET auto_approve = 0 WHERE id = ?', r.id);
+    if (files.length) text = `${text}\n\n${await mountChatFiles(r.session_id, files)}`.trim();
     await sendAndFollow(r.id, [{ type: 'user.message', content: [{ type: 'text', text }] }]);
   } catch (err) {
     if (r) setRun(r.id, { status: 'failed', error: err.message });
     say(`Could not reach ${agent.name}: ${err.message}`);
   }
+}
+
+/** Put files sent in the chat into the agent's running session. Returns the line telling it where they are. */
+async function mountChatFiles(sessionId, files) {
+  for (const f of files) {
+    if (!f.anthropic_file_id) {
+      const uploaded = await api().beta.files.upload({ file: await toFile(await readFile(f.path), f.filename) });
+      run('UPDATE chat_files SET anthropic_file_id = ? WHERE id = ?', uploaded.id, f.id);
+      f.anthropic_file_id = uploaded.id;
+    }
+    await api().beta.sessions.resources.add(sessionId, { type: 'file', file_id: f.anthropic_file_id, mount_path: `/workspace/${CHAT_DIR}/${f.filename}` });
+  }
+  return `Attached file${files.length === 1 ? '' : 's'} (in /workspace/${CHAT_DIR}/):\n${files.map((f) => `- ${f.filename}`).join('\n')}`;
 }
 
 /**

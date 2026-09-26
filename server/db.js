@@ -122,6 +122,21 @@ addColumn('messages', 'meta', 'TEXT');
 db.exec(`
 CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 
+-- Files and voice notes sent in an agent's chat. message_id is set once the message is sent.
+CREATE TABLE IF NOT EXISTS chat_files (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  agent_id    INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  message_id  INTEGER REFERENCES messages(id) ON DELETE SET NULL,
+  filename    TEXT NOT NULL,
+  path        TEXT NOT NULL,
+  size        INTEGER NOT NULL,
+  mime        TEXT,
+  voice       INTEGER NOT NULL DEFAULT 0,
+  anthropic_file_id TEXT,
+  created_by  TEXT,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS task_files (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   task_id     INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,

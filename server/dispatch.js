@@ -13,6 +13,7 @@ import { logActivity } from './activity.js';
 import { chatWithManagedAgent, startTaskRun } from './managed.js';
 import { briefExtras, readyStatus, setDispatcher } from './taskSchedule.js';
 import { agentView, setBlocker } from './tasks.js';
+import { linkFiles, publicFile } from './chatFiles.js';
 
 const DEFAULT_MODEL = process.env.DEFAULT_CLAUDE_MODEL || 'claude-opus-5';
 // Models that accept server-side refusal fallbacks (fallbacks: "default").
@@ -125,15 +126,20 @@ export async function deliver(agent, payload) {
 }
 
 /** User sent a chat message to an agent. */
-export async function sendToAgent(agentId, body, meta = null) {
+/**
+ * `files`: chat files uploaded for this message (see chatFiles.js). `agentText`: what the agent is
+ * sent, when it differs from what the chat shows (a voice note's transcript with a note, a lesson).
+ */
+export async function sendToAgent(agentId, body, meta = null, { files = [], agentText = body } = {}) {
   const agent = get('SELECT * FROM agents WHERE id = ?', agentId);
   // Where the conversation lives, so the answer goes back there (a Slack thread, or Hive).
   const origin = meta?.via === 'slack' ? `slack:${meta.channel}:${meta.thread_ts}` : 'hive';
-  const message = postMessage(agentId, 'user', body, { ...(meta ?? {}), origin });
+  const message = postMessage(agentId, 'user', body, { ...(meta ?? {}), origin, ...(files.length ? { files: files.map(publicFile) } : {}) });
+  linkFiles(files, message.id);
   // Fire and forget: the UI updates over SSE when the reply lands.
   if (agent.platform === 'managed') {
     if (agent.status === 'paused') postMessage(agentId, 'system', `${agent.name} is paused. Resume it to get a reply.`, { origin });
-    else chatWithManagedAgent(agentId, body, { origin });
+    else chatWithManagedAgent(agentId, agentText, { origin, files: files.filter((f) => !f.voice) });
   } else {
     deliver(agent, { event: 'message', message, origin }).catch(() => {});
   }

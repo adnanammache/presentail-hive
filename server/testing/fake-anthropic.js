@@ -1,7 +1,7 @@
 // A small in-memory stand-in for the parts of the Anthropic SDK that managed.js uses.
 // Push responders onto `client.script`; each one answers the next events.send() call.
 export function fakeAnthropic() {
-  const calls = { skills: [], skillVersions: [], agentsCreate: [], agentsUpdate: [], credentials: [], environments: [], sessions: [], sent: [], uploads: [] };
+  const calls = { skills: [], skillVersions: [], agentsCreate: [], agentsUpdate: [], credentials: [], environments: [], sessions: [], sent: [], uploads: [], resources: [] };
   const sessions = new Map(); // id -> { history: [], listeners: Set }
   let n = 0;
   const id = (p) => `${p}_${++n}`;
@@ -54,6 +54,9 @@ export function fakeAnthropic() {
         download: async (fileId) => new Response(`contents of ${fileId}`),
       },
       sessions: {
+        resources: {
+          add: async (sid, p) => (calls.resources.push({ sid, ...p }), { id: id('sres'), type: 'file', ...p }),
+        },
         create: async (p) => {
           const sid = id('sesn');
           sessions.set(sid, { history: [], listeners: new Set() });
