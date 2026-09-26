@@ -144,3 +144,27 @@ test('runs refuse to start for agents that are not Claude Managed Agents', () =>
   const taskId = Number(run("INSERT INTO tasks (title, agent_id) VALUES ('x', ?)", agentId).lastInsertRowid);
   assert.throws(() => managed.startTaskRun(taskId), /not assigned to a Claude Managed Agent/);
 });
+
+test('a second chat message gets its reply live, not only when the next message is sent', async () => {
+  const fake = fakeAnthropic();
+  managed.setManagedClient(fake);
+  const agentId = Number(
+    run("INSERT INTO agents (name, title, platform, status, approval, api_token) VALUES ('Ziad', 'Tax Specialist', 'managed', 'idle', 'every_command', 'agt_chat')").lastInsertRowid,
+  );
+  const reply = (text) => () => [
+    { type: 'session.status_running' },
+    { type: 'agent.message', content: [{ type: 'text', text }] },
+    { type: 'session.status_idle', stop_reason: { type: 'end_turn' } },
+  ];
+  const agentSaid = (text) => get("SELECT id FROM messages WHERE agent_id = ? AND sender = 'agent' AND body = ?", agentId, text);
+
+  fake.script.push(reply('Hello!'));
+  await managed.chatWithManagedAgent(agentId, 'Hi');
+  await waitFor(() => agentSaid('Hello!'), 'first reply');
+  await waitFor(() => get("SELECT status FROM runs WHERE kind = 'chat' AND agent_id = ?", agentId)?.status === 'waiting', 'turn over');
+
+  // The chat's run is now "waiting". The next message must still be followed to its reply.
+  fake.script.push(reply('Recurring task created.'));
+  await managed.chatWithManagedAgent(agentId, 'Please make it recurring');
+  await waitFor(() => agentSaid('Recurring task created.'), 'second reply');
+});

@@ -360,7 +360,6 @@ export function startTaskRun(taskId, { note } = {}) {
   return getRun(runId);
 }
 
-/** Chat with a managed agent: one long-lived session per agent. */
 /**
  * Chat with a managed agent. Each conversation has its own session: Hive's chat is one, and every
  * Slack thread is another, so people never see each other's conversations or get each other's answers.
@@ -382,6 +381,10 @@ export async function chatWithManagedAgent(agentId, text, { origin = 'hive' } = 
       r = setRun(runId, { session_id: session.id, status: 'running' });
     }
     run('UPDATE runs SET auto_approve = 0 WHERE id = ?', r.id);
+    // Mark the run active before following: after an earlier turn it is "waiting", and follow()
+    // stops as soon as its history replay sees an inactive run, which would drop this reply until
+    // the next message replays it.
+    setRun(r.id, { status: 'running' });
     await sendAndFollow(r.id, [{ type: 'user.message', content: [{ type: 'text', text }] }]);
   } catch (err) {
     if (r) setRun(r.id, { status: 'failed', error: err.message });
