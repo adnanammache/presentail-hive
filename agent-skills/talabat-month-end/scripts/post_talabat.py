@@ -10,7 +10,14 @@ clearing account. Dedups on bill number. Key: $WAFEQ_API_KEY or ./wafeq_key.txt.
 ALWAYS --dry-run first.
 """
 import argparse, json, os, re, sys, uuid, subprocess, urllib.request, urllib.error
-B="https://api.wafeq.com/v1"
+# Inside Hive, Wafeq is reached through Hive's gateway (/workspace/hive/wafeq.json): reads are live,
+# writes are QUEUED until a person approves them in Hive. Elsewhere, straight to Wafeq with your own key.
+def _hive_gateway():
+    try: return json.load(open(os.environ.get("HIVE_WAFEQ_CONFIG","/workspace/hive/wafeq.json")))["base"].rstrip("/")
+    except (OSError, ValueError, KeyError): return None
+HIVE=_hive_gateway()
+B=HIVE or "https://api.wafeq.com/v1"
+if HIVE: print("Wafeq via Hive: reads are live; writes are QUEUED (shown with $s ids) until approved in Hive.", file=sys.stderr)
 TAL="co_D2vSPDvaPGJKJY6G5YP3jL"
 ACCT={'commission':"acc_4J9jT5pdg9pgcA4nPFYsDy",
       'subscription':"acc_RyqS3EC2ZgQHQSHRaoMnH8",
@@ -20,6 +27,7 @@ CLR="acc_DDapSPi55Qr8FyaYPQsXfn"
 VAT_PUR="tax_oEzW9XTqZWxJAUMSvaTSP9"
 
 def load_key():
+    if HIVE: return "hive"  # Hive adds the key; the sandbox never sees it
     k=os.environ.get("WAFEQ_API_KEY")
     if not k and os.path.exists("wafeq_key.txt"): k=open("wafeq_key.txt").read().strip()
     if not k: sys.exit("No Wafeq API key ($WAFEQ_API_KEY or ./wafeq_key.txt)")
@@ -68,4 +76,4 @@ for r in rows:
     pay={"payment_type":"BILL","paid_through_account":CLR,"contact":TAL,"currency":"AED","date":r['issue_date'],
          "amount":tot,"bill_payments":[{"bill":res['id'],"amount":tot,"amount_to_pcy":tot}]}
     _,perr=api("/payments/","POST",pay,idem=True)
-    print(f"{inv:<15}{len(r['line_items']):>3}{tot:>10,.2f}  {'PAID' if not perr else 'AUTH payfail '+str(perr)}")
+    print(f"{inv:<15}{len(r['line_items']):>3}{tot if isinstance(tot,str) else f'{tot:,.2f}':>10}  {('QUEUED' if HIVE else 'PAID') if not perr else 'AUTH payfail '+str(perr)}")

@@ -177,7 +177,30 @@ export default function TaskRun({ task, agentName }) {
           )}
 
           {current.pending.map((p) =>
-            p.kind === 'odoo' ? (
+            p.kind === 'wafeq' ? (
+              <div key={p.event_id} className="approval odoo">
+                <div className="small strong">{agentName} wants to post to Wafeq</div>
+                <div className="odoo-call">
+                  <code>{p.detail}</code>
+                </div>
+                <div className="small muted">Nothing has been sent yet. Approving sends every step below to Wafeq in order and stops at the first error.</div>
+                {p.lines && <pre className="code approval-preview">{p.lines}</pre>}
+                {p.preview && (
+                  <details open={p.preview.length < 1200}>
+                    <summary className="small">The exact changes (everything that will be sent)</summary>
+                    <pre className="code approval-preview">{p.preview}</pre>
+                  </details>
+                )}
+                <div className="approval-actions">
+                  <button type="button" className="btn btn-sm btn-danger-ghost" onClick={() => confirm(p.event_id, false)}>
+                    Reject and discard
+                  </button>
+                  <button type="button" className="btn btn-sm btn-primary" onClick={() => confirm(p.event_id, true)}>
+                    <Icon name="check" size={13} /> Approve and post
+                  </button>
+                </div>
+              </div>
+            ) : p.kind === 'odoo' ? (
               <div key={p.event_id} className="approval odoo">
                 <div className="small strong">{agentName} wants to change Odoo</div>
                 <div className="odoo-call">

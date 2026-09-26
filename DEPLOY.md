@@ -92,7 +92,7 @@ Agents set to **Claude Managed Agent** run on Anthropic's hosted agent service. 
 | Variable | Why |
 |---|---|
 | `ANTHROPIC_API_KEY` | Required. A key from console.anthropic.com in a workspace with access to Managed Agents. |
-| `WAFEQ_API_KEY` | Lets agents with the **Wafeq** integration post to Wafeq. It's stored in an Anthropic vault and is never visible to the agent: the sandbox only sees a placeholder, swapped for the real key on requests to `api.wafeq.com`. |
+| `WAFEQ_API_KEY` | Lets agents with the **Wafeq** integration post to Wafeq. It stays in Hive and never reaches the agent's sandbox: agents call Wafeq through Hive's gateway. Reads (checking what's already booked) run immediately; every write (bills, invoices, payments, attachments) is queued, and the agent submits the whole batch for one approval. Hive then posts it in order. Set `PUBLIC_URL` so the sandbox can reach the gateway. |
 
 ### Turning an agent on
 1. Open the agent → **Skills & tools**.

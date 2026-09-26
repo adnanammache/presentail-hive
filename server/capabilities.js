@@ -20,9 +20,10 @@ export const INTEGRATIONS = {
   },
   wafeq: {
     name: 'Wafeq',
-    description: 'UAE accounting: bills, sales invoices, payments and attachments.',
+    description: 'UAE accounting: bills, sales invoices, payments and attachments. Reads run freely; every change waits for your approval in Hive.',
     env: 'WAFEQ_API_KEY',
-    hosts: ['api.wafeq.com'],
+    hosts: [], // through Hive's gateway (wafeq.js): the key never enters the agent's sandbox
+    via: 'hive',
   },
 };
 
