@@ -18,7 +18,8 @@ import { emit, onEvent } from './events.js';
 import { logActivity } from './activity.js';
 import { isAllowed } from './auth.js';
 import { askClaude, dispatchTask, sendToAgent } from './dispatch.js';
-import { baseUrl, postMessage, slackApi } from './notify.js';
+import { baseUrl, isDmTopic, postMessage, slackApi } from './notify.js';
+import { canDo } from './slackBots.js';
 import { REMEMBER, addLesson } from './lessons.js';
 import { ensureChat } from './chatStore.js';
 import { canApproveFor, knownUser } from './roles.js';
@@ -81,7 +82,37 @@ function remember(channel, ts, agentId, taskId = null, botAgentId = null) {
     channel, ts, agentId, taskId, botAgentId,
   );
 }
-const lastAgentIn = (channel) => get('SELECT agent_id FROM slack_threads WHERE channel = ? ORDER BY created_at DESC, rowid DESC LIMIT 1', channel)?.agent_id;
+const lastAgentIn = (channel) =>
+  get('SELECT agent_id FROM slack_dm_topics WHERE channel = ? ORDER BY updated_at DESC, rowid DESC LIMIT 1', channel)?.agent_id ??
+  get('SELECT agent_id FROM slack_threads WHERE channel = ? ORDER BY created_at DESC, rowid DESC LIMIT 1', channel)?.agent_id;
+
+/** The running conversation with this agent in this DM ("dm-<ts>"), started by `ts` if there is none. */
+function dmTopic(channel, agentId, ts) {
+  const key = get('SELECT topic FROM slack_dm_topics WHERE channel = ? AND agent_id = ?', channel, agentId)?.topic ?? `dm-${ts}`;
+  run(
+    `INSERT INTO slack_dm_topics (channel, agent_id, topic) VALUES (?, ?, ?)
+     ON CONFLICT(channel, agent_id) DO UPDATE SET updated_at = datetime('now')`,
+    channel, agentId, key,
+  );
+  return key;
+}
+const NEW_TOPIC = /^(new topic|new chat|new conversation|start over|fresh start)[.!]?$/i;
+
+/** 👀 on the person's message while the agent works on it (needs the bot's reactions:write). */
+async function markWorking(bot, channel, key, ts) {
+  if (!canDo(bot, 'reactions:write')) return;
+  const before = threadFor(channel, key)?.pending_ts;
+  if (before && before !== ts) await slackApi('reactions.remove', { channel, timestamp: before, name: 'eyes' }, { token: bot.bot_token });
+  const res = await slackApi('reactions.add', { channel, timestamp: ts, name: 'eyes' }, { token: bot.bot_token });
+  if (res.ok) run('UPDATE slack_threads SET pending_ts = ? WHERE channel = ? AND thread_ts = ?', ts, channel, key);
+}
+async function doneWorking(channel, key) {
+  const row = threadFor(channel, key);
+  if (!row?.pending_ts) return;
+  run('UPDATE slack_threads SET pending_ts = NULL WHERE channel = ? AND thread_ts = ?', channel, key);
+  const token = row.bot_agent_id ? get('SELECT bot_token FROM agent_slack_apps WHERE agent_id = ?', row.bot_agent_id)?.bot_token : null;
+  if (token) await slackApi('reactions.remove', { channel, timestamp: row.pending_ts, name: 'eyes' }, { token });
+}
 
 // ---------------------------------------------------------------- who is this?
 
@@ -153,7 +184,10 @@ export async function handleSlackMessage(event, { bot = null } = {}) {
   const thread = event.thread_ts ? threadFor(channel, event.thread_ts) : null;
   // A reply goes out from the bot the conversation lives in (or the one that was just messaged).
   const via = thread?.bot_agent_id ? null : bot;
-  const reply = (agent, text, extra = {}) => postAsAgent(agent, { channel, thread_ts: event.thread_ts || event.ts, text, bot: via, ...extra });
+  // In a DM, a message in the chat itself is answered in the chat, as one running conversation.
+  // Threads (a reply to a message, files for a task, a mention in a channel) are answered in the thread.
+  const dmTop = event.channel_type === 'im' && !event.thread_ts;
+  const reply = (agent, text, extra = {}) => postAsAgent(agent, { channel, thread_ts: dmTop ? undefined : event.thread_ts || event.ts, text, bot: via, ...extra });
   const person = await slackPerson(event.user, { token: bot?.bot_token });
   if (!person.ok) {
     if (person.why === 'no-email') return reply(null, "Hive can't see your email in Slack, so it can't check you're from Presentail. An admin needs to add the users:read.email scope to the Hive app and reinstall it.");
@@ -179,6 +213,12 @@ export async function handleSlackMessage(event, { bot = null } = {}) {
   }
   if (!agent || (!direct && /^(help|\?|who)$/i.test(text))) return reply(null, HELP());
   if (agent.status === 'paused') return reply(agent, `I'm not set up yet, so I can't help with this. Ask in Hive: ${baseUrl()}/#/agents/${agent.id}`);
+
+  // "new topic": the next message in this DM starts a fresh conversation.
+  if (dmTop && NEW_TOPIC.test(rest.trim())) {
+    run('DELETE FROM slack_dm_topics WHERE channel = ? AND agent_id = ?', channel, agent.id);
+    return reply(agent, "🆕 Fresh start. I'll treat your next message as a new conversation. What's next?");
+  }
 
   // "Ledger: remember: Abu Dhabi fees go to 5104" → a lesson.
   if (REMEMBER.test(rest)) {
@@ -223,25 +263,32 @@ export async function handleSlackMessage(event, { bot = null } = {}) {
       try {
         names.push(attachFile(taskId, f.name, await downloadSlackFile(f, bot?.bot_token)));
       } catch (err) {
-        await reply(agent, `⚠️ ${err.message}`);
+        await reply(agent, `⚠️ ${err.message}`, { thread_ts: ts });
       }
     }
     remember(channel, ts, agent.id, taskId, botId);
     logActivity(agent.id, 'task', `${person.name} gave ${agent.name} a task in Slack: "${firstLine}"`);
     emit('task', { task_id: taskId });
-    await reply(agent, `On it: task #${taskId} with ${names.length} file${names.length === 1 ? '' : 's'} (${names.join(', ')}). I'll post progress and anything that needs your approval here. ${baseUrl()}/#/tasks/${taskId}`);
-    dispatchTask(taskId).catch((err) => reply(agent, `⚠️ Couldn't start: ${err.message}`));
+    // A task keeps its progress and approvals together in a thread under the files, even in a DM.
+    await reply(agent, `On it: task #${taskId} with ${names.length} file${names.length === 1 ? '' : 's'} (${names.join(', ')}). I'll post progress and anything that needs your approval in this thread. ${baseUrl()}/#/tasks/${taskId}`, { thread_ts: ts });
+    dispatchTask(taskId).catch((err) => reply(agent, `⚠️ Couldn't start: ${err.message}`, { thread_ts: ts }));
     return;
   }
 
   // Otherwise: a conversation. The answer comes back through onAgentMessage below.
-  remember(channel, ts, agent.id, null, botId);
-  // In an agent's own bot, Slack shows "is thinking…" until the answer arrives.
-  const speaking = bot ?? (thread?.bot_agent_id ? { bot_token: get('SELECT bot_token FROM agent_slack_apps WHERE agent_id = ?', thread.bot_agent_id)?.bot_token } : null);
-  if (speaking?.bot_token && String(channel).startsWith('D')) {
-    slackApi('assistant.threads.setStatus', { channel_id: channel, thread_ts: ts, status: 'is thinking…' }, { token: speaking.bot_token }).catch(() => {});
+  const key = dmTop ? dmTopic(channel, agent.id, event.ts) : ts;
+  remember(channel, key, agent.id, null, botId);
+  if (dmTop) {
+    // In the chat: 👀 on the message until the answer arrives.
+    if (bot) markWorking(bot, channel, key, event.ts).catch(() => {});
+  } else {
+    // In a DM thread with an agent's own bot, Slack shows "is thinking…" until the answer arrives.
+    const speaking = bot ?? (thread?.bot_agent_id ? { bot_token: get('SELECT bot_token FROM agent_slack_apps WHERE agent_id = ?', thread.bot_agent_id)?.bot_token } : null);
+    if (speaking?.bot_token && String(channel).startsWith('D')) {
+      slackApi('assistant.threads.setStatus', { channel_id: channel, thread_ts: ts, status: 'is thinking…' }, { token: speaking.bot_token }).catch(() => {});
+    }
   }
-  await sendToAgent(agent.id, rest || text, origin);
+  await sendToAgent(agent.id, rest || text, { ...origin, thread_ts: key });
 }
 
 // Forward an agent's chat reply to the Slack thread its conversation lives in.
@@ -254,6 +301,7 @@ onEvent((type, data) => {
   const [, channel, thread_ts] = meta.origin.split(':');
   const agent = m.sender === 'agent' ? get('SELECT * FROM agents WHERE id = ?', m.agent_id) : null;
   postAsAgent(agent, { channel, thread_ts, text: toSlack(m.body) });
+  if (isDmTopic(thread_ts)) doneWorking(channel, thread_ts).catch(() => {});
 });
 
 // ---------------------------------------------------------------- agents → agents
