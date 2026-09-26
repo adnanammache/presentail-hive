@@ -27,19 +27,66 @@ export function usePhoto({ id, name } = {}) {
   if (!photos) return null;
   return (id != null && photos.byId.get(Number(id))) || (name && photos.byName.get(name)) || null;
 }
+/** Refetch the photos now, e.g. right after an upload (don't wait for the live event, which may be down). */
+export const useReloadPhotos = () => useContext(PhotosContext)?.reload ?? (() => {});
 
+/**
+ * The live event stream. The browser retries a dropped connection by itself, but gives up for good
+ * when the server answers with an error (a restart mid-deploy, or a sign-in that expired), which left
+ * Hive stuck on "Reconnecting…". So: reopen a closed stream with backoff, send people to sign in if
+ * their session ended, and after any reconnect tell every view to refetch what it may have missed.
+ */
 export function useLiveSource() {
   const listeners = useRef(new Set());
   const [connected, setConnected] = useState(false);
   useEffect(() => {
-    const es = new EventSource('/api/events');
-    es.onopen = () => setConnected(true);
-    es.onerror = () => setConnected(false);
-    es.onmessage = (e) => {
-      const event = JSON.parse(e.data);
+    let es;
+    let retry;
+    let attempt = 0;
+    let dropped = false;
+    let stopped = false;
+    const broadcast = (event) => {
       for (const fn of listeners.current) fn(event);
     };
-    return () => es.close();
+    const open = () => {
+      clearTimeout(retry);
+      es?.close();
+      es = new EventSource('/api/events');
+      es.onopen = () => {
+        setConnected(true);
+        attempt = 0;
+        if (dropped) broadcast({ type: '*' }); // catch up on anything missed while disconnected
+        dropped = false;
+      };
+      es.onerror = () => {
+        setConnected(false);
+        dropped = true;
+        if (es.readyState !== EventSource.CLOSED || stopped) return; // the browser is retrying by itself
+        // Closed for good: is it the sign-in? Otherwise try again, a little later each time.
+        fetch('/api/me')
+          .then(async (res) => {
+            const data = res.status === 401 ? await res.json().catch(() => ({})) : null;
+            if (data?.login) location.href = data.login;
+          })
+          .catch(() => {})
+          .finally(() => {
+            if (!stopped) retry = setTimeout(open, Math.min(30000, 1000 * 2 ** attempt++));
+          });
+      };
+      es.onmessage = (e) => broadcast(JSON.parse(e.data));
+    };
+    // Coming back to the tab or the network: reconnect now rather than waiting out the backoff.
+    const wake = () => document.visibilityState === 'visible' && es?.readyState === EventSource.CLOSED && ((attempt = 0), open());
+    open();
+    document.addEventListener('visibilitychange', wake);
+    window.addEventListener('online', wake);
+    return () => {
+      stopped = true;
+      clearTimeout(retry);
+      es?.close();
+      document.removeEventListener('visibilitychange', wake);
+      window.removeEventListener('online', wake);
+    };
   }, []);
   const on = useCallback((fn) => {
     listeners.current.add(fn);
@@ -66,7 +113,7 @@ export function useApi(path, types = []) {
     if (!typesKey || !live) return;
     let timer;
     return live.on((event) => {
-      if (!typesKey.split(',').includes(event.type)) return;
+      if (event.type !== '*' && !typesKey.split(',').includes(event.type)) return;
       clearTimeout(timer);
       timer = setTimeout(reload, 150);
     });

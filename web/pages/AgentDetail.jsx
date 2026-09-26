@@ -1,13 +1,13 @@
 import { useState } from 'react';
 import { ago, api, useApi } from '../api.js';
 import { Avatar, Badge, Empty, Icon, Loading, PLATFORM_LABELS, agentTone } from '../components/ui.jsx';
-import { AgentForm, WorkflowForm } from '../components/forms.jsx';
+import { AgentForm } from '../components/forms.jsx';
 import { useTaskUI } from '../components/work.jsx';
 import Chat from '../components/Chat.jsx';
 import Capabilities from '../components/Capabilities.jsx';
 import { TaskCard } from '../components/TaskViews.jsx';
-import { WorkflowList } from './Workflows.jsx';
 import Markdown from '../components/Markdown.jsx';
+import { RecurringSection } from '../components/Recurring.jsx';
 
 function Connect({ agent, onRotate }) {
   const [show, setShow] = useState(false);
@@ -180,13 +180,14 @@ function Colleagues({ agent }) {
 export default function AgentDetail({ id, meta }) {
   const { data: agent, setData } = useApi(`/agents/${id}`, ['agent']);
   const { data: tasks } = useApi(`/tasks?agent_id=${id}`, ['task']);
-  const { data: allWorkflows } = useApi('/workflows', ['workflow']);
+  const { data: recurring } = useApi(`/workflows?agent_id=${id}`, ['workflow']);
   const [tab, setTab] = useState('chat');
+  const [taskView, setTaskView] = useState('tasks');
   const [modal, setModal] = useState(null);
   const { openComposer, openTask } = useTaskUI();
 
   if (!agent) return <Loading />;
-  const workflows = allWorkflows?.filter((w) => w.agent_id === agent.id) ?? [];
+  const activeRecurring = recurring?.filter((w) => w.status !== 'ended').length ?? 0;
   const openTasks = tasks?.filter((t) => t.status !== 'done') ?? [];
   const doneTasks = tasks?.filter((t) => t.status === 'done') ?? [];
 
@@ -201,7 +202,6 @@ export default function AgentDetail({ id, meta }) {
     ['chat', 'Chat'],
     ['skills', 'Skills & tools'],
     ['tasks', `Tasks (${openTasks.length})`],
-    ['workflows', `Workflows (${workflows.length})`],
     ['lessons', 'Lessons'],
     ['colleagues', 'Colleagues'],
     ['connect', 'Connect'],
@@ -273,41 +273,44 @@ export default function AgentDetail({ id, meta }) {
 
       {tab === 'tasks' && (
         <div className="tab-body">
-          <div className="tab-actions">
-            <button className="btn btn-primary" onClick={() => openComposer({ assignee: `agent:${agent.id}` })}>
-              <Icon name="plus" size={16} /> Assign task
+          <div className="segmented" role="tablist" aria-label="Tasks or recurring tasks">
+            <button type="button" role="tab" aria-selected={taskView === 'tasks'} className={taskView === 'tasks' ? 'on' : ''} onClick={() => setTaskView('tasks')}>
+              Tasks ({openTasks.length})
+            </button>
+            <button type="button" role="tab" aria-selected={taskView === 'recurring'} className={taskView === 'recurring' ? 'on' : ''} onClick={() => setTaskView('recurring')}>
+              <Icon name="repeat" size={14} /> Recurring ({activeRecurring})
             </button>
           </div>
-          {openTasks.length === 0 && <Empty title="No open tasks" />}
-          <div className="task-list">
-            {openTasks.map((t) => (
-              <TaskCard key={t.id} task={t} onOpen={(task) => openTask(task.id)} draggable={false} />
-            ))}
-          </div>
-          {doneTasks.length > 0 && (
+          {taskView === 'recurring' ? (
+            <RecurringSection
+              query={`agent_id=${agent.id}`}
+              defaults={{ assignee: `agent:${agent.id}` }}
+              emptyText={`Nothing recurring for ${agent.name} yet. Create one here, or ask ${agent.name} in chat, e.g. “Every Monday at 9 AM, check outstanding supplier invoices.”`}
+            />
+          ) : (
             <>
-              <h3 className="section-title">Completed</h3>
-              <div className="task-list faded">
-                {doneTasks.slice(0, 20).map((t) => (
+              <div className="tab-actions">
+                <button className="btn btn-primary" onClick={() => openComposer({ assignee: `agent:${agent.id}` })}>
+                  <Icon name="plus" size={16} /> Assign task
+                </button>
+              </div>
+              {openTasks.length === 0 && <Empty title="No open tasks" />}
+              <div className="task-list">
+                {openTasks.map((t) => (
                   <TaskCard key={t.id} task={t} onOpen={(task) => openTask(task.id)} draggable={false} />
                 ))}
               </div>
+              {doneTasks.length > 0 && (
+                <>
+                  <h3 className="section-title">Completed</h3>
+                  <div className="task-list faded">
+                    {doneTasks.slice(0, 20).map((t) => (
+                      <TaskCard key={t.id} task={t} onOpen={(task) => openTask(task.id)} draggable={false} />
+                    ))}
+                  </div>
+                </>
+              )}
             </>
-          )}
-        </div>
-      )}
-
-      {tab === 'workflows' && (
-        <div className="tab-body">
-          <div className="tab-actions">
-            <button className="btn btn-primary" onClick={() => setModal({ kind: 'workflow', defaults: { agent_id: agent.id } })}>
-              <Icon name="plus" size={16} /> New workflow
-            </button>
-          </div>
-          {workflows.length === 0 ? (
-            <Empty title="No recurring workflows" />
-          ) : (
-            <WorkflowList workflows={workflows} onEdit={(w) => setModal({ kind: 'workflow', workflow: w })} onRuns={() => (location.hash = '#/workflows')} />
           )}
         </div>
       )}
@@ -331,7 +334,6 @@ export default function AgentDetail({ id, meta }) {
       )}
 
       {modal?.kind === 'agent' && <AgentForm agent={agent} onClose={() => setModal(null)} onSaved={setData} />}
-      {modal?.kind === 'workflow' && <WorkflowForm workflow={modal.workflow} defaults={modal.defaults} onClose={() => setModal(null)} />}
     </div>
   );
 }
