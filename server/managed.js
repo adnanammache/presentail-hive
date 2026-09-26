@@ -364,7 +364,6 @@ export function startTaskRun(taskId, { note } = {}) {
   return getRun(runId);
 }
 
-/** Chat with a managed agent: one long-lived session per agent. */
 /**
  * Chat with a managed agent. Each conversation has its own session: Hive's chat is one, and every
  * Slack thread is another, so people never see each other's conversations or get each other's answers.
@@ -661,6 +660,8 @@ export async function interruptRun(runId) {
   const r = getRun(runId);
   if (!r?.session_id) throw new Error('Run has no session');
   await api().beta.sessions.events.send(r.session_id, { events: [{ type: 'user.interrupt' }] });
+  // If Hive had lost track of the session, pick it back up so the stop (and anything missed) lands.
+  if (!followers.has(runId) && ACTIVE.includes(r.status)) follow(runId).done.catch(() => {});
 }
 
 // ---------------------------------------------------------------- event stream
@@ -779,7 +780,8 @@ export function handleEvent(runId, ev) {
     case 'agent.message':
       if (!data.text) break;
       setRun(runId, { last_message: data.text });
-      if (r.kind === 'chat') postMessage(r.agent_id, 'agent', data.text, { run_id: runId, origin: r.origin ?? 'hive' });
+      // Stamped with when the agent said it: a reply picked up late (after a lost stream) keeps its time.
+      if (r.kind === 'chat') postMessage(r.agent_id, 'agent', data.text, { run_id: runId, origin: r.origin ?? 'hive' }, { at: ev.processed_at });
       break;
     case 'session.status_idle': {
       const reason = ev.stop_reason?.type;

@@ -1,6 +1,8 @@
-import { useContext, useEffect, useRef, useState } from 'react';
+import { memo, useContext, useEffect, useRef, useState } from 'react';
 import { LiveContext, api, toDate, useApi } from '../api.js';
 import { Avatar, Icon } from './ui.jsx';
+import Markdown from './Markdown.jsx';
+import useStickToBottom from './useStickToBottom.js';
 
 function ApprovalButtons({ meta }) {
   const [state, setState] = useState(null);
@@ -23,7 +25,8 @@ function ApprovalButtons({ meta }) {
 
 const fileSize = (n) => (n < 1024 ? `${n} B` : n < 1048576 ? `${Math.round(n / 1024)} KB` : `${(n / 1048576).toFixed(1)} MB`);
 
-function Bubble({ m, agent }) {
+// Memoised: a new message renders one bubble, not the whole conversation again.
+const Bubble = memo(function Bubble({ m, agent }) {
   const time = toDate(m.created_at)?.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   const meta = m.meta ? JSON.parse(m.meta) : null;
   if (m.sender === 'system') {
@@ -51,7 +54,7 @@ function Bubble({ m, agent }) {
             {recording && <audio controls preload="none" src={`/api/chat-files/${recording.id}`} />}
           </div>
         )}
-        <div className="bubble-text">{m.body}</div>
+        <Markdown text={m.body} className="bubble-text" />
         {attached.length > 0 && (
           <div className="bubble-files">
             {attached.map((f) => (
@@ -70,7 +73,7 @@ function Bubble({ m, agent }) {
       </div>
     </div>
   );
-}
+});
 
 /** Upload one file for the chat; it is sent with the next message. */
 async function uploadChatFile(agentId, blob, name, voice = false) {
@@ -163,10 +166,18 @@ function useVoiceNote() {
 
 export default function Chat({ agent, claudeReady }) {
   const { data: messages, setData } = useApi(`/agents/${agent.id}/messages`);
+  // A managed agent's turn can span several messages (and tool calls between them): keep showing
+  // it's typing until its chat run actually stops, not just until the first message arrives.
+  const managed = agent.platform === 'managed';
+  const { data: chatRun } = useApi(managed ? `/agents/${agent.id}/chat-run` : null, ['run']);
+  const working = managed && ['starting', 'running'].includes(chatRun?.status);
   const live = useContext(LiveContext);
   const [draft, setDraft] = useState('');
   const [waiting, setWaiting] = useState(false);
-  const scroller = useRef(null);
+  const [stopping, setStopping] = useState(false);
+  useEffect(() => {
+    if (!working) setStopping(false);
+  }, [working]);
 
   useEffect(
     () =>
@@ -177,9 +188,9 @@ export default function Chat({ agent, claudeReady }) {
       }),
     [live, agent.id, setData],
   );
-  useEffect(() => {
-    scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: 'smooth' });
-  }, [messages?.length, waiting]);
+  // Follows new messages only while you're at the bottom; reading further up, you stay put.
+  const typing = waiting || working;
+  const scroll = useStickToBottom(messages ? `${messages.length}:${typing}` : null, agent.id);
 
   const claudePowered = ['claude', 'managed'].includes(agent.platform);
   const willReply = agent.status !== 'paused' && ((claudePowered && claudeReady) || agent.webhook_url);
@@ -209,6 +220,7 @@ export default function Chat({ agent, claudeReady }) {
     if ((!body && !files.length) || busy) return;
     setBusy(true);
     setError('');
+    scroll.pin(); // your own message always brings you back down
     try {
       const ids = [];
       for (const f of files) ids.push((await uploadChatFile(agent.id, f, f.name)).id);
@@ -247,6 +259,16 @@ export default function Chat({ agent, claudeReady }) {
     }
   };
 
+  const stop = async () => {
+    setStopping(true);
+    try {
+      await api(`/runs/${chatRun.id}/interrupt`, { method: 'POST' });
+    } catch (err) {
+      setStopping(false);
+      setError(`Couldn't stop ${agent.name}: ${err.message}`);
+    }
+  };
+
   let hint = null;
   if (agent.status === 'paused') hint = `${agent.name} is paused — messages are stored but not delivered.`;
   else if (claudePowered && !claudeReady) hint = 'Set ANTHROPIC_API_KEY on the server so Claude agents can reply.';
@@ -262,12 +284,12 @@ export default function Chat({ agent, claudeReady }) {
         addFiles(e.dataTransfer.files);
       }}
     >
-      <div className="chat-scroll" ref={scroller}>
+      <div className="chat-scroll" ref={scroll.ref} onScroll={scroll.onScroll}>
         {messages?.length === 0 && <div className="chat-empty">Start the conversation with {agent.name}.</div>}
         {messages?.map((m) => (
           <Bubble key={m.id} m={m} agent={agent} />
         ))}
-        {waiting && (
+        {typing && (
           <div className="msg">
             <Avatar name={agent.name} color={agent.color} size={28} />
             <div className="bubble typing">
@@ -275,11 +297,25 @@ export default function Chat({ agent, claudeReady }) {
               <i />
               <i />
             </div>
+            {working && chatRun?.id && (
+              <button type="button" className="typing-stop" onClick={stop} disabled={stopping}>
+                {stopping ? 'Stopping…' : 'Stop'}
+              </button>
+            )}
           </div>
         )}
       </div>
+      {scroll.unseen && (
+        <button type="button" className="chat-jump" onClick={() => scroll.toBottom()}>
+          New messages ↓
+        </button>
+      )}
       {hint && <div className="chat-hint">{hint}</div>}
-      {error && <div className="chat-hint chat-error">{error}</div>}
+      {error && (
+        <div className="chat-hint chat-error" role="alert">
+          {error}
+        </div>
+      )}
       {files.length > 0 && (
         <div className="chat-staged">
           {files.map((f, i) => (

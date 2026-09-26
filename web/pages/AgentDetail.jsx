@@ -7,6 +7,7 @@ import Chat from '../components/Chat.jsx';
 import Capabilities from '../components/Capabilities.jsx';
 import { TaskCard } from '../components/TaskViews.jsx';
 import { WorkflowList } from './Workflows.jsx';
+import Markdown from '../components/Markdown.jsx';
 
 function Connect({ agent, onRotate }) {
   const [show, setShow] = useState(false);
@@ -164,11 +165,11 @@ function Colleagues({ agent }) {
           <div className="dm-q">
             <b>{d.from_name}</b> → <b>{d.to_name}</b>
             <span className="muted small"> · {ago(d.created_at)}</span>
-            <p>{d.message}</p>
+            <Markdown text={d.message} />
           </div>
           <div className={`dm-a ${d.status}`}>
             <b>{d.to_name}</b>
-            {d.status === 'asked' ? <p className="muted">Thinking…</p> : <p>{d.reply}</p>}
+            {d.status === 'asked' ? <p className="muted">Thinking…</p> : <Markdown text={d.reply} className={d.status === 'failed' ? 'text-red' : ''} />}
           </div>
         </li>
       ))}
