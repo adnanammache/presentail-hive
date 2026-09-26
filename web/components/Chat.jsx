@@ -23,6 +23,34 @@ function ApprovalButtons({ meta }) {
   );
 }
 
+/** A lesson the agent proposed in this chat: approve or reject it right here (or reword it in the Lessons tab). */
+function LessonButtons({ meta }) {
+  const [state, setState] = useState(null);
+  const post = async (path, body, done) => {
+    try {
+      await api(`/lessons/${meta.lesson_id}/${path}`, { method: 'POST', body });
+      setState(done);
+    } catch (err) {
+      setState(err.message);
+    }
+  };
+  if (state) return <div className="small strong">{state}</div>;
+  if (meta.edit) {
+    return (
+      <div className="approval-actions">
+        <button className="btn btn-sm" onClick={() => post('proposal', { accept: false }, 'Kept as it was')}>Keep as is</button>
+        <button className="btn btn-sm btn-primary" onClick={() => post('proposal', { accept: true }, 'New wording saved')}>Use this wording</button>
+      </div>
+    );
+  }
+  return (
+    <div className="approval-actions">
+      <button className="btn btn-sm btn-danger-ghost" onClick={() => { const note = prompt('Why not? The agent sees this so it doesn\'t propose it again (optional).', ''); if (note != null) post('reject', { note }, 'Rejected'); }}>Reject</button>
+      <button className="btn btn-sm btn-primary" onClick={() => post('approve', {}, 'Approved: it applies from the next message')}>Approve</button>
+    </div>
+  );
+}
+
 const fileSize = (n) => (n < 1024 ? `${n} B` : n < 1048576 ? `${Math.round(n / 1024)} KB` : `${(n / 1048576).toFixed(1)} MB`);
 
 // Memoised: a new message renders one bubble, not the whole conversation again.
@@ -35,6 +63,7 @@ const Bubble = memo(function Bubble({ m, agent }) {
         <span>{m.body}</span>
         <time>{time}</time>
         {meta?.type === 'approval' && <ApprovalButtons meta={meta} />}
+        {meta?.type === 'lesson' && <LessonButtons meta={meta} />}
       </div>
     );
   }

@@ -11,6 +11,7 @@ import { handleSlackMessage, slackPerson, threadFor } from './conversations.js';
 import { canApproveFor, knownUser } from './roles.js';
 import { get, run } from './db.js';
 import { markVerified } from './setup.js';
+import { approveLesson, rejectLesson } from './lessons.js';
 
 export function approvers() {
   const list = (process.env.SLACK_APPROVERS || '').split(',').map((s) => s.trim()).filter(Boolean);
@@ -46,6 +47,7 @@ async function reply(responseUrl, text) {
 /** Handle one button click. Exported for tests. */
 export async function handleAction(payload) {
   const action = payload.actions?.[0];
+  if (['hive_lesson_approve', 'hive_lesson_reject'].includes(action?.action_id)) return handleLessonAction(payload, action);
   if (!action || !['hive_approve', 'hive_reject'].includes(action.action_id)) return null;
   const userId = payload.user?.id;
   const [runId, ids] = String(action.value || '').split(':');
@@ -64,6 +66,28 @@ export async function handleAction(payload) {
     const n = await confirmMany(Number(runId), eventIds, allow, { by, denyMessage: allow ? undefined : 'Rejected from Slack' });
     if (!n) return 'Already handled: nothing from this alert is still waiting.';
     return null; // the alert itself is updated to show who decided
+  } catch (err) {
+    return `Could not do that: ${err.message}`;
+  }
+}
+
+/** Approve or reject a lesson an agent proposed, from its Slack alert. */
+async function handleLessonAction(payload, action) {
+  const userId = payload.user?.id;
+  const lesson = get('SELECT id, agent_id, status FROM agent_lessons WHERE id = ?', Number(action.value));
+  if (!lesson) return 'That lesson no longer exists.';
+  if (!approvers().includes(userId)) {
+    const person = await slackPerson(userId).catch(() => null);
+    if (!person?.ok || !canApproveFor(knownUser(person.email), lesson.agent_id)) {
+      return "You can't approve this agent's lessons. An owner can make you an approver in Hive (Settings → People).";
+    }
+  }
+  if (lesson.status !== 'pending_approval') return `Already handled: lesson #${lesson.id} is ${lesson.status === 'approved' ? 'approved' : 'rejected'}.`;
+  const by = `${payload.user?.name || payload.user?.username || userId} (Slack)`;
+  try {
+    if (action.action_id === 'hive_lesson_approve') approveLesson(lesson.id, { by });
+    else rejectLesson(lesson.id, { by, note: 'Rejected from Slack' });
+    return `${action.action_id === 'hive_lesson_approve' ? 'Approved' : 'Rejected'} lesson #${lesson.id}.`;
   } catch (err) {
     return `Could not do that: ${err.message}`;
   }

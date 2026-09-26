@@ -17,7 +17,7 @@ import { postMessage } from './dispatch.js';
 import { notifyRun, settleApprovalAlert } from './notify.js';
 import { TASK_TOOL, finishTask } from './handoff.js';
 import { AGENT_DM_TOOL, askAgent } from './conversations.js';
-import { LESSON_TOOL, learnFromRun, lessonsBlock } from './lessons.js';
+import { LESSON_TOOLS, LESSON_TOOL_NAMES, handleLessonTool, lessonIdsInForce, lessonIdsKnownAt, lessonsBlock, newLessonsNote, unseenLessons } from './lessons.js';
 import { CHAT_DIR } from './chatFiles.js';
 import { briefExtras, readyStatus } from './taskSchedule.js';
 import { clearBlocker, setBlocker } from './tasks.js';
@@ -173,7 +173,8 @@ export function composeSystem(agent) {
     autonomous
       ? '- You are trusted to post without asking. Once your checks pass (a dry run, totals, duplicates), write to live systems (bills, invoices, payments, journal entries) straight away: do not stop for a go-ahead, even where a skill says to wait after the dry run. The one exception is a task that itself says it needs approval: then stop and ask as it describes. Otherwise stop only when something is genuinely wrong or missing.'
       : '- Before writing to any live system (bills, invoices, payments, journal entries, emails), do a dry run, show a short summary (counts, totals, anything unusual) and stop to ask for an explicit go-ahead. Only write after the user approves in this conversation.',
-    '- When the user tells you something lasting about your work (a deadline, a rule, which account to use, how they want things done), save it with `save_lesson` so you remember it next time, and say that you did.',
+    '- When the user tells you something lasting about your work (a deadline, a rule, which account to use, how they want things done), or you find a mistake of your own that would happen again, propose it as a lesson with `save_lesson`. Then tell the user exactly what the result said: saved, waiting for approval, or not saved. Never say a lesson is saved unless `save_lesson` said so.',
+    '- When one of your lessons changes what you do, report it with `lesson_applied`.',
     '- Save files meant for the user in /mnt/session/outputs/.',
     '- End every turn with a brief summary: what you did, key totals, what is left, and exactly what you need from the user.',
     '- If something is missing (a file, access, a decision), say precisely what and stop rather than guessing.',
@@ -224,7 +225,7 @@ async function buildAgentConfig(agent) {
       ...(parseList(agent.integrations).includes('wafeq') ? [wafeqTool({ autonomous })] : []),
       TASK_TOOL,
       AGENT_DM_TOOL,
-      LESSON_TOOL,
+      ...LESSON_TOOLS,
       ...SCHEDULE_TOOLS,
     ],
     metadata: { hive_agent_id: String(agent.id) },
@@ -310,6 +311,8 @@ async function uploadTaskFiles(taskId) {
 
 async function createSession(agent, { title, files = [], metadata, runId }) {
   const synced = await syncAgent(agent.id);
+  // The lessons in the instructions this session starts with (later ones are sent as they're approved).
+  if (runId) run('UPDATE runs SET lessons_known = ? WHERE id = ?', JSON.stringify(lessonIdsInForce(agent.id)), runId);
   const environmentId = await ensureEnvironment();
   const vaultId = await ensureVault();
   const resources = files.map((f) => ({ type: 'file', file_id: f.anthropic_file_id, mount_path: `/workspace/inputs/${f.filename}` }));
@@ -394,6 +397,7 @@ export async function chatWithManagedAgent(agentId, text, { origin = 'hive', fil
     // idle session and stops listening before the reply to this message arrives.
     if (r.status !== 'running') r = setRun(r.id, { status: 'running' });
     if (files.length) text = `${text}\n\n${await mountChatFiles(r.session_id, files)}`.trim();
+    text = withNewLessons(r, text);
     await sendAndFollow(r.id, [{ type: 'user.message', content: [{ type: 'text', text }] }]);
   } catch (err) {
     if (r) setRun(r.id, { status: 'failed', error: err.message });
@@ -455,7 +459,21 @@ export async function replyToRun(runId, text) {
   setRun(runId, { status: 'running' });
   setTask(r.task_id, 'in_progress');
   if (r.task_id) clearBlocker(r.task_id, ['info']);
+  text = withNewLessons(r, text);
   sendAndFollow(runId, [{ type: 'user.message', content: [{ type: 'text', text }] }]).catch((err) => failRun(runId, err));
+}
+
+/**
+ * A session keeps the instructions it started with, so lessons approved since then are added to
+ * the next message it is sent (once).
+ */
+function withNewLessons(r, text) {
+  const known = r.lessons_known ? JSON.parse(r.lessons_known) : lessonIdsKnownAt(r.agent_id, r.created_at);
+  const fresh = unseenLessons(r.agent_id, known);
+  if (!fresh.length) return text;
+  run('UPDATE runs SET lessons_known = ? WHERE id = ?', JSON.stringify([...known, ...fresh.map((l) => l.id)]), r.id);
+  const tell = fresh.filter((l) => !text.includes(l.text)); // "remember: …" already says its lesson
+  return tell.length ? `${newLessonsNote(tell)}\n\n${text}` : text;
 }
 
 export async function confirmTool(runId, eventId, allow, denyMessage, { by = 'Hive user', approveRest = false } = {}) {
@@ -616,9 +634,10 @@ async function resolveToolCalls(runId, customIds, builtinPending) {
       results.push({ type: 'user.custom_tool_result', custom_tool_use_id: id, content: [{ type: 'text', text: reply.text }], ...(reply.is_error ? { is_error: true } : {}) });
       continue;
     }
-    if (call.name === 'save_lesson') {
-      const learned = learnFromRun(r, call.input);
-      if (learned.note && r.kind === 'chat') postMessage(r.agent_id, 'system', learned.note, { origin: r.origin ?? 'hive' });
+    if (LESSON_TOOL_NAMES.has(call.name)) {
+      // What happened to a lesson is always shown where people are following along, never only to the agent.
+      const learned = await handleLessonTool(r, call.name, call.input ?? {});
+      if (learned.note && r.kind === 'chat') postMessage(r.agent_id, 'system', learned.note, { origin: r.origin ?? 'hive', ...(learned.meta ?? {}) });
       if (learned.note && r.task_id) logActivity(r.agent_id, 'task', learned.note);
       results.push({ type: 'user.custom_tool_result', custom_tool_use_id: id, content: [{ type: 'text', text: learned.text }], ...(learned.isError ? { is_error: true } : {}) });
       continue;
@@ -749,7 +768,9 @@ function summarize(ev) {
     case 'agent.custom_tool_use':
       if (ev.name === 'task_complete') return { name: 'task_complete', detail: String(ev.input?.summary ?? '').slice(0, 600), kind: 'custom', input: ev.input ?? {} };
       if (ev.name === 'wafeq_plan') return { name: 'wafeq_plan', detail: `${ev.input?.action ?? ''}${ev.input?.reason ? `: ${ev.input.reason}` : ''}`, kind: 'custom', input: ev.input ?? {} };
-      if (ev.name === 'save_lesson') return { name: 'save_lesson', detail: String(ev.input?.lesson ?? '').slice(0, 600), kind: 'custom', input: ev.input ?? {} };
+      if (ev.name === 'save_lesson') return { name: 'save_lesson', detail: String(ev.input?.text ?? ev.input?.lesson ?? '').slice(0, 600), kind: 'custom', input: ev.input ?? {} };
+      if (ev.name === 'lesson_applied') return { name: 'lesson_applied', detail: (Array.isArray(ev.input?.ids) ? ev.input.ids : []).map((i) => `#${i}`).join(', '), kind: 'custom', input: ev.input ?? {} };
+      if (ev.name === 'list_lessons') return { name: 'list_lessons', detail: '', kind: 'custom', input: {} };
       if (SCHEDULE_TOOL_NAMES.has(ev.name))
         return { name: ev.name, detail: String(ev.input?.title ?? (ev.input?.schedule_id != null ? `#${ev.input.schedule_id}` : ev.input?.query ?? '')).slice(0, 300), kind: 'custom', input: ev.input ?? {} };
       if (ev.name === 'message_agent') return { name: 'message_agent', detail: `→ ${ev.input?.agent ?? '?'}: ${String(ev.input?.message ?? '').slice(0, 500)}`, kind: 'custom', input: ev.input ?? {} };

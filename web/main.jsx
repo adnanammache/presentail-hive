@@ -169,7 +169,7 @@ function Shell() {
   useEffect(() => setNavOpen(false), [section, id]);
 
   let page;
-  if (section === 'agents' && id) page = <AgentDetail key={id} id={id} meta={meta} />;
+  if (section === 'agents' && id) page = <AgentDetail key={id} id={id} meta={meta} initialTab={sub} />;
   else if (section === 'agents') page = <Agents />;
   else if (section === 'org') page = <OrgChart me={me} />;
   else if (section === 'map') page = <HiveMap />;

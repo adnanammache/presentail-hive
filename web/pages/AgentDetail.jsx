@@ -8,6 +8,7 @@ import Capabilities from '../components/Capabilities.jsx';
 import { TaskCard } from '../components/TaskViews.jsx';
 import Markdown from '../components/Markdown.jsx';
 import { RecurringSection } from '../components/Recurring.jsx';
+import { LESSON_LIMITS } from '../../shared/lessons.js';
 
 function Connect({ agent, onRotate }) {
   const [show, setShow] = useState(false);
@@ -74,30 +75,79 @@ function Connect({ agent, onRotate }) {
   );
 }
 
-const SOURCE = { manual: 'Added here', rejection: 'From a rejection', slack: 'From Slack', task: 'From a task', chat: 'From chat', agent: 'Saved by the agent' };
+const SOURCE = { manual: 'Added here', rejection: 'From a rejection', slack: 'From Slack', task: 'From a task', chat: 'From chat', agent: 'Proposed by the agent' };
 
-/** What this agent has learned from corrections; all of it goes into its instructions. */
-function Lessons({ agent }) {
+/** Where a lesson came from: its task, or the chat it was proposed in. */
+function sourceLink(l, agent) {
+  if (l.task_id && l.task_title) return <a href={`#/tasks/${l.task_id}`}>{l.task_title}</a>;
+  if (l.run_kind === 'chat') return String(l.run_origin ?? '').startsWith('slack:') ? <span>a Slack thread</span> : <a href={`#/inbox/${agent.id}`}>the chat</a>;
+  return null;
+}
+
+function Meta({ l, agent, children }) {
+  const link = sourceLink(l, agent);
+  return (
+    <div className="muted small">
+      #{l.id} · {SOURCE[l.source] ?? l.source}
+      {l.created_by && l.source !== 'agent' && ` by ${l.created_by}`}
+      {link && <> · {link}</>}
+      {' · '}
+      {ago(l.created_at)}
+      {children}
+    </div>
+  );
+}
+
+/** What this agent has learned. Approved, active lessons go into its instructions; proposals wait here for a person. */
+function Lessons({ agent, onAgent }) {
   const { data, reload } = useApi(`/agents/${agent.id}/lessons`, ['lesson']);
   const [text, setText] = useState('');
   const [error, setError] = useState('');
-  const add = async (e) => {
-    e.preventDefault();
+  const act = (fn) => async (...args) => {
     try {
-      await api(`/agents/${agent.id}/lessons`, { method: 'POST', body: { text } });
-      setText('');
       setError('');
-      reload();
+      await fn(...args);
     } catch (err) {
       setError(err.message);
     }
-  };
-  const edit = async (l) => {
-    const next = prompt('Edit the lesson', l.text);
-    if (next != null && next.trim() && next !== l.text) await api(`/lessons/${l.id}`, { method: 'PATCH', body: { text: next } });
     reload();
   };
+  const add = act(async (e) => {
+    e.preventDefault();
+    await api(`/agents/${agent.id}/lessons`, { method: 'POST', body: { text } });
+    setText('');
+  });
+  const edit = act(async (l) => {
+    const next = prompt('Edit the lesson', l.text);
+    if (next != null && next.trim() && next !== l.text) await api(`/lessons/${l.id}`, { method: 'PATCH', body: { text: next } });
+  });
+  const approve = act((l, reword) => {
+    const next = reword ? prompt('Edit, then approve', l.text) : l.text;
+    if (next == null || !next.trim()) return;
+    return api(`/lessons/${l.id}/approve`, { method: 'POST', body: { text: next } });
+  });
+  const reject = act((l) => {
+    const note = prompt(`Reject this lesson? ${agent.name} will see your reason so it doesn't propose it again (optional).`, '');
+    if (note == null) return;
+    return api(`/lessons/${l.id}/reject`, { method: 'POST', body: { note } });
+  });
+  const proposal = act((l, accept) => api(`/lessons/${l.id}/proposal`, { method: 'POST', body: { accept } }));
+  const trust = act(async (on) => {
+    if (on && !confirm(`Approve everything ${agent.name} proposes automatically, without anyone checking it first?`)) return;
+    await api(`/agents/${agent.id}/trust-lessons`, { method: 'PUT', body: { trust: on } });
+    onAgent?.();
+  });
+
   if (!data) return <Loading />;
+  const pending = data.filter((l) => l.status === 'pending_approval');
+  const approved = data.filter((l) => l.status === 'approved');
+  const rejected = data.filter((l) => l.status === 'rejected');
+  const inForce = approved.filter((l) => l.active);
+  const { SOFT_CAP, MAX_IN_PROMPT } = LESSON_LIMITS;
+  // Past the soft cap: the ones used least recently (or never) are the first to consider removing.
+  const stalest = [...inForce].sort((a, b) => String(a.last_used_at ?? a.created_at).localeCompare(String(b.last_used_at ?? b.created_at))).slice(0, inForce.length - SOFT_CAP);
+  const used = (l) => (l.use_count ? ` · used ${l.use_count}×, last ${ago(l.last_used_at)}` : ' · not used yet');
+
   return (
     <>
       <form className="lesson-add" onSubmit={add}>
@@ -108,41 +158,115 @@ function Lessons({ agent }) {
       </form>
       {error && <div className="form-error">{error}</div>}
       <p className="muted small">
-        {agent.name} follows these on every task and chat. Lessons are also saved when you reject something with a reason, start a chat message with “remember:”, or tell {agent.name} something lasting in a chat: it saves those itself. Ones it saves from people who can't approve its work start switched off.
+        {agent.name} follows the approved lessons on every task and chat. Lessons are also saved when you reject something with a reason or start a chat message with “remember:”. {agent.name} can
+        also propose lessons itself, from what you tell it or from its own mistakes: those wait here until an approver or owner approves them.
       </p>
-      {data.length === 0 ? (
+      <label className="lesson-trust small">
+        <input type="checkbox" checked={Boolean(agent.trust_lessons)} onChange={(e) => trust(e.target.checked)} /> Always trust {agent.name}'s lessons (approve them without asking)
+      </label>
+
+      {pending.length > 0 && (
+        <section className="lesson-section">
+          <h3>Waiting for your approval ({pending.length})</h3>
+          <ul className="lesson-list">
+            {pending.map((l) => (
+              <li key={l.id} className="pending">
+                <div className="grow">
+                  <div>{l.text}</div>
+                  {l.reason && <div className="lesson-reason small">Why: {l.reason}</div>}
+                  <Meta l={l} agent={agent} />
+                </div>
+                <div className="lesson-actions">
+                  <button className="btn btn-sm btn-primary" onClick={() => approve(l, false)}>
+                    Approve
+                  </button>
+                  <button className="btn btn-sm" onClick={() => approve(l, true)}>
+                    Edit & approve
+                  </button>
+                  <button className="btn btn-sm btn-danger-ghost" onClick={() => reject(l)}>
+                    Reject
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      {inForce.length > SOFT_CAP && (
+        <div className="warn-note small">
+          {agent.name} has {inForce.length} lessons in force; aim for {SOFT_CAP} or fewer, since every lesson goes into every chat and task.
+          {inForce.length > MAX_IN_PROMPT && ` Only the newest ${MAX_IN_PROMPT} are used right now: the oldest ${inForce.length - MAX_IN_PROMPT} are left out.`} Least used first:{' '}
+          {stalest.map((l) => `#${l.id}`).join(', ')}.
+        </div>
+      )}
+
+      {approved.length === 0 && pending.length === 0 ? (
         <Empty title="Nothing learned yet" />
       ) : (
-        <ul className="lesson-list">
-          {data.map((l) => (
-            <li key={l.id} className={l.active ? '' : 'off'}>
-              <div className="grow">
-                <div>{l.text}</div>
-                <div className="muted small">
-                  {SOURCE[l.source] ?? l.source}
-                  {l.created_by && ` by ${l.created_by}`}
-                  {l.task_title && (
-                    <>
-                      {' · '}
-                      <a href={`#/tasks/${l.task_id}`}>{l.task_title}</a>
-                    </>
+        approved.length > 0 && (
+          <ul className="lesson-list">
+            {approved.map((l) => (
+              <li key={l.id} className={`${l.active ? '' : 'off'} ${stalest.includes(l) ? 'stale' : ''}`}>
+                <div className="grow">
+                  <div>{l.text}</div>
+                  {l.proposed_text && (
+                    <div className="lesson-proposal small">
+                      <div>
+                        <strong>{agent.name} suggests:</strong> {l.proposed_text}
+                        {l.proposed_reason && <span className="muted"> (why: {l.proposed_reason})</span>}
+                      </div>
+                      <button className="btn btn-sm btn-primary" onClick={() => proposal(l, true)}>
+                        Use this wording
+                      </button>
+                      <button className="btn btn-sm" onClick={() => proposal(l, false)}>
+                        Keep as is
+                      </button>
+                    </div>
                   )}
-                  {' · '}
-                  {ago(l.created_at)}
+                  <Meta l={l} agent={agent}>
+                    {l.source === 'agent' && l.reviewed_by && ` · approved by ${l.reviewed_by}`}
+                    {used(l)}
+                  </Meta>
                 </div>
-              </div>
-              <button className="btn btn-sm" onClick={() => edit(l)}>
-                Edit
-              </button>
-              <button className="btn btn-sm" onClick={() => api(`/lessons/${l.id}`, { method: 'PATCH', body: { active: !l.active } }).then(reload)}>
-                {l.active ? 'Pause' : 'Use again'}
-              </button>
-              <button className="icon-btn" aria-label="Delete lesson" onClick={() => confirm('Delete this lesson?') && api(`/lessons/${l.id}`, { method: 'DELETE' }).then(reload)}>
-                <Icon name="trash" size={16} />
-              </button>
-            </li>
-          ))}
-        </ul>
+                <button className="btn btn-sm" onClick={() => edit(l)}>
+                  Edit
+                </button>
+                <button className="btn btn-sm" onClick={act(() => api(`/lessons/${l.id}`, { method: 'PATCH', body: { active: !l.active } }))}>
+                  {l.active ? 'Pause' : 'Use again'}
+                </button>
+                <button className="icon-btn" aria-label="Delete lesson" onClick={act(() => confirm('Delete this lesson?') && api(`/lessons/${l.id}`, { method: 'DELETE' }))}>
+                  <Icon name="trash" size={16} />
+                </button>
+              </li>
+            ))}
+          </ul>
+        )
+      )}
+
+      {rejected.length > 0 && (
+        <details className="lesson-section">
+          <summary className="muted small">Rejected ({rejected.length}): {agent.name} is shown these so it doesn't propose them again</summary>
+          <ul className="lesson-list">
+            {rejected.map((l) => (
+              <li key={l.id} className="rejected">
+                <div className="grow">
+                  <div>{l.text}</div>
+                  <Meta l={l} agent={agent}>
+                    {` · rejected${l.reviewed_by ? ` by ${l.reviewed_by}` : ''}`}
+                    {l.review_note && `: “${l.review_note}”`}
+                  </Meta>
+                </div>
+                <button className="btn btn-sm" onClick={() => approve(l, false)}>
+                  Approve after all
+                </button>
+                <button className="icon-btn" aria-label="Delete lesson" onClick={act(() => confirm('Delete this rejected lesson? The agent could then propose it again.') && api(`/lessons/${l.id}`, { method: 'DELETE' }))}>
+                  <Icon name="trash" size={16} />
+                </button>
+              </li>
+            ))}
+          </ul>
+        </details>
       )}
     </>
   );
@@ -177,11 +301,13 @@ function Colleagues({ agent }) {
   );
 }
 
-export default function AgentDetail({ id, meta }) {
+export default function AgentDetail({ id, meta, initialTab }) {
   const { data: agent, setData } = useApi(`/agents/${id}`, ['agent']);
   const { data: tasks } = useApi(`/tasks?agent_id=${id}`, ['task']);
   const { data: recurring } = useApi(`/workflows?agent_id=${id}`, ['workflow']);
-  const [tab, setTab] = useState('chat');
+  const [tab, setTab] = useState(['skills', 'tasks', 'lessons', 'colleagues', 'connect'].includes(initialTab) ? initialTab : 'chat');
+  const { data: lessons } = useApi(`/agents/${id}/lessons`, ['lesson']);
+  const waiting = lessons?.filter((l) => l.status === 'pending_approval' || l.proposed_text).length ?? 0; // proposals and suggested rewordings
   const [taskView, setTaskView] = useState('tasks');
   const [modal, setModal] = useState(null);
   const { openComposer, openTask } = useTaskUI();
@@ -202,7 +328,7 @@ export default function AgentDetail({ id, meta }) {
     ['chat', 'Chat'],
     ['skills', 'Skills & tools'],
     ['tasks', `Tasks (${openTasks.length})`],
-    ['lessons', 'Lessons'],
+    ['lessons', waiting ? `Lessons (${waiting} waiting)` : 'Lessons'],
     ['colleagues', 'Colleagues'],
     ['connect', 'Connect'],
   ];
@@ -317,7 +443,7 @@ export default function AgentDetail({ id, meta }) {
 
       {tab === 'lessons' && (
         <div className="tab-body">
-          <Lessons agent={agent} />
+          <Lessons agent={agent} onAgent={() => api(`/agents/${agent.id}`).then(setData)} />
         </div>
       )}
 
