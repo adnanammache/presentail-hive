@@ -1,6 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import { api, toDate, useApi } from '../api.js';
 import { Badge, Icon, runTone } from './ui.jsx';
+import Markdown from './Markdown.jsx';
+import useStickToBottom from './useStickToBottom.js';
 
 const STATUS_LABEL = {
   starting: 'Starting…',
@@ -68,20 +70,17 @@ function Files({ taskId, locked }) {
 }
 
 function Timeline({ events, agentName }) {
-  const box = useRef(null);
-  useEffect(() => {
-    box.current?.scrollTo({ top: box.current.scrollHeight });
-  }, [events.length]);
+  const scroll = useStickToBottom(events.length);
   const shown = events.filter((e) =>
     ['agent.message', 'agent.tool_use', 'agent.mcp_tool_use', 'agent.custom_tool_use', 'agent.tool_result', 'user.custom_tool_result', 'session.error', 'user.message', 'user.tool_confirmation'].includes(e.type),
   );
   return (
-    <div className="timeline" ref={box}>
+    <div className="timeline" ref={scroll.ref} onScroll={scroll.onScroll}>
       {shown.length === 0 && <div className="muted small">Waiting for {agentName} to start…</div>}
       {shown.map((e) => {
         const d = e.data;
-        if (e.type === 'agent.message') return <div key={e.event_id} className="tl-msg"><strong>{agentName}</strong><div className="pre">{d.text}</div></div>;
-        if (e.type === 'user.message') return <div key={e.event_id} className="tl-msg mine"><strong>You</strong><div className="pre">{d.text}</div></div>;
+        if (e.type === 'agent.message') return <div key={e.event_id} className="tl-msg"><strong>{agentName}</strong><Markdown text={d.text} /></div>;
+        if (e.type === 'user.message') return <div key={e.event_id} className="tl-msg mine"><strong>You</strong><Markdown text={d.text} /></div>;
         if (e.type === 'agent.tool_use' || e.type === 'agent.mcp_tool_use')
           return (
             <div key={e.event_id} className="tl-tool">

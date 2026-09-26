@@ -7,6 +7,7 @@ import TaskRun, { uploadFiles } from './TaskRun.jsx';
 import { HandoffBar, TeachBar } from './forms.jsx';
 import { AssigneeChip, AssigneePicker, BLOCKERS, DueLabel, PRIORITY_LABELS, STAGES, stageLabel } from './work.jsx';
 import { ScheduleFields, SeriesBar, formFromTask, scheduleBody } from './schedule.jsx';
+import Markdown from './Markdown.jsx';
 
 const ACTIVE_RUN = ['starting', 'running', 'needs_approval'];
 
@@ -155,7 +156,7 @@ function Comments({ task }) {
               <strong>{c.author_name}</strong>
               <span className="muted small">{ago(c.created_at)}</span>
             </div>
-            <div className="comment-body">{c.body}</div>
+            <Markdown text={c.body} className="comment-body" />
           </li>
         ))}
         {comments?.length === 0 && <li className="muted small">No comments yet.</li>}
@@ -342,7 +343,7 @@ export default function TaskPanel({ taskId, onClose, me }) {
             <div className="small strong">
               <Icon name="check" size={14} /> Outcome
             </div>
-            {task.result && <p className="outcome-text">{task.result}</p>}
+            {task.result && <Markdown text={task.result} className="outcome-text" />}
           </div>
         )}
 
@@ -485,7 +486,7 @@ export default function TaskPanel({ taskId, onClose, me }) {
         )}
         {task.result && !done && (
           <Section title="Latest update">
-            <p className="update-text">{task.result}</p>
+            <Markdown text={task.result} className="update-text" />
           </Section>
         )}
 

@@ -1,6 +1,8 @@
-import { useContext, useEffect, useRef, useState } from 'react';
+import { memo, useContext, useEffect, useState } from 'react';
 import { LiveContext, api, toDate, useApi } from '../api.js';
 import { Avatar, Icon } from './ui.jsx';
+import Markdown from './Markdown.jsx';
+import useStickToBottom from './useStickToBottom.js';
 
 function ApprovalButtons({ meta }) {
   const [state, setState] = useState(null);
@@ -21,7 +23,8 @@ function ApprovalButtons({ meta }) {
   );
 }
 
-function Bubble({ m, agent }) {
+// Memoised: a new message renders one bubble, not the whole conversation again.
+const Bubble = memo(function Bubble({ m, agent }) {
   const time = toDate(m.created_at)?.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   if (m.sender === 'system') {
     const meta = m.meta ? JSON.parse(m.meta) : null;
@@ -39,7 +42,7 @@ function Bubble({ m, agent }) {
     <div className={`msg ${mine ? 'mine' : ''}`}>
       {!mine && <Avatar name={agent.name} color={agent.color} size={28} />}
       <div className="bubble">
-        <div className="bubble-text">{m.body}</div>
+        <Markdown text={m.body} className="bubble-text" />
         <time>
           {via?.via === 'slack' && `${via.user ?? 'Someone'} via Slack · `}
           {time}
@@ -47,7 +50,7 @@ function Bubble({ m, agent }) {
       </div>
     </div>
   );
-}
+});
 
 export default function Chat({ agent, claudeReady }) {
   const { data: messages, setData } = useApi(`/agents/${agent.id}/messages`);
@@ -59,7 +62,6 @@ export default function Chat({ agent, claudeReady }) {
   const live = useContext(LiveContext);
   const [draft, setDraft] = useState('');
   const [waiting, setWaiting] = useState(false);
-  const scroller = useRef(null);
 
   useEffect(
     () =>
@@ -70,9 +72,9 @@ export default function Chat({ agent, claudeReady }) {
       }),
     [live, agent.id, setData],
   );
-  useEffect(() => {
-    scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: 'smooth' });
-  }, [messages?.length, waiting, working]);
+  // Follows new messages only while you're at the bottom; reading further up, you stay put.
+  const typing = waiting || working;
+  const scroll = useStickToBottom(messages ? `${messages.length}:${typing}` : null, agent.id);
 
   const claudePowered = ['claude', 'managed'].includes(agent.platform);
   const willReply = agent.status !== 'paused' && ((claudePowered && claudeReady) || agent.webhook_url);
@@ -82,6 +84,7 @@ export default function Chat({ agent, claudeReady }) {
     const body = draft.trim();
     if (!body) return;
     setDraft('');
+    scroll.pin(); // your own message always brings you back down
     const m = await api(`/agents/${agent.id}/messages`, { method: 'POST', body: { body } });
     setData((ms) => (ms.some((x) => x.id === m.id) ? ms : [...ms, m]));
     if (willReply) setWaiting(true);
@@ -94,12 +97,12 @@ export default function Chat({ agent, claudeReady }) {
 
   return (
     <div className="chat">
-      <div className="chat-scroll" ref={scroller}>
+      <div className="chat-scroll" ref={scroll.ref} onScroll={scroll.onScroll}>
         {messages?.length === 0 && <div className="chat-empty">Start the conversation with {agent.name}.</div>}
         {messages?.map((m) => (
           <Bubble key={m.id} m={m} agent={agent} />
         ))}
-        {(waiting || working) && (
+        {typing && (
           <div className="msg">
             <Avatar name={agent.name} color={agent.color} size={28} />
             <div className="bubble typing">
@@ -110,6 +113,11 @@ export default function Chat({ agent, claudeReady }) {
           </div>
         )}
       </div>
+      {scroll.unseen && (
+        <button type="button" className="chat-jump" onClick={() => scroll.toBottom()}>
+          New messages ↓
+        </button>
+      )}
       {hint && <div className="chat-hint">{hint}</div>}
       <form className="composer" onSubmit={send}>
         <textarea
