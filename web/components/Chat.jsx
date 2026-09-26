@@ -126,6 +126,11 @@ function Message({ m, agent, me, people, onLesson, onTask, last }) {
         <span>{m.body}</span>
         <time>{clock(m.created_at)}</time>
         {meta?.type === 'approval' && <ApprovalButtons meta={meta} />}
+        {meta?.type === 'task_created' && (
+          <a className="link" href={`#/tasks/${meta.task_id}`}>
+            Open task
+          </a>
+        )}
       </div>
     );
   const mine = m.sender === 'user';

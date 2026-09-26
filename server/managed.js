@@ -18,6 +18,7 @@ import { notifyRun, settleApprovalAlert } from './notify.js';
 import { TASK_TOOL, finishTask } from './handoff.js';
 import { AGENT_DM_TOOL, askAgent } from './conversations.js';
 import { LESSON_TOOL, learnFromRun, lessonsBlock } from './lessons.js';
+import { CREATE_TASK_TOOL, createTaskFromRun } from './agentTasks.js';
 import { CHAT_DIR } from './chatFiles.js';
 import { briefExtras, readyStatus } from './taskSchedule.js';
 import { clearBlocker, setBlocker } from './tasks.js';
@@ -174,6 +175,7 @@ export function composeSystem(agent) {
       ? '- You are trusted to post without asking. Once your checks pass (a dry run, totals, duplicates), write to live systems (bills, invoices, payments, journal entries) straight away: do not stop for a go-ahead, even where a skill says to wait after the dry run. The one exception is a task that itself says it needs approval: then stop and ask as it describes. Otherwise stop only when something is genuinely wrong or missing.'
       : '- Before writing to any live system (bills, invoices, payments, journal entries, emails), do a dry run, show a short summary (counts, totals, anything unusual) and stop to ask for an explicit go-ahead. Only write after the user approves in this conversation.',
     '- When the user tells you something lasting about your work (a deadline, a rule, which account to use, how they want things done), save it with `save_lesson` so you remember it next time, and say that you did.',
+    '- When a person asks you for a one-off task, reminder or to-do (for them, you or a colleague), create it with `create_task`, quoting their words in `user_request`. For anything that repeats, use `schedule_recurring_task`. Never say a task exists unless the tool confirmed it.',
     '- Save files meant for the user in /mnt/session/outputs/.',
     '- End every turn with a brief summary: what you did, key totals, what is left, and exactly what you need from the user.',
     '- If something is missing (a file, access, a decision), say precisely what and stop rather than guessing.',
@@ -225,6 +227,7 @@ async function buildAgentConfig(agent) {
       TASK_TOOL,
       AGENT_DM_TOOL,
       LESSON_TOOL,
+      CREATE_TASK_TOOL,
       ...SCHEDULE_TOOLS,
     ],
     metadata: { hive_agent_id: String(agent.id) },
@@ -318,6 +321,7 @@ async function createSession(agent, { title, files = [], metadata, runId }) {
     const config = await api().beta.files.upload({ file: await toFile(Buffer.from(JSON.stringify(gatewayConfig(baseUrl(), runId), null, 2)), 'wafeq.json') });
     resources.push({ type: 'file', file_id: config.id, mount_path: '/workspace/hive/wafeq.json' });
   }
+  if (runId) run('UPDATE runs SET agent_version = ? WHERE id = ?', synced.ma_agent_version, runId);
   return api().beta.sessions.create({
     agent: { type: 'agent', id: synced.ma_agent_id, version: synced.ma_agent_version },
     environment_id: environmentId,
@@ -383,6 +387,13 @@ export async function chatWithManagedAgent(agentId, text, { origin = 'hive', fil
   }
   if (r && parseList(r.pending).length) return say(`${agent.name} is waiting for an approval first. Approve or reject it, then send your message again.`);
   try {
+    // A session keeps the agent as it was when it started (tools, skills, lessons, model). If the
+    // agent has changed since, continue in a fresh session, handing it the conversation so far.
+    if (r && !ACTIVE.includes(r.status) && (await outdated(r))) {
+      setRun(r.id, { status: 'ended' });
+      r = null;
+      text = `${recap(agentId, origin)}${text}`;
+    }
     if (!r) {
       const runId = Number(run("INSERT INTO runs (kind, agent_id, status, origin) VALUES ('chat', ?, 'starting', ?)", agentId, origin).lastInsertRowid);
       r = getRun(runId); // so a failure below marks this run failed, not left "starting" (shown as working)
@@ -413,6 +424,33 @@ async function mountChatFiles(sessionId, files) {
     await api().beta.sessions.resources.add(sessionId, { type: 'file', file_id: f.anthropic_file_id, mount_path: `/workspace/${CHAT_DIR}/${f.filename}` });
   }
   return `Attached file${files.length === 1 ? '' : 's'} (in /workspace/${CHAT_DIR}/):\n${files.map((f) => `- ${f.filename}`).join('\n')}`;
+}
+
+/** Is this chat's session on an older version of its agent than the agent is now? */
+async function outdated(r) {
+  try {
+    const agent = await syncAgent(r.agent_id);
+    return r.agent_version !== agent.ma_agent_version;
+  } catch {
+    return false; // can't tell: carry on in the session we have
+  }
+}
+
+/** The recent conversation, for a chat that continues in a new session. */
+function recap(agentId, origin, limit = 30) {
+  const rows = all(
+    `SELECT * FROM (SELECT * FROM messages WHERE agent_id = ? AND sender IN ('user', 'agent') AND COALESCE(json_extract(meta, '$.origin'), 'hive') = ?
+       ORDER BY created_at DESC, id DESC LIMIT ?) ORDER BY created_at, id`,
+    agentId, origin, limit + 1,
+  ).slice(0, -1); // the newest is the message being sent now
+  if (!rows.length) return '';
+  const clip = (s) => (s.length > 1500 ? `${s.slice(0, 1500)}…` : s);
+  const lines = rows.map((m) => {
+    const meta = m.meta ? JSON.parse(m.meta) : {};
+    const name = meta.user ?? meta.by ?? meta.email;
+    return `${m.sender === 'agent' ? 'You' : `User${name ? ` (${name})` : ''}`}: ${clip(m.body)}`;
+  });
+  return `[Hive: you have been updated, so this chat continues in a new session. The conversation so far, for context:]\n\n${lines.join('\n\n')}\n\n[New message:]\n`;
 }
 
 /**
@@ -624,6 +662,11 @@ async function resolveToolCalls(runId, customIds, builtinPending) {
       results.push({ type: 'user.custom_tool_result', custom_tool_use_id: id, content: [{ type: 'text', text: learned.text }], ...(learned.isError ? { is_error: true } : {}) });
       continue;
     }
+    if (call.name === 'create_task') {
+      // Answered from the run's own identity, like the recurring-task tools.
+      results.push(taskCreated(r, id, createTaskFromRun(runId, call.input ?? {}, { eventId: id })));
+      continue;
+    }
     if (call.name === 'task_complete') {
       const reply = r.task_id ? await finishTask(r.task_id, call.input ?? {}) : 'There is no task in a chat. Just reply to the user.';
       results.push({ type: 'user.custom_tool_result', custom_tool_use_id: id, content: [{ type: 'text', text: reply }] });
@@ -653,6 +696,13 @@ async function resolveToolCalls(runId, customIds, builtinPending) {
   if (pending.length) askForApproval(runId, pending);
   else setRun(runId, { status: 'running', pending: '[]' });
   if (results.length) await sendAndFollow(runId, results);
+}
+
+/** Tell the chat (and the activity log) about a task the agent created; the tool result for the agent. */
+function taskCreated(r, eventId, created) {
+  if (created.note && r.kind === 'chat') postMessage(r.agent_id, 'system', created.note, { type: 'task_created', task_id: created.id, origin: r.origin ?? 'hive' });
+  if (created.note) logActivity(r.agent_id, 'task', created.note);
+  return { type: 'user.custom_tool_result', custom_tool_use_id: eventId, content: [{ type: 'text', text: created.text }], ...(created.isError ? { is_error: true } : {}) };
 }
 
 function askForApproval(runId, pending) {
@@ -750,6 +800,7 @@ function summarize(ev) {
     case 'agent.custom_tool_use':
       if (ev.name === 'task_complete') return { name: 'task_complete', detail: String(ev.input?.summary ?? '').slice(0, 600), kind: 'custom', input: ev.input ?? {} };
       if (ev.name === 'wafeq_plan') return { name: 'wafeq_plan', detail: `${ev.input?.action ?? ''}${ev.input?.reason ? `: ${ev.input.reason}` : ''}`, kind: 'custom', input: ev.input ?? {} };
+      if (ev.name === 'create_task') return { name: 'create_task', detail: String(ev.input?.title ?? '').slice(0, 300), kind: 'custom', input: ev.input ?? {} };
       if (ev.name === 'save_lesson') return { name: 'save_lesson', detail: String(ev.input?.lesson ?? '').slice(0, 600), kind: 'custom', input: ev.input ?? {} };
       if (SCHEDULE_TOOL_NAMES.has(ev.name))
         return { name: ev.name, detail: String(ev.input?.title ?? (ev.input?.schedule_id != null ? `#${ev.input.schedule_id}` : ev.input?.query ?? '')).slice(0, 300), kind: 'custom', input: ev.input ?? {} };

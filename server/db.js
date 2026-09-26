@@ -208,6 +208,7 @@ CREATE INDEX IF NOT EXISTS idx_run_events_run ON run_events(run_id, id);
 addColumn('runs', 'auto_approve', 'INTEGER NOT NULL DEFAULT 0'); // "approve the rest of this run"
 addColumn('runs', 'slack_ts', 'TEXT'); // the approval alert in Slack, updated once someone decides
 addColumn('runs', 'origin', 'TEXT'); // chats: where the conversation lives ('hive', or 'slack:<channel>:<thread_ts>')
+addColumn('runs', 'agent_version', 'INTEGER'); // the agent version its session runs on (chats move to a new one when it changes)
 addColumn('agents', 'reviewer_id', 'INTEGER REFERENCES agents(id) ON DELETE SET NULL'); // default reviewer of this agent's work
 addColumn('tasks', 'handoff_agent_id', 'INTEGER REFERENCES agents(id) ON DELETE SET NULL'); // this task's reviewer, overriding the default
 addColumn('tasks', 'parent_task_id', 'INTEGER REFERENCES tasks(id) ON DELETE SET NULL'); // set on "Review: …" tasks
