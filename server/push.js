@@ -37,8 +37,12 @@ let sender = (sub, payload, options) => webpush.sendNotification(sub, payload, o
 export const setPushSender = (fn) => (sender = fn); // tests
 
 /** Send to every subscribed device. Dead subscriptions are removed. */
-export async function pushToAll({ title, body, url = '/', tag }) {
-  const subs = all('SELECT * FROM push_subscriptions');
+export const pushToAll = (msg) => pushTo(all('SELECT * FROM push_subscriptions'), msg);
+
+/** Send to one person's devices (subscriptions saved while they were signed in). */
+export const pushToUser = (email, msg) => pushTo(all('SELECT * FROM push_subscriptions WHERE user = ?', String(email || '').toLowerCase()), msg);
+
+async function pushTo(subs, { title, body, url = '/', tag }) {
   if (!subs.length) return { sent: 0 };
   const { publicKey, privateKey } = vapidKeys();
   const payload = JSON.stringify({ title, body: body?.slice(0, 240), url, tag });

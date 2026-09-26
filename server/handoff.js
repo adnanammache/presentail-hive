@@ -102,7 +102,7 @@ export async function handOff(taskId, reviewerId, { summary, check, by } = {}) {
 
   const newId = Number(
     run(
-      `INSERT INTO tasks (title, description, status, priority, agent_id, parent_task_id, due_date) VALUES (?, ?, 'todo', ?, ?, ?, ?)`,
+      `INSERT INTO tasks (title, description, status, priority, agent_id, parent_task_id, due_date) VALUES (?, ?, 'ready', ?, ?, ?, ?)`,
       `Review: ${task.title}`.slice(0, 200), description, task.priority, reviewer.id, task.id, task.due_date,
     ).lastInsertRowid,
   );

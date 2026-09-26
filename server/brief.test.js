@@ -27,7 +27,7 @@ test('the brief covers each department, what waits on you, failures, today and s
   run("INSERT INTO tasks (title, status, agent_id, completed_at) VALUES ('Ancient task', 'done', ?, datetime('now', '-9 days'))", ledger);
   const t3 = Number(run("INSERT INTO tasks (title, status, agent_id) VALUES ('Talabat August', 'review', ?)", ledger).lastInsertRowid);
   run("INSERT INTO runs (task_id, agent_id, status, pending, cost_cents) VALUES (?, ?, 'needs_approval', ?, 125)", t3, ledger, JSON.stringify([{ event_id: 'e1' }, { event_id: 'e2' }]));
-  run("INSERT INTO tasks (title, status, agent_id) VALUES ('BLOM June', 'blocked', ?)", ledger);
+  run("INSERT INTO tasks (title, status, agent_id, blocked_kind, blocked_reason) VALUES ('BLOM June', 'in_progress', ?, 'info', 'Waiting for the June export')", ledger);
   run("INSERT INTO runs (agent_id, status, error) VALUES (?, 'failed', 'Wafeq returned 403')", ledger);
   run("INSERT INTO workflows (name, schedule, timezone, enabled, agent_id) VALUES ('Hourly check', '0 * * * *', 'UTC', 1, ?)", ledger);
 

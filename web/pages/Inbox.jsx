@@ -55,7 +55,7 @@ function Reminders() {
   const dismiss = (id) => api(`/reminders/${id}/read`, { method: 'POST' });
   return (
     <div className="reminders">
-      <div className="reminders-head small strong">⏰ Reminders</div>
+      <div className="reminders-head small strong">For you: assignments and reminders</div>
       {reminders.map((r) => (
         <div key={r.id} className="reminder">
           <a href={`#/tasks/${r.task_id}`} className="grow">

@@ -101,10 +101,11 @@ export function until(s) {
 // ---- calendar dates (YYYY-MM-DD, Dubai) ----
 const dayUTC = (s) => new Date(`${String(s).slice(0, 10)}T00:00:00Z`);
 /** "28 Oct 2026" */
-export const fmtDay = (s) => {
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+export const fmtDay = (s, { year = true } = {}) => {
   if (!s) return '';
   const d = dayUTC(s);
-  return Number.isNaN(d.getTime()) ? s : d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
+  return Number.isNaN(d.getTime()) ? s : `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]}${year ? ` ${d.getUTCFullYear()}` : ''}`;
 };
 export const addDaysISO = (s, n) => new Date(dayUTC(s).getTime() + n * 86400000).toISOString().slice(0, 10);
 export const daysBetweenISO = (a, b) => Math.round((dayUTC(b) - dayUTC(a)) / 86400000);

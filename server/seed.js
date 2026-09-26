@@ -88,9 +88,11 @@ export function seed({ demo = true } = {}) {
     return;
   }
   for (const t of TASKS) {
+    // Demo "blocked" tasks are in progress with a "waiting for information" blocker.
+    const blocked = t.status === 'blocked';
     run(
-      `INSERT INTO tasks (title, status, priority, agent_id, result, completed_at) VALUES (?, ?, ?, ?, ?, ${t.status === 'done' ? "datetime('now')" : 'NULL'})`,
-      t.title, t.status, t.priority, ids[t.agent], t.result ?? '',
+      `INSERT INTO tasks (title, status, priority, agent_id, result, blocked_kind, blocked_reason, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ${t.status === 'done' ? "datetime('now')" : 'NULL'})`,
+      t.title, blocked ? 'in_progress' : t.status === 'todo' ? 'ready' : t.status, t.priority, ids[t.agent], t.result ?? '', blocked ? 'info' : null, blocked ? t.result ?? null : null,
     );
   }
   run("INSERT INTO messages (agent_id, sender, body) VALUES (?, 'user', ?)", ids.Ledger, 'Can you check why the Abu Dhabi Talabat numbers are off?');

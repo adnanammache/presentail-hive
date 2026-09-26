@@ -1,10 +1,11 @@
 import { useState } from 'react';
 import { ago, api, useApi } from '../api.js';
 import { Avatar, Badge, Empty, Icon, Loading, PLATFORM_LABELS, agentTone } from '../components/ui.jsx';
-import { AgentForm, TaskForm, WorkflowForm } from '../components/forms.jsx';
+import { AgentForm, WorkflowForm } from '../components/forms.jsx';
+import { useTaskUI } from '../components/work.jsx';
 import Chat from '../components/Chat.jsx';
 import Capabilities from '../components/Capabilities.jsx';
-import { TaskCard } from './Tasks.jsx';
+import { TaskCard } from '../components/TaskViews.jsx';
 import { WorkflowList } from './Workflows.jsx';
 
 function Connect({ agent, onRotate }) {
@@ -181,6 +182,7 @@ export default function AgentDetail({ id, meta }) {
   const { data: allWorkflows } = useApi('/workflows', ['workflow']);
   const [tab, setTab] = useState('chat');
   const [modal, setModal] = useState(null);
+  const { openComposer, openTask } = useTaskUI();
 
   if (!agent) return <Loading />;
   const workflows = allWorkflows?.filter((w) => w.agent_id === agent.id) ?? [];
@@ -271,14 +273,14 @@ export default function AgentDetail({ id, meta }) {
       {tab === 'tasks' && (
         <div className="tab-body">
           <div className="tab-actions">
-            <button className="btn btn-primary" onClick={() => setModal({ kind: 'task', defaults: { agent_id: agent.id } })}>
+            <button className="btn btn-primary" onClick={() => openComposer({ assignee: `agent:${agent.id}` })}>
               <Icon name="plus" size={16} /> Assign task
             </button>
           </div>
           {openTasks.length === 0 && <Empty title="No open tasks" />}
           <div className="task-list">
             {openTasks.map((t) => (
-              <TaskCard key={t.id} task={t} onOpen={(task) => setModal({ kind: 'task', task })} />
+              <TaskCard key={t.id} task={t} onOpen={(task) => openTask(task.id)} draggable={false} />
             ))}
           </div>
           {doneTasks.length > 0 && (
@@ -286,7 +288,7 @@ export default function AgentDetail({ id, meta }) {
               <h3 className="section-title">Completed</h3>
               <div className="task-list faded">
                 {doneTasks.slice(0, 20).map((t) => (
-                  <TaskCard key={t.id} task={t} onOpen={(task) => setModal({ kind: 'task', task })} />
+                  <TaskCard key={t.id} task={t} onOpen={(task) => openTask(task.id)} draggable={false} />
                 ))}
               </div>
             </>
@@ -328,7 +330,6 @@ export default function AgentDetail({ id, meta }) {
       )}
 
       {modal?.kind === 'agent' && <AgentForm agent={agent} onClose={() => setModal(null)} onSaved={setData} />}
-      {modal?.kind === 'task' && <TaskForm task={modal.task} defaults={modal.defaults} onClose={() => setModal(null)} />}
       {modal?.kind === 'workflow' && <WorkflowForm workflow={modal.workflow} defaults={modal.defaults} onClose={() => setModal(null)} />}
     </div>
   );

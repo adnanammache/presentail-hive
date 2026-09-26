@@ -3,6 +3,7 @@ import { ago, useApi } from '../api.js';
 import { Avatar, Badge, Empty, Icon, Loading, PLATFORM_LABELS, PageHeader, agentTone } from '../components/ui.jsx';
 import { AgentForm, TeamForm } from '../components/forms.jsx';
 import { money } from '../components/Spend.jsx';
+import { PersonAvatar, useTaskUI } from '../components/work.jsx';
 
 function AgentCard({ a }) {
   return (
@@ -31,6 +32,42 @@ function AgentCard({ a }) {
   );
 }
 
+/** The people in the workspace: anyone who has signed in. Assign them work like an agent. */
+function People() {
+  const { data: people } = useApi('/people', ['user']);
+  const { openComposer } = useTaskUI();
+  if (!people?.length) return null;
+  return (
+    <section className="team-section" style={{ '--c': '#5b4ce6' }}>
+      <header className="team-head">
+        <span className="team-dot" />
+        <div className="grow">
+          <h2>People</h2>
+          <p className="muted small">Everyone who has signed in to Hive. Roles are managed in Settings → People.</p>
+        </div>
+        <span className="muted small nowrap">
+          {people.length} {people.length === 1 ? 'person' : 'people'}
+        </span>
+      </header>
+      <ul className="people-grid">
+        {people.map((p) => (
+          <li key={p.email} className="person-card">
+            <PersonAvatar name={p.name || p.email} size={40} />
+            <div className="grow">
+              <strong className="clamp-1">{p.name || p.email}</strong>
+              <div className="muted small clamp-1">{p.email === 'admin@local' ? 'Local admin' : p.email}</div>
+              <span className="type-tag person">Person · {p.role === 'owner' ? 'Owner' : p.role === 'approver' ? 'Approver' : 'Member'}</span>
+            </div>
+            <button type="button" className="btn btn-sm" onClick={() => openComposer({ assignee: `user:${p.email}` })}>
+              Assign task
+            </button>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 export default function Agents() {
   const { data: agents } = useApi('/agents', ['agent', 'task', 'workflow']);
   const { data: teams } = useApi('/teams', ['agent']);
@@ -43,7 +80,7 @@ export default function Agents() {
 
   return (
     <>
-      <PageHeader title="Agents & teams" subtitle={`${agents.length} agents across ${teams.length} teams`}>
+      <PageHeader title="Team & agents" subtitle={`People and ${agents.length} AI agents across ${teams.length} teams`}>
         <button className="btn" onClick={() => setModal({ kind: 'team' })}>
           <Icon name="plus" size={16} /> New team
         </button>
@@ -51,6 +88,8 @@ export default function Agents() {
           <Icon name="plus" size={16} /> New agent
         </button>
       </PageHeader>
+
+      <People />
 
       {agents.length === 0 && teams.length === 0 && (
         <Empty title="Build your first team">Create a team (e.g. Finance), then add agents to it with a name and title.</Empty>

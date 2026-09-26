@@ -1,4 +1,4 @@
-import { StrictMode, useContext, useEffect, useMemo, useState } from 'react';
+import { StrictMode, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { LiveContext, PhotosContext, photoUrl, useApi, useLiveSource } from './api.js';
 import { Icon } from './components/ui.jsx';
@@ -6,7 +6,12 @@ import Dashboard from './pages/Dashboard.jsx';
 import Agents from './pages/Agents.jsx';
 import AgentDetail from './pages/AgentDetail.jsx';
 import Close from './pages/Close.jsx';
-import Tasks from './pages/Tasks.jsx';
+import AllTasks from './pages/AllTasks.jsx';
+import Projects from './pages/Projects.jsx';
+import Project from './pages/Project.jsx';
+import Composer from './components/Composer.jsx';
+import TaskPanel from './components/TaskPanel.jsx';
+import { TaskUIContext } from './components/work.jsx';
 import Workflows from './pages/Workflows.jsx';
 import Inbox from './pages/Inbox.jsx';
 import OrgChart from './pages/OrgChart.jsx';
@@ -25,20 +30,41 @@ function useHashRoute() {
   return parts;
 }
 
+// Work first; the rest of Hive after.
 const NAV = [
   ['', 'home', 'Dashboard'],
-  ['map', 'hex', 'Hive map'],
-  ['org', 'org', 'Org chart'],
-  ['agents', 'bot', 'Agents'],
-  ['tasks', 'board', 'Tasks'],
+  ['my-tasks', 'mytasks', 'My tasks'],
+  ['tasks', 'list', 'All tasks'],
+  ['projects', 'folder', 'Projects'],
+  ['agents', 'users', 'Team & agents'],
+  ['inbox', 'inbox', 'Inbox'],
+];
+const MORE = [
   ['close', 'check', 'Month-end'],
   ['workflows', 'repeat', 'Workflows'],
-  ['inbox', 'chat', 'Inbox'],
+  ['map', 'hex', 'Hive map'],
+  ['org', 'org', 'Org chart'],
   ['settings', 'key', 'Settings'],
 ];
 
+function Favorites({ section, id }) {
+  const { data: favs } = useApi('/projects?favorites=1', ['project']);
+  if (!favs?.length) return null;
+  return (
+    <div className="nav-group">
+      <div className="nav-label">Favorites</div>
+      {favs.map((p) => (
+        <a key={p.id} href={`#/projects/${p.id}`} className={section === 'projects' && Number(id) === p.id ? 'on' : ''}>
+          <span className="fav-dot" style={{ background: p.color }} aria-hidden="true" />
+          <span className="clamp-1">{p.name}</span>
+        </a>
+      ))}
+    </div>
+  );
+}
+
 function Shell() {
-  const [section = '', id] = useHashRoute();
+  const [section = '', id, sub] = useHashRoute();
   const { data: meta } = useApi('/meta');
   const { data: me } = useApi('/me');
   const { data: overview } = useApi('/overview', ['task']);
@@ -51,7 +77,10 @@ function Shell() {
   else if (section === 'agents') page = <Agents />;
   else if (section === 'org') page = <OrgChart me={me} />;
   else if (section === 'map') page = <HiveMap />;
-  else if (section === 'tasks') page = <Tasks openId={id} />;
+  else if (section === 'tasks') page = <AllTasks />;
+  else if (section === 'my-tasks') page = <AllTasks mine />;
+  else if (section === 'projects' && id) page = <Project key={id} id={id} tab={sub} />;
+  else if (section === 'projects') page = <Projects />;
   else if (section === 'close') page = <Close />;
   else if (section === 'settings') page = <Settings />;
   else if (section === 'workflows') page = <Workflows />;
@@ -69,14 +98,24 @@ function Shell() {
             Presentail <strong>Hive</strong>
           </span>
         </div>
-        <nav>
+        <nav aria-label="Main">
           {NAV.map(([path, icon, label]) => (
-            <a key={path} href={`#/${path}`} className={section === path ? 'on' : ''}>
+            <a key={path} href={`#/${path}`} className={section === path ? 'on' : ''} aria-current={section === path ? 'page' : undefined}>
               <Icon name={icon} />
               <span>{label}</span>
-              {path === 'tasks' && needsYou > 0 && <span className="nav-count">{needsYou}</span>}
+              {path === 'tasks' && needsYou > 0 && <span className="nav-count" title="Needs review or blocked">{needsYou}</span>}
             </a>
           ))}
+          <Favorites section={section} id={id} />
+          <div className="nav-group">
+            <div className="nav-label">Operations</div>
+            {MORE.map(([path, icon, label]) => (
+              <a key={path} href={`#/${path}`} className={section === path ? 'on' : ''} aria-current={section === path ? 'page' : undefined}>
+                <Icon name={icon} />
+                <span>{label}</span>
+              </a>
+            ))}
+          </div>
         </nav>
         <div className="sidebar-foot">
           {me?.auth === 'google' && (
@@ -97,7 +136,7 @@ function Shell() {
       <button className="icon-btn nav-toggle" onClick={() => setNavOpen((o) => !o)} aria-label="Menu">
         <Icon name="menu" />
       </button>
-      <main className={`main ${section === 'inbox' || section === 'map' || (section === 'agents' && id) ? 'main-flush' : ''}`}>{page}</main>
+      <main className={`main ${section === 'inbox' || section === 'map' || (section === 'agents' && id) ? 'main-flush' : ''} ${['tasks', 'my-tasks'].includes(section) || (section === 'projects' && id && (!sub || sub === 'board' || sub === 'list')) ? 'main-work' : ''}`}>{page}</main>
     </div>
   );
 }
@@ -116,12 +155,72 @@ function Photos({ children }) {
   return <PhotosContext.Provider value={value}>{children}</PhotosContext.Provider>;
 }
 
+/** The composer and the task panel live above every page. #/tasks/42 opens task 42. */
+function TaskUI({ children }) {
+  const [section, id] = useHashRoute();
+  const { data: me } = useApi('/me');
+  const [request, setRequest] = useState(null);
+  const [panelId, setPanelId] = useState(null);
+  const [toast, setToast] = useState(null);
+  useEffect(() => {
+    if (section === 'tasks' && id) setPanelId(Number(id));
+  }, [section, id]);
+  const openComposer = useCallback(
+    (defaults = {}) => setRequest({ nonce: Date.now(), defaults: { ...defaults, assignee: defaults.assignee === 'me' ? (me?.email ? `user:${me.email}` : null) : defaults.assignee } }),
+    [me?.email],
+  );
+  const openTask = useCallback((t) => setPanelId(Number(typeof t === 'object' ? t.id : t)), []);
+  const closeTask = useCallback(() => {
+    setPanelId(null);
+    if (location.hash.match(/^#\/tasks\/\d+/)) history.replaceState(null, '', '#/tasks');
+  }, []);
+  const created = (task) => {
+    if (task.start && !task.start.ok) {
+      setToast({ tone: 'red', text: `“${task.title}” was created, but ${task.agent_name ?? 'the agent'} couldn't start: ${task.start.error.replace(/\.$/, '')}. You can retry from the task.` });
+      setPanelId(task.id);
+    } else
+      setToast({
+        tone: 'green',
+        text: task.start?.ok ? `Created “${task.title}” and started ${task.agent_name}.` : task.assignee?.type === 'user' ? `Created “${task.title}” and assigned it to ${task.assignee.name}.` : `Created “${task.title}”.`,
+        taskId: task.id,
+      });
+  };
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 7000);
+    return () => clearTimeout(t);
+  }, [toast]);
+  const value = useMemo(() => ({ openComposer, openTask }), [openComposer, openTask]);
+  return (
+    <TaskUIContext.Provider value={value}>
+      {children}
+      {panelId && <TaskPanel taskId={panelId} onClose={closeTask} me={me} />}
+      <Composer request={request} onCreated={created} />
+      {toast && (
+        <div className={`toast tone-${toast.tone}`} role="status">
+          <span>{toast.text}</span>
+          {toast.taskId && (
+            <button type="button" className="link-btn" onClick={() => (setPanelId(toast.taskId), setToast(null))}>
+              Open
+            </button>
+          )}
+          <button type="button" className="icon-btn sm" aria-label="Dismiss" onClick={() => setToast(null)}>
+            <Icon name="x" size={14} />
+          </button>
+        </div>
+      )}
+    </TaskUIContext.Provider>
+  );
+}
+
 function App() {
   const live = useLiveSource();
   return (
     <LiveContext.Provider value={live}>
       <Photos>
-        <Shell />
+        <TaskUI>
+          <Shell />
+        </TaskUI>
       </Photos>
     </LiveContext.Provider>
   );

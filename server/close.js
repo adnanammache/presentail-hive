@@ -72,7 +72,7 @@ export function closeBoard({ months = 6, now = new Date() } = {}) {
      FROM close_items c LEFT JOIN agents a ON a.id = c.agent_id ORDER BY c.sort, c.id`,
   );
   const tasks = all(
-    `SELECT id, close_item_id, period, status, title, updated_at FROM tasks
+    `SELECT id, close_item_id, period, CASE WHEN blocked_kind IS NOT NULL AND status != 'done' THEN 'blocked' ELSE status END AS status, title, updated_at FROM tasks
      WHERE close_item_id IS NOT NULL AND period >= ? ORDER BY id`,
     periods[0],
   );

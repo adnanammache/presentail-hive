@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { ago, api, fmtDateTime, until, useApi } from '../api.js';
 import { Avatar, Badge, Empty, Icon, Loading, PageHeader, agentTone, runTone, statusLabel } from '../components/ui.jsx';
-import { TaskForm } from '../components/forms.jsx';
+import { useTaskUI } from '../components/work.jsx';
 import SpendCard from '../components/Spend.jsx';
 import SetupCard from '../components/SetupCard.jsx';
 import BriefCard from '../components/Brief.jsx';
@@ -21,7 +21,8 @@ export default function Dashboard() {
   const { data } = useApi('/overview', ['task', 'workflow', 'agent']);
   const { data: agents } = useApi('/agents', ['agent', 'message', 'task']);
   const { data: activity } = useApi('/activity?limit=15', ['activity']);
-  const [editing, setEditing] = useState(null);
+  const { openTask } = useTaskUI();
+  const setEditing = (t) => openTask(t.id);
 
   if (!data) return <Loading />;
   const s = data.stats;
@@ -58,7 +59,7 @@ export default function Dashboard() {
                     <div className="row-title">{t.title}</div>
                     {t.result && <div className="row-sub clamp">{t.result}</div>}
                   </div>
-                  <Badge tone={t.status === 'blocked' ? 'red' : 'amber'}>{statusLabel(t.status)}</Badge>
+                  <Badge tone={t.blocked_kind ? 'red' : 'amber'}>{t.blocked_kind ? 'Blocked' : statusLabel(t.status)}</Badge>
                 </li>
               ))}
             </ul>
@@ -144,7 +145,6 @@ export default function Dashboard() {
           </ul>
         </section>
       </div>
-      {editing && <TaskForm task={editing} onClose={() => setEditing(null)} />}
     </>
   );
 }

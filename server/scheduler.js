@@ -73,7 +73,7 @@ export async function runWorkflow(workflowId, trigger = 'manual') {
 
   const stamp = new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: wf.timezone || 'UTC' });
   const task = run(
-    "INSERT INTO tasks (title, description, status, priority, agent_id, workflow_id) VALUES (?, ?, 'todo', 'medium', ?, ?)",
+    "INSERT INTO tasks (title, description, status, priority, agent_id, workflow_id) VALUES (?, ?, 'ready', 'medium', ?, ?)",
     `${wf.name} — ${stamp}`,
     wf.instructions || wf.description,
     wf.agent_id,

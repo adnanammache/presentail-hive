@@ -90,10 +90,11 @@ export function buildBrief({ since } = {}) {
     return { run_id: r.run_id, task_id: r.task_id, agent: r.agent, title: r.title ?? 'a chat', count: n };
   });
   const review = all(
-    `SELECT t.id AS task_id, t.title, t.status, t.result, a.name AS agent FROM tasks t LEFT JOIN agents a ON a.id = t.agent_id
-     WHERE t.status IN ('review', 'blocked')
+    `SELECT t.id AS task_id, t.title, CASE WHEN t.blocked_kind IS NOT NULL THEN 'blocked' ELSE t.status END AS status, t.result, a.name AS agent
+     FROM tasks t LEFT JOIN agents a ON a.id = t.agent_id
+     WHERE (t.status IN ('review', 'waiting_approval') OR (t.blocked_kind IS NOT NULL AND t.status != 'done'))
        AND t.id NOT IN (SELECT task_id FROM runs WHERE status = 'needs_approval' AND task_id IS NOT NULL)
-     ORDER BY CASE t.status WHEN 'blocked' THEN 0 ELSE 1 END, t.updated_at DESC LIMIT 12`,
+     ORDER BY CASE WHEN t.blocked_kind IS NOT NULL THEN 0 ELSE 1 END, t.updated_at DESC LIMIT 12`,
   );
 
   const doneRows = all(
