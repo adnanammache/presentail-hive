@@ -224,7 +224,7 @@ const OWNER_ONLY = [
   ['post', '/teams'], ['patch', '/teams/:id'], ['delete', '/teams/:id'],
   ['post', '/agents'], ['patch', '/agents/:id'], ['delete', '/agents/:id'], ['post', '/agents/:id/photo'], ['delete', '/agents/:id/photo'], ['post', '/agents/:id/rotate-token'], ['post', '/agents/:id/sync'],
   ['post', '/workflows'], ['patch', '/workflows/:id'], ['delete', '/workflows/:id'],
-  ['post', '/entities'],
+  ['post', '/entities'], ['put', '/org/layout'],
   ['post', '/close/items'], ['patch', '/close/items/:id'], ['delete', '/close/items/:id'],
   ['put', '/brief/config'], ['post', '/setup'],
   ['get', '/backups'], ['post', '/backups'], ['get', '/backups/:name'],
@@ -470,6 +470,25 @@ export function dashboardRouter() {
     update('agents', req.params.id, b, AGENT_FIELDS);
     emit('agent', { agent_id: Number(req.params.id) });
     return getAgent(req.params.id);
+  }));
+
+  // Org chart layout: each team's agents, top to bottom. Moving someone to another team changes their team.
+  r.put('/org/layout', wrap((req) => {
+    const columns = req.body?.teams;
+    if (!Array.isArray(columns)) throw bad('teams must be a list');
+    const seen = new Set();
+    for (const c of columns) {
+      if (c.team_id !== null) checkTeam(c.team_id);
+      if (!Array.isArray(c.ids)) throw bad('ids must be a list');
+      for (const id of c.ids) {
+        if (seen.has(Number(id))) throw bad('An agent appears twice');
+        seen.add(Number(id));
+        if (!get('SELECT id FROM agents WHERE id = ?', id)) throw bad('Unknown agent');
+      }
+    }
+    for (const c of columns) c.ids.forEach((id, i) => run('UPDATE agents SET team_id = ?, sort_order = ? WHERE id = ?', c.team_id, i, id));
+    emit('agent');
+    return { ok: true };
   }));
 
   r.post('/agents/:id/rotate-token', wrap((req) => {

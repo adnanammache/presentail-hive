@@ -764,3 +764,10 @@ button.link { background: none; border: 0; padding: 0; cursor: pointer; font: in
 .task-meta { flex-wrap: wrap; row-gap: 6px; }
 .task-meta > .small { white-space: nowrap; }
 .page-actions select { max-width: 240px; }
+/* Org chart: Arrange mode */
+.org-hint { margin: -6px 0 12px; color: var(--muted); }
+.org.arranging .org-node { cursor: grab; }
+.org.arranging .org-node:hover { transform: none; }
+.org-col.drop .org-members { border-left-color: var(--c); background: var(--accent-soft); border-radius: 0 10px 10px 0; }
+.org-arrows { display: flex; flex-direction: column; gap: 2px; margin-left: auto; }
+.org-arrows .icon-btn:disabled { opacity: 0.3; }
