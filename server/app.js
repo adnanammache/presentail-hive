@@ -28,7 +28,7 @@ import { applyToFuture, cleanSchedule, spawnNext, startSeries } from './taskSche
 import { describeRule, startReached } from './recurrence.js';
 
 const PLATFORMS = ['managed', 'claude', 'make', 'replit', 'n8n', 'custom', 'human'];
-const APPROVALS = ['agent_asks', 'every_command'];
+const APPROVALS = ['agent_asks', 'every_command', 'autonomous'];
 const AGENT_STATUSES = ['active', 'idle', 'paused', 'error'];
 const TASK_STATUSES = ['scheduled', 'backlog', 'todo', 'in_progress', 'review', 'waiting_approval', 'done', 'blocked'];
 const PRIORITIES = ['low', 'medium', 'high', 'urgent'];

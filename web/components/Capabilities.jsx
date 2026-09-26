@@ -138,6 +138,13 @@ export default function Capabilities({ agent, onSaved }) {
               <div className="row-sub">Every command and file change waits for Approve / Reject in Hive. Slower, maximum control.</div>
             </div>
           </label>
+          <label className={`check-card ${approval === 'autonomous' ? 'on' : ''}`}>
+            <input type="radio" name="approval" checked={approval === 'autonomous'} onChange={() => setApproval('autonomous')} />
+            <div className="grow">
+              <div className="check-title">Never ask</div>
+              <div className="row-sub">It checks its work, then posts to Odoo and Wafeq straight away. Everything it does is still logged. Fastest, no safety net.</div>
+            </div>
+          </label>
         </div>
       </section>
 

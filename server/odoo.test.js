@@ -186,3 +186,24 @@ test('after a restart, unanswered calls are answered and finished Odoo changes a
   assert.match(byId.never_run.content[0].text, /Toters/, 'the read runs now');
   assert.equal(odoo.slice(before).filter((c) => c.method === 'create').length, 0, 'the create is not run twice');
 });
+
+test('an agent set to Never ask has its Odoo changes run straight away; forbidden calls are still refused', async () => {
+  const fake = fakeAnthropic();
+  managed.setManagedClient(fake);
+  const agentId = Number(run("INSERT INTO agents (name, title, platform, status, integrations, approval, api_token) VALUES ('Auto', 'SAL Accountant', 'managed', 'idle', '[\"odoo\"]', 'autonomous', 'agt_auto')").lastInsertRowid);
+  const taskId = Number(run("INSERT INTO tasks (title, agent_id) VALUES ('Toters — September', ?)", agentId).lastInsertRowid);
+  fake.script.push(() => [
+    { id: 'sevt_auto_create', type: 'agent.custom_tool_use', name: 'odoo', input: { model: 'account.move', method: 'create', company_id: 2, params: { vals_list: [{ move_type: 'in_invoice' }] } } },
+    { id: 'sevt_auto_cfg', type: 'agent.custom_tool_use', name: 'odoo', input: { model: 'account.journal', method: 'write', company_id: 2, ids: [48], params: { vals: { name: 'x' } } } },
+    { type: 'session.status_idle', stop_reason: { type: 'requires_action', event_ids: ['sevt_auto_create', 'sevt_auto_cfg'] } },
+  ]);
+  fake.script.push(() => [{ type: 'session.status_idle', stop_reason: { type: 'end_turn' } }]);
+  const started = managed.startTaskRun(taskId);
+  await waitFor(() => fake.calls.sent.length >= 2, 'results sent');
+
+  assert.match(fake.calls.agentsCreate.at(-1).tools.find((t) => t.name === 'odoo').description, /also run immediately/);
+  assert.deepEqual(fake.calls.sent[1].events.map((e) => [e.custom_tool_use_id, Boolean(e.is_error)]), [['sevt_auto_create', false], ['sevt_auto_cfg', true]]);
+  assert.equal(get("SELECT approved_by FROM odoo_actions WHERE event_id = 'sevt_auto_create'").approved_by, 'automatic (agent set to Never ask)');
+  assert.equal(get("SELECT status FROM odoo_actions WHERE event_id = 'sevt_auto_cfg'").status, 'refused');
+  assert.notEqual(get('SELECT status FROM runs WHERE id = ?', started.id).status, 'needs_approval');
+});

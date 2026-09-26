@@ -97,7 +97,7 @@ Agents set to **Claude Managed Agent** run on Anthropic's hosted agent service. 
 ### Turning an agent on
 1. Open the agent → **Skills & tools**.
 2. Tick its skills (e.g. Talabat, Careem, Noon Food, Now Now month-end for the UAE Accountant) and systems (Wafeq).
-3. Choose **Approvals**: *Ask before posting* (it does a dry run and waits for your go-ahead) or *Ask before every command*.
+3. Choose **Approvals**: *Ask before posting* (it does a dry run and waits for your go-ahead), *Ask before every command*, or *Never ask* (it posts to Odoo and Wafeq on its own; every call is still logged).
 4. Click **Make it a Managed Agent** / **Save & sync**.
 
 ### Running a task

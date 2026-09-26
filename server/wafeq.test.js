@@ -202,3 +202,36 @@ test('the agent submits its queue with wafeq_plan; a person approves it once and
   assert.ok(!wafeq.some((c) => c.body && /SNEAKY/.test(c.body)));
   assert.equal(planSummary(started.id).steps.length, 1, 'the later write is still queued, unapproved');
 });
+
+test('an agent set to Never ask posts its batch on submit, with no approval', async () => {
+  const fake = fakeAnthropic();
+  managed.setManagedClient(fake);
+  const agentId = Number(run("INSERT INTO agents (name, title, platform, status, integrations, approval, api_token) VALUES ('Ledger 3', 'UAE Accountant', 'managed', 'idle', '[\"wafeq\"]', 'autonomous', 'agt_auto')").lastInsertRowid);
+  const taskId = Number(run("INSERT INTO tasks (title, agent_id) VALUES ('Talabat — September', ?)", agentId).lastInsertRowid);
+  fake.script.push(() => [{ type: 'session.status_idle', stop_reason: { type: 'end_turn' } }]);
+  const started = managed.startTaskRun(taskId);
+  await waitFor(() => get('SELECT status FROM runs WHERE id = ?', started.id).status === 'waiting', 'first turn');
+
+  const config = fake.calls.agentsCreate.at(-1);
+  assert.match(config.system, /trusted to post without asking/);
+  assert.doesNotMatch(config.system, /stop to ask for an explicit go-ahead/);
+  assert.match(config.tools.find((t) => t.name === 'wafeq_plan').description, /with no one approving it/);
+  assert.deepEqual(config.tools[0].configs.filter((c) => c.permission_policy).map((c) => c.name), [], 'no command waits for a click');
+
+  const base = gatewayConfig(origin, started.id).base;
+  await realFetch(`${base}/bills/`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ bill_number: 'TUAE-10' }) });
+  fake.script.push(() => [
+    { id: 'sevt_auto', type: 'agent.custom_tool_use', name: 'wafeq_plan', input: { action: 'submit', reason: 'Talabat September' } },
+    { type: 'session.status_idle', stop_reason: { type: 'requires_action', event_ids: ['sevt_auto'] } },
+  ]);
+  fake.script.push(() => [{ type: 'session.status_idle', stop_reason: { type: 'end_turn' } }]);
+  wafeq.length = 0;
+  const sentBefore = fake.calls.sent.length;
+  await managed.replyToRun(started.id, 'Carry on.');
+  await waitFor(() => fake.calls.sent.length > sentBefore + 1, 'result sent');
+  const answer = fake.calls.sent.at(-1).events[0];
+  assert.equal(answer.custom_tool_use_id, 'sevt_auto');
+  assert.match(answer.content[0].text, /All 1 steps were sent[\s\S]*→ bill_real/);
+  assert.equal(wafeq.length, 1);
+  assert.equal(get('SELECT approved_by FROM wafeq_steps WHERE run_id = ?', started.id).approved_by, 'automatic (agent set to Never ask)');
+});

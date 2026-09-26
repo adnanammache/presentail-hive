@@ -36,7 +36,7 @@ const SECRET_OR_ADMIN =
 // Configuration: agents may read it (to find ids) but never change it.
 const CONFIG = /^(account\.(account|journal|tax|fiscal\.position|reconcile\.model|group|chart\.template|report|change\.lock\.date|lock_exception)|account\.account\.tag|res\.company|res\.currency)/;
 
-/** read: run now · write: needs approval · forbidden: refuse */
+/** read: run now · write: needs approval (unless the agent never asks) · forbidden: refuse */
 export function classify(model, method) {
   if (!/^[a-z][a-z0-9_.]*$/.test(model || '') || !/^[a-z][a-z0-9_]*$/.test(method || '')) return 'forbidden';
   if (SECRET_OR_ADMIN.test(model)) return 'forbidden';
@@ -58,14 +58,17 @@ export function checkAgentCall(input) {
   return null;
 }
 
-export const ODOO_TOOL = {
+/** The odoo tool. `autonomous`: the agent is set to "Never ask", so its changes run straight away. */
+export const odooTool = ({ autonomous = false } = {}) => ({
   type: 'custom',
   name: 'odoo',
   description: [
     "Call Presentail's Odoo 19 (presentail.odoo.com) through Hive. One call = one model method.",
     'Reads (search_read, read, search, search_count, fields_get, name_search, read_group) run immediately.',
-    'Anything that changes data (create, write, action_post, reconcile, unlink, …) pauses until a human approves it in Hive,',
-    'so batch related changes into as few calls as you sensibly can, and describe them in your message first.',
+    autonomous
+      ? 'Changes (create, write, action_post, reconcile, unlink, …) also run immediately, with no one approving them, so check your figures first'
+      : 'Anything that changes data (create, write, action_post, reconcile, unlink, …) pauses until a human approves it in Hive,',
+    autonomous ? 'and batch related changes into as few calls as you sensibly can.' : 'so batch related changes into as few calls as you sensibly can, and describe them in your message first.',
     'Configuration models (ir.*, users, groups, journals, chart of accounts, taxes) cannot be changed.',
     `Companies: ${Object.entries(COMPANIES).map(([id, n]) => `${id} = ${n}`).join('; ')}. Always pass company_id.`,
     'Arguments follow Odoo JSON-2: record methods take `ids`; other arguments go in `params` by name, e.g.',
@@ -84,7 +87,8 @@ export const ODOO_TOOL = {
     },
     required: ['model', 'method', 'company_id'],
   },
-};
+});
+export const ODOO_TOOL = odooTool();
 
 const MAX_RESULT = 60_000;
 
