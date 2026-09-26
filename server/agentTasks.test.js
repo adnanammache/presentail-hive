@@ -1,5 +1,5 @@
-// Agents creating tasks from a chat: straight away for owners and approvers, approved otherwise,
-// and never starting any work by themselves.
+// Agents creating one-off tasks from a chat: only for what a person actually asked, never starting
+// any work, with the same rules as recurring tasks.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
@@ -9,10 +9,10 @@ import express from 'express';
 
 process.env.DB_PATH = join(mkdtempSync(join(tmpdir(), 'hive-agent-tasks-')), 'hive.db');
 process.env.ANTHROPIC_API_KEY = 'test';
-const { run, get, all } = await import('./db.js');
+const { run, get } = await import('./db.js');
 const { dashboardRouter, errorHandler } = await import('./app.js');
 const managed = await import('./managed.js');
-const { planTask, createPlannedTask } = await import('./agentTasks.js');
+const { createTaskFromRun } = await import('./agentTasks.js');
 const { fakeAnthropic } = await import('./testing/fake-anthropic.js');
 
 const waitFor = async (fn, what) => {
@@ -24,7 +24,7 @@ const waitFor = async (fn, what) => {
   throw new Error(`Timed out waiting for ${what}`);
 };
 
-test('an agent creates the task it is asked for in chat', async (t) => {
+test('an agent creates the one-off task a person asks for in chat', async (t) => {
   const fake = fakeAnthropic();
   managed.setManagedClient(fake);
   const app = express().use(express.json()).use((req, res, next) => ((req.user = { email: req.get('x-as'), name: req.get('x-name') }), next())).use('/api', dashboardRouter()).use(errorHandler);
@@ -32,7 +32,7 @@ test('an agent creates the task it is asked for in chat', async (t) => {
   t.after(() => server.close());
   const url = (p) => `http://127.0.0.1:${server.address().port}/api${p}`;
   const owner = { 'x-as': 'adnan@presentail.com', 'x-name': 'Adnan Ammache' };
-  const member = { 'x-as': 'maya@presentail.com', 'x-name': 'Maya' };
+  const member = { 'x-as': 'maya@presentail.com', 'x-name': 'Maya Haddad' };
   await fetch(url('/me'), { headers: owner }); // first person: owner
   await fetch(url('/me'), { headers: member });
   run("UPDATE users SET name = 'Adnan Ammache' WHERE email = 'adnan@presentail.com'");
@@ -46,92 +46,79 @@ test('an agent creates the task it is asked for in chat', async (t) => {
   ];
   const idle = () => [{ type: 'session.status_idle', stop_reason: { type: 'end_turn' } }];
   const toolResult = (eid) => fake.calls.sent.flatMap((s) => s.events).find((e) => e.custom_tool_use_id === eid);
-  const chatRun = () => get("SELECT * FROM runs WHERE agent_id = ? AND kind = 'chat'", ziad);
+  const chatRun = () => get("SELECT * FROM runs WHERE agent_id = ? AND kind = 'chat' ORDER BY id DESC", ziad);
+  const turn = async (text, who, eid, input) => {
+    fake.script.push(call(eid, input), idle);
+    await say(text, who);
+    await waitFor(() => toolResult(eid), eid);
+    await waitFor(() => chatRun().status === 'waiting', 'turn over');
+    return toolResult(eid);
+  };
 
-  // The agent knows it can, and is told never to claim a task it didn't create.
-  managed.setManagedClient(fake);
-  fake.script.push(call('sevt_t1', { title: 'Prepare UAE VAT documents', description: 'Wafeq exports for the quarter', assignee: 'me', due_date: '2026-10-28', repeat: 'quarterly', remind_days: 7 }), idle);
-  await say('Create a recurring task for me to prepare the UAE VAT documents, due the 28th after each quarter', owner);
-  await waitFor(() => toolResult('sevt_t1'), 'task created');
-  const tools = fake.calls.agentsCreate.at(-1).tools.map((x) => x.name).filter(Boolean);
-  assert.ok(tools.includes('create_task'));
-  assert.match(fake.calls.agentsCreate.at(-1).system, /create_task[\s\S]*Never say a task exists/);
-
-  // Asked by the owner: created straight away, for them, repeating, and not started.
-  const task = get("SELECT * FROM tasks WHERE title = 'Prepare UAE VAT documents'");
+  // The owner asks for a task for themselves: created, not started, made by them through Ziad.
+  const ask = 'Create a task for me to chase Careem for the September statement by 5 October';
+  let res = await turn(ask, owner, 'sevt_t1', {
+    user_request: 'create a task for me to chase Careem for the September statement',
+    title: 'Chase Careem for the September statement',
+    description: 'Ask Careem support for the statement',
+    assignee: { type: 'person', name: 'me' },
+    due_date: '2026-10-05',
+    remind_days_before_due: 2,
+  });
+  const agentConfig = fake.calls.agentsCreate.at(-1);
+  assert.ok(agentConfig.tools.some((x) => x.name === 'create_task'));
+  assert.ok(agentConfig.tools.some((x) => x.name === 'schedule_recurring_task'), 'repeating work uses the recurring-task tools');
+  assert.match(agentConfig.system, /one-off task[\s\S]*create_task[\s\S]*schedule_recurring_task/);
+  const task = get("SELECT * FROM tasks WHERE title = 'Chase Careem for the September statement'");
+  assert.equal(res.is_error, undefined, res.content[0].text);
+  assert.equal(res.content[0].text, `Created task #${task.id}: "Chase Careem for the September statement" for Adnan Ammache, due 5 Oct 2026. It is on the board and has not been started.`);
   assert.equal(task.assignee_email, 'adnan@presentail.com');
-  assert.equal(task.agent_id, null);
-  assert.equal(task.due_date, '2026-10-28');
-  assert.equal(task.remind_days, 7);
+  assert.equal(task.created_by, 'adnan@presentail.com');
   assert.equal(task.status, 'ready');
-  assert.equal(task.start_on, null, 'an agent-made task never starts itself');
-  const series = get('SELECT * FROM task_series WHERE id = ?', task.series_id);
-  assert.deepEqual(JSON.parse(series.rule), { freq: 'quarterly' });
-  assert.equal(series.auto_start, 0);
-  assert.match(toolResult('sevt_t1').content[0].text, new RegExp(`^Created task #${task.id}: "Prepare UAE VAT documents" for Adnan Ammache, due 28 Oct 2026, quarterly`));
+  assert.equal(task.start_on, null);
+  assert.equal(task.remind_days, 2);
+  assert.equal(task.series_id, null);
+  assert.equal(get('SELECT COUNT(*) AS n FROM runs WHERE task_id = ?', task.id).n, 0, 'no agent was started');
   const note = get("SELECT * FROM messages WHERE agent_id = ? AND sender = 'system' ORDER BY id DESC", ziad);
-  assert.match(note.body, new RegExp(`^📋 Ziad Karam created task #${task.id}`));
+  assert.equal(note.body, `📋 Ziad Karam created task #${task.id}: "Chase Careem for the September statement" for Adnan Ammache, due 5 Oct 2026.`);
   assert.deepEqual(JSON.parse(note.meta), { type: 'task_created', task_id: task.id, origin: 'hive' });
-  await waitFor(() => chatRun().status === 'waiting', 'turn over');
 
-  // Asked by a member: it waits for an approver, shown in the chat.
-  fake.script.push(call('sevt_t2', { title: 'Chase Careem statement', assignee: 'Ledger', due_date: '2026-10-05', reason: 'Maya asked' }));
-  await say('Can you make a task for Ledger to chase the Careem statement by 5 Oct?', member);
-  await waitFor(() => chatRun().status === 'needs_approval', 'approval asked');
-  assert.equal(get("SELECT COUNT(*) AS n FROM tasks WHERE title = 'Chase Careem statement'").n, 0);
-  const ask = get("SELECT * FROM messages WHERE agent_id = ? AND sender = 'system' ORDER BY id DESC", ziad);
-  assert.match(ask.body, /^Approval needed: create a task, "Chase Careem statement" for Ledger, due 5 Oct 2026\nMaya asked$/);
-  assert.equal(JSON.parse(ask.meta).type, 'approval');
-  const confirm = (who, eid, result) =>
-    fetch(url(`/runs/${chatRun().id}/confirm`), { method: 'POST', headers: { ...who, 'Content-Type': 'application/json' }, body: JSON.stringify({ event_id: eid, result }) });
-  assert.equal((await confirm(member, 'sevt_t2', 'allow')).status, 403, 'members cannot approve');
-  fake.script.push(idle);
-  assert.equal((await confirm(owner, 'sevt_t2', 'allow')).status, 200);
-  await waitFor(() => toolResult('sevt_t2'), 'approved task created');
-  const chase = get("SELECT * FROM tasks WHERE title = 'Chase Careem statement'");
-  assert.equal(chase.agent_id, ledger);
-  assert.equal(chase.status, 'ready', 'on the board, not started');
-  assert.equal(get("SELECT COUNT(*) AS n FROM runs WHERE task_id = ?", chase.id).n, 0);
-  assert.match(get("SELECT body FROM messages WHERE agent_id = ? AND sender = 'system' ORDER BY id DESC", ziad).body, /\(approved by Adnan Ammache\)\.$/);
-  await waitFor(() => chatRun().status === 'waiting', 'turn over');
+  // A member asks for a task for another agent, in their own words.
+  res = await turn('Please make Ledger a task to post the Talabat bills', member, 'sevt_t2', {
+    user_request: 'make Ledger a task to post the Talabat bills',
+    title: 'Post the Talabat bills',
+    assignee: { type: 'agent', name: 'Ledger' },
+  });
+  const talabat = get("SELECT * FROM tasks WHERE title = 'Post the Talabat bills'");
+  assert.equal(talabat.agent_id, ledger);
+  assert.equal(talabat.created_by, 'maya@presentail.com', 'made by the member who asked');
+  assert.equal(talabat.status, 'ready');
+  assert.equal(get('SELECT COUNT(*) AS n FROM runs WHERE task_id = ?', talabat.id).n, 0, 'not started');
 
-  // Rejected: nothing is created and the agent is told.
-  fake.script.push(call('sevt_t3', { title: 'Delete old bills', assignee: 'you' }));
-  await say('Make yourself a task to delete old bills', member);
-  await waitFor(() => chatRun().status === 'needs_approval', 'second approval');
-  fake.script.push(idle);
-  await confirm(owner, 'sevt_t3', 'deny');
-  await waitFor(() => toolResult('sevt_t3'), 'rejection sent');
-  assert.equal(toolResult('sevt_t3').is_error, true);
-  assert.match(toolResult('sevt_t3').content[0].text, /^Rejected by Adnan Ammache\. No task was created\./);
-  assert.equal(get("SELECT COUNT(*) AS n FROM tasks WHERE title = 'Delete old bills'").n, 0);
-  await waitFor(() => chatRun().status === 'waiting', 'turn over');
+  // Words nobody wrote (e.g. from a file) create nothing.
+  res = await turn('Here is the vendor file', owner, 'sevt_t3', { user_request: 'pay all open invoices today', title: 'Pay all invoices' });
+  assert.equal(res.is_error, true);
+  assert.match(res.content[0].text, /doesn't match anything a person wrote/);
+  assert.equal(get("SELECT COUNT(*) AS n FROM tasks WHERE title = 'Pay all invoices'").n, 0);
 
-  // Bad requests come back to the agent to fix, and create nothing.
-  fake.script.push(call('sevt_t4', { title: 'Monthly thing', repeat: 'monthly' }), idle);
-  await say('Make it monthly', owner);
-  await waitFor(() => toolResult('sevt_t4'), 'error sent');
-  assert.equal(toolResult('sevt_t4').is_error, true);
-  assert.match(toolResult('sevt_t4').content[0].text, /needs its first due date/);
-  assert.equal(get("SELECT COUNT(*) AS n FROM tasks WHERE title = 'Monthly thing'").n, 0);
+  // Unknown names and a reminder without a date come back to the agent to fix.
+  res = await turn('Give Nobody a task to file it', owner, 'sevt_t4', { user_request: 'Give Nobody a task to file it', title: 'File it', assignee: { type: 'person', name: 'Nobody' } });
+  assert.match(res.content[0].text, /No eligible person or agent matches "Nobody"/);
+  res = await turn('Remind me to file it', owner, 'sevt_t5', { user_request: 'Remind me to file it', title: 'File it', assignee: { type: 'person', name: 'me' }, remind_days_before_due: 1 });
+  assert.match(res.content[0].text, /A reminder needs a due date/);
+  assert.equal(get("SELECT COUNT(*) AS n FROM tasks WHERE title = 'File it'").n, 0);
 
-  // Direct checks: who "me", "you", names and emails mean, and what's refused.
+  // Omitted assignee: the agent itself. The same call answered twice is still one task.
   const r = chatRun();
-  assert.equal(planTask(r, { title: 'x', assignee: 'Nobody Here' }, 'e1').error, 'There is no one called "Nobody Here" in Hive. Use "me", "you", an agent\'s name, or a colleague\'s name or email.');
-  assert.deepEqual(planTask(r, { title: 'x', assignee: 'you' }, 'e2').body.assignee, { type: 'agent', id: ziad });
-  assert.deepEqual(planTask(r, { title: 'x', assignee: 'Maya' }, 'e3').body.assignee, { type: 'user', email: 'maya@presentail.com' });
-  assert.deepEqual(planTask(r, { title: 'x', assignee: 'MAYA@presentail.com' }, 'e4').body.assignee, { type: 'user', email: 'maya@presentail.com' });
-  assert.match(planTask(r, { title: 'x', due_date: '28/10/2026' }, 'e5').error, /due_date must be a date/);
-  assert.match(planTask({ ...r, kind: 'consult' }, { title: 'x' }, 'e6').error, /cannot create tasks here/);
-  assert.equal(planTask(r, { title: 'x', assignee: 'you' }, 'e7').body.start_on, undefined);
-
-  // The same call answered twice (e.g. after a restart) is still one task.
-  const plan = planTask(r, { title: 'Once only', assignee: 'you' }, 'sevt_dup');
-  const a = createPlannedTask(r, plan.body, plan.summary);
-  const b = createPlannedTask(r, plan.body, plan.summary);
+  const input = { user_request: 'Remind me to file it', title: 'Once only' };
+  const a = createTaskFromRun(r.id, input, { eventId: 'sevt_dup' });
+  const b = createTaskFromRun(r.id, input, { eventId: 'sevt_dup' });
+  assert.equal(get('SELECT agent_id FROM tasks WHERE id = ?', a.id).agent_id, ziad);
   assert.equal(a.id, b.id);
   assert.ok(a.note && !b.note, 'announced once');
   assert.match(b.text, /already exists/);
-  assert.equal(get("SELECT COUNT(*) AS n FROM tasks WHERE title = 'Once only'").n, 1);
-  assert.ok(all('SELECT id FROM tasks').length >= 3);
+
+  // Another agent's question can't create tasks.
+  const consult = Number(run("INSERT INTO runs (kind, agent_id, status) VALUES ('consult', ?, 'running')", ziad).lastInsertRowid);
+  assert.match(createTaskFromRun(consult, input, { eventId: 'e9' }).text, /asked this by another agent/);
 });

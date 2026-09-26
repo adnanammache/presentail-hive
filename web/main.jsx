@@ -18,6 +18,7 @@ import Inbox from './pages/Inbox.jsx';
 import OrgChart from './pages/OrgChart.jsx';
 import Settings from './pages/Settings.jsx';
 import HiveMap from './pages/HiveMap.jsx';
+import { RecurringDetails } from './components/Recurring.jsx';
 import './styles.css';
 
 function useHashRoute() {
@@ -42,7 +43,7 @@ const NAV = [
 ];
 const MORE = [
   ['close', 'check', 'Month-end'],
-  ['workflows', 'repeat', 'Workflows'],
+  ['workflows', 'repeat', 'Recurring'],
   ['map', 'hex', 'Hive map'],
   ['org', 'org', 'Org chart'],
   ['settings', 'key', 'Settings'],
@@ -227,7 +228,7 @@ function Shell() {
 }
 
 function Photos({ children }) {
-  const { data: agents } = useApi('/agents', ['agent']);
+  const { data: agents, reload } = useApi('/agents', ['agent']);
   const value = useMemo(() => {
     const byId = new Map();
     const byName = new Map();
@@ -235,21 +236,31 @@ function Photos({ children }) {
       const url = photoUrl(a);
       if (url) byId.set(a.id, url), byName.set(a.name, url);
     }
-    return { byId, byName };
-  }, [agents]);
+    return { byId, byName, reload };
+  }, [agents, reload]);
   return <PhotosContext.Provider value={value}>{children}</PhotosContext.Provider>;
 }
 
-/** The composer and the task panel live above every page. #/tasks/42 opens task 42. */
+/**
+ * The composer, the task panel and a recurring task's details live above every page.
+ * #/tasks/42 opens task 42; #/workflows/7 opens recurring task 7 (the link agents give people).
+ */
 function TaskUI({ children }) {
   const [section, id] = useHashRoute();
   const { data: me } = useApi('/me');
   const [request, setRequest] = useState(null);
   const [panelId, setPanelId] = useState(null);
+  const [scheduleId, setScheduleId] = useState(null);
   const [toast, setToast] = useState(null);
   useEffect(() => {
     if (section === 'tasks' && id) setPanelId(Number(id));
+    if (section === 'workflows' && id) setScheduleId(Number(id));
   }, [section, id]);
+  const openSchedule = useCallback((sid) => setScheduleId(Number(sid)), []);
+  const closeSchedule = useCallback(() => {
+    setScheduleId(null);
+    if (location.hash.match(/^#\/workflows\/\d+/)) history.replaceState(null, '', '#/workflows');
+  }, []);
   const openComposer = useCallback(
     (defaults = {}) => setRequest({ nonce: Date.now(), defaults: { ...defaults, assignee: defaults.assignee === 'me' ? (me?.email ? `user:${me.email}` : null) : defaults.assignee } }),
     [me?.email],
@@ -275,11 +286,12 @@ function TaskUI({ children }) {
     const t = setTimeout(() => setToast(null), 7000);
     return () => clearTimeout(t);
   }, [toast]);
-  const value = useMemo(() => ({ openComposer, openTask }), [openComposer, openTask]);
+  const value = useMemo(() => ({ openComposer, openTask, openSchedule }), [openComposer, openTask, openSchedule]);
   return (
     <TaskUIContext.Provider value={value}>
       {children}
       {panelId && <TaskPanel taskId={panelId} onClose={closeTask} me={me} />}
+      {scheduleId && !panelId && <RecurringDetails id={scheduleId} onClose={closeSchedule} />}
       <Composer request={request} onCreated={created} />
       {toast && (
         <div className={`toast tone-${toast.tone}`} role="status">

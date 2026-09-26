@@ -181,7 +181,7 @@ export async function handleSlackMessage(event) {
   }
 
   const ts = event.thread_ts || event.ts;
-  const via = { via: 'slack', channel, thread_ts: ts, user: person.name, email: person.email };
+  const via = { via: 'slack', channel, thread_ts: ts, user: person.name, email: person.email, by: String(person.email).toLowerCase() };
   const files = (event.files ?? []).filter((f) => f.mode !== 'tombstone');
 
   // A reply in a task's thread continues that task.

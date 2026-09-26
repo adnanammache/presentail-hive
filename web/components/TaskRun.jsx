@@ -201,22 +201,6 @@ export default function TaskRun({ task, agentName, hideFiles }) {
                   </button>
                 </div>
               </div>
-            ) : p.kind === 'task' ? (
-              <div key={p.event_id} className="approval">
-                <div className="small strong">{agentName} wants to create a task</div>
-                <div className="small">{p.detail}</div>
-                {p.reason && <div className="small muted">{p.reason}</div>}
-                {p.preview && <pre className="code approval-preview">{p.preview}</pre>}
-                <div className="small muted">It goes on the board without starting any work.</div>
-                <div className="approval-actions">
-                  <button type="button" className="btn btn-sm btn-danger-ghost" onClick={() => confirm(p.event_id, false)}>
-                    Reject
-                  </button>
-                  <button type="button" className="btn btn-sm btn-primary" onClick={() => confirm(p.event_id, true)}>
-                    <Icon name="check" size={13} /> Create task
-                  </button>
-                </div>
-              </div>
             ) : p.kind === 'odoo' ? (
               <div key={p.event_id} className="approval odoo">
                 <div className="small strong">{agentName} wants to change Odoo</div>

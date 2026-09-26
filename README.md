@@ -7,7 +7,7 @@ Presentail's hive of AI agents: see every agent, what it's working on, what's sc
 - **Agents**: one place for all your agents: Claude agents, Make scenarios, Replit apps, n8n flows, your own scripts, even people.
 - **People and teams**: profiles with photos, a Team & agents directory where teams hold people and AI agents together (with team leads), invitations, and access you can turn off without losing history.
 - **Tasks for people and agents**: My tasks, All tasks and Projects share one Board/List (Backlog → Ready → In progress → Needs review → Done), with blockers kept separate from the stage. A task has one assignee, a person or an AI agent; assigning never starts an agent (Create & start does). New tasks are written in a bottom-right composer that keeps your draft.
-- **Recurring workflows**: cron schedules with timezones (e.g. "Talabat month-end, 2nd of every month 09:00 Dubai"). Each run creates a task for the agent, sends it the instructions and records the run history.
+- **Recurring tasks**: schedules (daily, selected weekdays, every n weeks, monthly incl. last day, quarterly, yearly, chosen months) in each schedule's own time zone. Each occurrence creates a normal task for a person or an agent, with its own reporting period and due date, and starts the agent if asked. Agents set these up themselves from a chat ("Every Monday at 9 AM Dubai time, check outstanding supplier invoices"). See DEPLOY.md → Recurring tasks.
 - **Inbox / chat**: a conversation thread with every agent. Claude agents reply live. Webhook agents can reply synchronously or later through the API.
 - **Odoo, safely**: agents read Odoo freely. Every create/write/post/reconcile waits for Approve in Hive (or *Approve all for this run*), configuration is off-limits, and every change is logged with who approved it. Hive holds the key (`ODOO_API_KEY`).
 - **Org chart**: Presentail's teams and agents as a tree, with status, open tasks and AI spend per agent.
@@ -90,6 +90,7 @@ All endpoints take `Authorization: Bearer <agent token>`.
 | `GET /api/agent/messages?since_id=0` | New messages in its thread |
 | `POST /api/agent/messages` | `{ "body": "…" }` posts into the chat |
 | `PATCH /api/agent/runs/:id` | `{ "status": "success" \| "failed", "output": "…" }` |
+| `POST /api/agent/recurring/:tool` | Recurring-task tools (`GET /api/agent/recurring/tools` lists them). Pass `message_id` or `task_id` for changes; see DEPLOY.md → Recurring tasks. |
 
 ## Project layout
 
@@ -97,11 +98,14 @@ All endpoints take `Authorization: Bearer <agent token>`.
 server/            Express API + scheduler (plain ESM JavaScript)
   app.js           dashboard API and Agent API routes
   dispatch.js      delivery to agents (Claude API / webhook / queue)
-  scheduler.js     cron jobs for recurring workflows (croner)
+  scheduler.js     starts the durable schedule ticker; finishes workflow runs
+  recurring.js     recurrence rules, time zones, reporting periods, deadlines (croner)
+  schedules.js     recurring tasks: permissions, occurrences, delivery, retries
+  scheduleTools.js the recurring-task tools managed agents get
   db.js            SQLite schema (node:sqlite)
   seed.js          sample data
   api.test.js      API tests: npm test
 web/               React UI (Vite)
-  pages/           Dashboard, AllTasks (All / My tasks), Projects, Project, Agents (Team & agents), AgentDetail, Workflows, Inbox
+  pages/           Dashboard, AllTasks (All / My tasks), Projects, Project, Agents (Team & agents), AgentDetail, Workflows (Recurring), Inbox
   components/      forms, chat, UI primitives
 ```

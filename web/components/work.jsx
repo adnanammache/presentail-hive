@@ -20,7 +20,7 @@ export const BLOCKERS = {
 export const PRIORITY_LABELS = { urgent: 'Urgent', high: 'High', medium: 'Medium', low: 'Low' };
 
 /** Opens the composer and the task panel from anywhere. */
-export const TaskUIContext = createContext({ openComposer: () => {}, openTask: () => {} });
+export const TaskUIContext = createContext({ openComposer: () => {}, openTask: () => {}, openSchedule: () => {} });
 export const useTaskUI = () => useContext(TaskUIContext);
 
 /** A per-browser preference (view mode, filters), safe when storage is unavailable. */

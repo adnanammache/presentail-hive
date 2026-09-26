@@ -70,10 +70,10 @@ export default function Dashboard() {
         <section className="card">
           <header className="card-head">
             <h2>Coming up</h2>
-            <a href="#/workflows" className="link">Workflows →</a>
+            <a href="#/workflows" className="link">Recurring →</a>
           </header>
           {data.upcoming.length === 0 ? (
-            <Empty title="No scheduled workflows" />
+            <Empty title="Nothing recurring is scheduled" />
           ) : (
             <ul className="list">
               {data.upcoming.map((w) => (

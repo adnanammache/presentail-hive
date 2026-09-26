@@ -81,7 +81,7 @@ export const LESSON_TOOL = {
 };
 
 /** Who taught the agent in this run: whoever last wrote in the chat, or whoever created the task. */
-export function teacherOf(r) {
+function teacherOf(r) {
   let email = null;
   if (r.kind === 'chat') {
     const m = get(

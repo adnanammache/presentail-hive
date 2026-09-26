@@ -18,7 +18,7 @@ import { notifyRun, settleApprovalAlert } from './notify.js';
 import { TASK_TOOL, finishTask } from './handoff.js';
 import { AGENT_DM_TOOL, askAgent } from './conversations.js';
 import { LESSON_TOOL, learnFromRun, lessonsBlock } from './lessons.js';
-import { CREATE_TASK_TOOL, createPlannedTask, planTask } from './agentTasks.js';
+import { CREATE_TASK_TOOL, createTaskFromRun } from './agentTasks.js';
 import { CHAT_DIR } from './chatFiles.js';
 import { briefExtras, readyStatus } from './taskSchedule.js';
 import { clearBlocker, setBlocker } from './tasks.js';
@@ -28,6 +28,7 @@ import { baseUrl } from './notify.js';
 import { checkBudget, checkThresholds } from './budget.js';
 import { recordHealth } from './health.js';
 import { odooTool, checkAgentCall, classify, describeCall, formatResult, odooCall } from './odoo.js';
+import { SCHEDULE_GUIDE, SCHEDULE_TOOLS, SCHEDULE_TOOL_NAMES, handleScheduleTool } from './scheduleTools.js';
 
 const DEFAULT_MODEL = process.env.DEFAULT_CLAUDE_MODEL || 'claude-opus-5';
 const ENV_NAME = process.env.HIVE_ENVIRONMENT_NAME || (process.env.NODE_ENV === 'production' ? 'presentail-hive' : 'presentail-hive-dev');
@@ -174,10 +175,12 @@ export function composeSystem(agent) {
       ? '- You are trusted to post without asking. Once your checks pass (a dry run, totals, duplicates), write to live systems (bills, invoices, payments, journal entries) straight away: do not stop for a go-ahead, even where a skill says to wait after the dry run. The one exception is a task that itself says it needs approval: then stop and ask as it describes. Otherwise stop only when something is genuinely wrong or missing.'
       : '- Before writing to any live system (bills, invoices, payments, journal entries, emails), do a dry run, show a short summary (counts, totals, anything unusual) and stop to ask for an explicit go-ahead. Only write after the user approves in this conversation.',
     '- When the user tells you something lasting about your work (a deadline, a rule, which account to use, how they want things done), save it with `save_lesson` so you remember it next time, and say that you did.',
-    '- When the user asks you to create, schedule or set up a task (one-off or repeating, for them, you or a colleague), create it with `create_task`. Never say a task exists unless `create_task` confirmed it.',
+    '- When a person asks you for a one-off task, reminder or to-do (for them, you or a colleague), create it with `create_task`, quoting their words in `user_request`. For anything that repeats, use `schedule_recurring_task`. Never say a task exists unless the tool confirmed it.',
     '- Save files meant for the user in /mnt/session/outputs/.',
     '- End every turn with a brief summary: what you did, key totals, what is left, and exactly what you need from the user.',
     '- If something is missing (a file, access, a decision), say precisely what and stop rather than guessing.',
+    '',
+    SCHEDULE_GUIDE,
     '',
     lessonsBlock(agent.id),
   ];
@@ -225,6 +228,7 @@ async function buildAgentConfig(agent) {
       AGENT_DM_TOOL,
       LESSON_TOOL,
       CREATE_TASK_TOOL,
+      ...SCHEDULE_TOOLS,
     ],
     metadata: { hive_agent_id: String(agent.id) },
   };
@@ -372,7 +376,7 @@ export function startTaskRun(taskId, { note } = {}) {
  * Chat with a managed agent. Each conversation has its own session: Hive's chat is one, and every
  * Slack thread is another, so people never see each other's conversations or get each other's answers.
  */
-export async function chatWithManagedAgent(agentId, text, { origin = 'hive', files = [] } = {}) {
+export async function chatWithManagedAgent(agentId, text, { origin = 'hive', files = [], by = null } = {}) {
   const agent = get('SELECT * FROM agents WHERE id = ?', agentId);
   const say = (msg) => postMessage(agentId, 'system', msg, { origin });
   let r = get("SELECT * FROM runs WHERE kind = 'chat' AND agent_id = ? AND COALESCE(origin, 'hive') = ? AND status NOT IN ('failed', 'ended') ORDER BY id DESC LIMIT 1", agentId, origin);
@@ -395,7 +399,8 @@ export async function chatWithManagedAgent(agentId, text, { origin = 'hive', fil
       const session = await createSession(agent, { title: `Chat with ${agent.name}`, runId, metadata: { hive_chat_agent_id: String(agentId) } });
       r = setRun(runId, { session_id: session.id, status: 'running' });
     }
-    run('UPDATE runs SET auto_approve = 0 WHERE id = ?', r.id);
+    // Whose message this turn answers: the person tools act for (recurring tasks), never the model's say-so.
+    run('UPDATE runs SET auto_approve = 0, requested_by = ? WHERE id = ?', by, r.id);
     // A chat that answered before is 'waiting': mark it running again, or the follower sees an
     // idle session and stops listening before the reply to this message arrives.
     if (r.status !== 'running') r = setRun(r.id, { status: 'running' });
@@ -441,7 +446,7 @@ function recap(agentId, origin, limit = 30) {
   const clip = (s) => (s.length > 1500 ? `${s.slice(0, 1500)}…` : s);
   const lines = rows.map((m) => {
     const meta = m.meta ? JSON.parse(m.meta) : {};
-    const name = meta.user ?? meta.email;
+    const name = meta.user ?? meta.by ?? meta.email;
     return `${m.sender === 'agent' ? 'You' : `User${name ? ` (${name})` : ''}`}: ${clip(m.body)}`;
   });
   return `[Hive: you have been updated, so this chat continues in a new session. The conversation so far, for context:]\n\n${lines.join('\n\n')}\n\n[New message:]\n`;
@@ -536,11 +541,6 @@ async function resolvePending(runId, resolving, allow, denyMessage, by) {
         : (clearPlan(runId), `Rejected by ${by}${denyMessage ? `: ${denyMessage}` : ''}. Nothing was sent to Wafeq and the queue was cleared.`);
       if (allow) logActivity(r.agent_id, 'task', `Wafeq batch approved by ${by}: ${p.detail}`);
       events.push({ type: 'user.custom_tool_result', custom_tool_use_id: p.event_id, content: [{ type: 'text', text }], ...(/^Stopped|^Rejected/.test(text) ? { is_error: true } : {}) });
-      continue;
-    }
-    if (p.kind === 'task') {
-      if (allow) events.push(taskCreated(r, p.event_id, createPlannedTask(r, p.body, p.detail, { by })));
-      else events.push({ type: 'user.custom_tool_result', custom_tool_use_id: p.event_id, content: [{ type: 'text', text: `Rejected by ${by}${denyMessage ? `: ${denyMessage}` : ''}. No task was created.` }], is_error: true });
       continue;
     }
     if (p.kind === 'odoo') {
@@ -648,6 +648,12 @@ async function resolveToolCalls(runId, customIds, builtinPending) {
       results.push({ type: 'user.custom_tool_result', custom_tool_use_id: id, content: [{ type: 'text', text: reply.text }], ...(reply.is_error ? { is_error: true } : {}) });
       continue;
     }
+    if (SCHEDULE_TOOL_NAMES.has(call.name)) {
+      // Answered from the run's own identity: its agent, and the person it is working for.
+      const reply = handleScheduleTool(runId, call.name, call.input ?? {}, { eventId: id });
+      results.push({ type: 'user.custom_tool_result', custom_tool_use_id: id, content: [{ type: 'text', text: reply.text }], ...(reply.is_error ? { is_error: true } : {}) });
+      continue;
+    }
     if (call.name === 'save_lesson') {
       const learned = learnFromRun(r, call.input);
       if (learned.note && r.kind === 'chat') postMessage(r.agent_id, 'system', learned.note, { origin: r.origin ?? 'hive' });
@@ -656,11 +662,8 @@ async function resolveToolCalls(runId, customIds, builtinPending) {
       continue;
     }
     if (call.name === 'create_task') {
-      const plan = planTask(r, call.input, id);
-      if (plan.error) results.push({ type: 'user.custom_tool_result', custom_tool_use_id: id, content: [{ type: 'text', text: plan.error }], is_error: true });
-      else if (plan.trusted) results.push(taskCreated(r, id, createPlannedTask(r, plan.body, plan.summary)));
-      else
-        waiting.push({ event_id: id, kind: 'task', name: 'create_task', detail: plan.summary, reason: String(call.input?.reason ?? ''), preview: plan.body.description, body: plan.body });
+      // Answered from the run's own identity, like the recurring-task tools.
+      results.push(taskCreated(r, id, createTaskFromRun(runId, call.input ?? {}, { eventId: id })));
       continue;
     }
     if (call.name === 'task_complete') {
@@ -704,16 +707,11 @@ function taskCreated(r, eventId, created) {
 function askForApproval(runId, pending) {
   const r = setRun(runId, { status: 'needs_approval', pending: JSON.stringify(pending) });
   // Still in progress, but blocked until someone approves (shown as "Waiting for approval").
-  if (r.task_id) setBlocker(r.task_id, { kind: 'approval', reason: pending.map((p) => (p.kind === 'odoo' ? `Change Odoo: ${p.detail}` : p.kind === 'wafeq' ? `Post to Wafeq: ${p.detail}` : p.kind === 'task' ? `Create a task: ${p.detail}` : `Run ${p.name}`)).join('; '), owner: 'An approver' });
+  if (r.task_id) setBlocker(r.task_id, { kind: 'approval', reason: pending.map((p) => (p.kind === 'odoo' ? `Change Odoo: ${p.detail}` : p.kind === 'wafeq' ? `Post to Wafeq: ${p.detail}` : `Run ${p.name}`)).join('; '), owner: 'An approver' });
   notifyRun(runId, 'approval', { pending });
   if (r.kind === 'chat') {
     for (const p of pending) {
-      const text =
-        p.kind === 'odoo'
-          ? `Approval needed: change Odoo, ${p.detail}${p.reason ? `\n${p.reason}` : ''}`
-          : p.kind === 'task'
-            ? `Approval needed: create a task, ${p.detail}${p.reason ? `\n${p.reason}` : ''}`
-            : `Approval needed: ${p.name}${p.detail ? `\n${p.detail}` : ''}`;
+      const text = p.kind === 'odoo' ? `Approval needed: change Odoo, ${p.detail}${p.reason ? `\n${p.reason}` : ''}` : `Approval needed: ${p.name}${p.detail ? `\n${p.detail}` : ''}`;
       postMessage(r.agent_id, 'system', text, { type: 'approval', run_id: runId, event_id: p.event_id });
     }
   }
@@ -803,6 +801,8 @@ function summarize(ev) {
       if (ev.name === 'wafeq_plan') return { name: 'wafeq_plan', detail: `${ev.input?.action ?? ''}${ev.input?.reason ? `: ${ev.input.reason}` : ''}`, kind: 'custom', input: ev.input ?? {} };
       if (ev.name === 'create_task') return { name: 'create_task', detail: String(ev.input?.title ?? '').slice(0, 300), kind: 'custom', input: ev.input ?? {} };
       if (ev.name === 'save_lesson') return { name: 'save_lesson', detail: String(ev.input?.lesson ?? '').slice(0, 600), kind: 'custom', input: ev.input ?? {} };
+      if (SCHEDULE_TOOL_NAMES.has(ev.name))
+        return { name: ev.name, detail: String(ev.input?.title ?? (ev.input?.schedule_id != null ? `#${ev.input.schedule_id}` : ev.input?.query ?? '')).slice(0, 300), kind: 'custom', input: ev.input ?? {} };
       if (ev.name === 'message_agent') return { name: 'message_agent', detail: `→ ${ev.input?.agent ?? '?'}: ${String(ev.input?.message ?? '').slice(0, 500)}`, kind: 'custom', input: ev.input ?? {} };
       return { name: ev.name, detail: ev.name === 'odoo' ? describeCall(ev.input || {}) : '', kind: ev.name === 'odoo' ? classify(ev.input?.model, ev.input?.method) : 'custom' };
     case 'user.custom_tool_result':
