@@ -19,6 +19,7 @@ import { isAllowed } from './auth.js';
 import { askClaude, dispatchTask, sendToAgent } from './dispatch.js';
 import { baseUrl, slackApi, slackConfigured } from './notify.js';
 import { REMEMBER, addLesson } from './lessons.js';
+import { ensureChat } from './chatStore.js';
 import { canApproveFor, knownUser } from './roles.js';
 
 // ---------------------------------------------------------------- directory
@@ -205,6 +206,8 @@ export async function handleSlackMessage(event) {
     const taskId = Number(
       run("INSERT INTO tasks (title, description, status, priority, agent_id) VALUES (?, ?, 'ready', 'medium', ?)", firstLine, `${rest}\n\n(Sent by ${person.name} in Slack.)`.trim(), agent.id).lastInsertRowid,
     );
+    // The task belongs to this thread's conversation, so Hive shows it as that conversation's task.
+    run('UPDATE tasks SET source_chat_id = ? WHERE id = ?', ensureChat(agent.id, `slack:${channel}:${ts}`, { createdBy: person.email ?? null, title: firstLine }).id, taskId);
     const names = [];
     for (const f of files) {
       try {

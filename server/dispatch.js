@@ -8,7 +8,8 @@
 import { lessonsBlock } from './lessons.js';
 import Anthropic from '@anthropic-ai/sdk';
 import { all, get, run } from './db.js';
-import { emit } from './events.js';
+import { broadcast, emit, emitLocal } from './events.js';
+import { ensureChat, titleFrom } from './chatStore.js';
 import { logActivity } from './activity.js';
 import { chatWithManagedAgent, startTaskRun } from './managed.js';
 import { briefExtras, readyStatus, setDispatcher } from './taskSchedule.js';
@@ -26,11 +27,19 @@ function claude() {
 }
 export const claudeConfigured = () => Boolean(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN);
 
+/**
+ * Store a message in its conversation (meta.origin; the old shared thread when there's none). Open
+ * dashboards are told only ids: the conversation may be private, so they fetch it if they may.
+ */
 export function postMessage(agentId, sender, body, meta = null) {
-  const { lastInsertRowid } = run('INSERT INTO messages (agent_id, sender, body, meta) VALUES (?, ?, ?, ?)', agentId, sender, body, meta ? JSON.stringify(meta) : null);
+  const chat = ensureChat(agentId, meta?.origin ?? 'hive', { createdBy: sender === 'user' ? meta?.email ?? null : null, title: sender === 'user' ? titleFrom(body) : '' });
+  const { lastInsertRowid } = run('INSERT INTO messages (agent_id, sender, body, meta, chat_id) VALUES (?, ?, ?, ?, ?)', agentId, sender, body, meta ? JSON.stringify(meta) : null, chat.id);
   const message = get('SELECT * FROM messages WHERE id = ?', lastInsertRowid);
+  run('UPDATE chats SET last_message_at = ? WHERE id = ?', message.created_at, chat.id);
+  if (sender === 'user' && !chat.title) run('UPDATE chats SET title = ? WHERE id = ?', titleFrom(body), chat.id);
   if (sender === 'agent') run("UPDATE agents SET last_seen_at = datetime('now') WHERE id = ?", agentId);
-  emit('message', { agent_id: agentId, message });
+  broadcast('message', { agent_id: agentId, chat_id: chat.id, message_id: message.id, sender });
+  emitLocal('message', { agent_id: agentId, message });
   return message;
 }
 
@@ -56,8 +65,9 @@ export async function askClaude(agent, messages) {
 }
 
 /** Convert a thread into alternating user/assistant turns for the Messages API. */
-function threadToMessages(agentId, limit = 40) {
-  const rows = all('SELECT * FROM (SELECT * FROM messages WHERE agent_id = ? ORDER BY id DESC LIMIT ?) ORDER BY id', agentId, limit);
+function threadToMessages(agentId, chatId, limit = 40) {
+  const chat = chatId ?? ensureChat(agentId, 'hive').id;
+  const rows = all('SELECT * FROM (SELECT * FROM messages WHERE agent_id = ? AND chat_id = ? ORDER BY id DESC LIMIT ?) ORDER BY id', agentId, chat, limit);
   const out = [];
   for (const m of rows) {
     const role = m.sender === 'agent' ? 'assistant' : 'user';
@@ -109,7 +119,7 @@ export async function deliver(agent, payload) {
     let reply = null;
     if (agent.platform === 'claude' && claudeConfigured()) {
       setAgentStatus(agent, 'active');
-      reply = await askClaude(agent, threadToMessages(agent.id));
+      reply = await askClaude(agent, threadToMessages(agent.id, payload.message?.chat_id));
       setAgentStatus(agent, 'idle');
     } else if (agent.webhook_url) {
       reply = await callWebhook(agent, payload);
@@ -132,8 +142,8 @@ export async function deliver(agent, payload) {
  */
 export async function sendToAgent(agentId, body, meta = null, { files = [], agentText = body } = {}) {
   const agent = get('SELECT * FROM agents WHERE id = ?', agentId);
-  // Where the conversation lives, so the answer goes back there (a Slack thread, or Hive).
-  const origin = meta?.via === 'slack' ? `slack:${meta.channel}:${meta.thread_ts}` : 'hive';
+  // Where the conversation lives, so the answer goes back there (a Slack thread, a Hive conversation).
+  const origin = meta?.origin ?? (meta?.via === 'slack' ? `slack:${meta.channel}:${meta.thread_ts}` : 'hive');
   const message = postMessage(agentId, 'user', body, { ...(meta ?? {}), origin, ...(files.length ? { files: files.map(publicFile) } : {}) });
   linkFiles(files, message.id);
   // Fire and forget: the UI updates over SSE when the reply lands.

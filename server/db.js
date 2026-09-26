@@ -685,3 +685,65 @@ CREATE TABLE IF NOT EXISTS invitations (
 );
 CREATE INDEX IF NOT EXISTS idx_invitations_email ON invitations(email, status);
 `);
+
+// ---------------------------------------------------------------- conversations with agents
+// A conversation (chat) is one thread with one agent. Its origin is where replies go: "chat:<id>" for
+// conversations started in Hive, "slack:<channel>:<ts>" for a Slack thread, "hive" for the single
+// thread every agent had before conversations existed. Each managed chat run is keyed by origin, so
+// every conversation has its own Claude session.
+//   visibility: private (whoever started it, plus workspace owners) | shared (everyone who can see
+//   the agent). Threads from before conversations existed were visible to everyone, so they stay shared.
+db.exec(`
+CREATE TABLE IF NOT EXISTS chats (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  agent_id        INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  origin          TEXT NOT NULL,
+  title           TEXT NOT NULL DEFAULT '',
+  visibility      TEXT NOT NULL DEFAULT 'private',
+  created_by      TEXT,
+  created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  last_message_at TEXT,
+  UNIQUE (agent_id, origin)
+);
+`);
+addColumn('messages', 'chat_id', 'INTEGER REFERENCES chats(id) ON DELETE CASCADE');
+addColumn('tasks', 'source_chat_id', 'INTEGER REFERENCES chats(id) ON DELETE SET NULL'); // the conversation a task was created from
+addColumn('tasks', 'source_message_id', 'INTEGER REFERENCES messages(id) ON DELETE SET NULL');
+addColumn('agent_lessons', 'title', "TEXT NOT NULL DEFAULT ''");
+addColumn('agent_lessons', 'chat_id', 'INTEGER REFERENCES chats(id) ON DELETE SET NULL');
+addColumn('agent_lessons', 'message_id', 'INTEGER REFERENCES messages(id) ON DELETE SET NULL');
+db.exec(`
+CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_id, id);
+CREATE INDEX IF NOT EXISTS idx_tasks_source_chat ON tasks(source_chat_id);
+`);
+
+/** Give every message from before conversations a conversation (idempotent: only rows without one). */
+export function migrateChats() {
+  const groups = db
+    .prepare(`SELECT agent_id, COALESCE(json_extract(meta, '$.origin'), 'hive') AS origin, MIN(id) AS first_id, MAX(created_at) AS last_at
+              FROM messages WHERE chat_id IS NULL GROUP BY agent_id, origin`)
+    .all();
+  if (!groups.length) return;
+  db.exec('BEGIN');
+  for (const g of groups) {
+    const firstUser = db
+      .prepare(`SELECT body, meta FROM messages WHERE agent_id = ? AND sender = 'user' AND COALESCE(json_extract(meta, '$.origin'), 'hive') = ? ORDER BY id LIMIT 1`)
+      .get(g.agent_id, g.origin);
+    const firstLine = String(firstUser?.body ?? '').split('\n')[0].trim();
+    const title = (firstLine ? (firstLine.length > 60 ? `${firstLine.slice(0, 57)}…` : firstLine) : 'Earlier conversation').replace(/^/, g.origin.startsWith('slack:') ? 'Slack: ' : '');
+    let createdBy = null;
+    try {
+      createdBy = firstUser?.meta ? JSON.parse(firstUser.meta).email ?? null : null;
+    } catch {
+      /* old rows */
+    }
+    db.prepare(
+      `INSERT INTO chats (agent_id, origin, title, visibility, created_by, created_at, last_message_at) VALUES (?, ?, ?, 'shared', ?, (SELECT created_at FROM messages WHERE id = ?), ?)
+       ON CONFLICT(agent_id, origin) DO UPDATE SET last_message_at = MAX(COALESCE(chats.last_message_at, ''), excluded.last_message_at)`,
+    ).run(g.agent_id, g.origin, title, createdBy, g.first_id, g.last_at);
+    const chat = db.prepare('SELECT id FROM chats WHERE agent_id = ? AND origin = ?').get(g.agent_id, g.origin);
+    db.prepare(`UPDATE messages SET chat_id = ? WHERE agent_id = ? AND chat_id IS NULL AND COALESCE(json_extract(meta, '$.origin'), 'hive') = ?`).run(chat.id, g.agent_id, g.origin);
+  }
+  db.exec('COMMIT');
+}
+migrateChats();

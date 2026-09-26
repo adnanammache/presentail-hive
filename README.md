@@ -8,7 +8,7 @@ Presentail's hive of AI agents: see every agent, what it's working on, what's sc
 - **People and teams**: profiles with photos, a Team & agents directory where teams hold people and AI agents together (with team leads), invitations, and access you can turn off without losing history.
 - **Tasks for people and agents**: My tasks, All tasks and Projects share one Board/List (Backlog → Ready → In progress → Needs review → Done), with blockers kept separate from the stage. A task has one assignee, a person or an AI agent; assigning never starts an agent (Create & start does). New tasks are written in a bottom-right composer that keeps your draft.
 - **Recurring workflows**: cron schedules with timezones (e.g. "Talabat month-end, 2nd of every month 09:00 Dubai"). Each run creates a task for the agent, sends it the instructions and records the run history.
-- **Inbox / chat**: a conversation thread with every agent. Claude agents reply live. Webhook agents can reply synchronously or later through the API.
+- **Agent workspace / Inbox**: conversations with every agent (start as many as you like; each is private to whoever started it, plus workspace owners, unless shared). Replies render as Markdown, the agent's tool activity shows as it works, and a Work overview beside the chat lists the conversation's task, what's coming up and recent files. Claude agents reply live. Webhook agents can reply synchronously or later through the API.
 - **Odoo, safely**: agents read Odoo freely. Every create/write/post/reconcile waits for Approve in Hive (or *Approve all for this run*), configuration is off-limits, and every change is logged with who approved it. Hive holds the key (`ODOO_API_KEY`).
 - **Org chart**: Presentail's teams and agents as a tree, with status, open tasks and AI spend per agent.
 - **AI spend**: month-to-date cost of agent runs, daily for 30 days, by team and by agent. It appears on the dashboard, team headers and agent cards.
@@ -88,7 +88,7 @@ All endpoints take `Authorization: Bearer <agent token>`.
 | `POST /api/agent/tasks` | Create a task (for itself, or for another agent via `agent_id`) |
 | `PATCH /api/agent/tasks/:id` | `{ "status": "done", "result": "…" }`. Finishing a workflow's task marks that run as successful; `blocked` marks it failed. |
 | `GET /api/agent/messages?since_id=0` | New messages in its thread |
-| `POST /api/agent/messages` | `{ "body": "…" }` posts into the chat |
+| `POST /api/agent/messages` | `{ "body": "…", "chat_id": 3 }` replies in a conversation (every message you read carries its `chat_id`; without it, the conversation where someone last wrote to you) |
 | `PATCH /api/agent/runs/:id` | `{ "status": "success" \| "failed", "output": "…" }` |
 
 ## Project layout

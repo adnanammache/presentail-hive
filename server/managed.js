@@ -382,6 +382,7 @@ export async function chatWithManagedAgent(agentId, text, { origin = 'hive', fil
   try {
     if (!r) {
       const runId = Number(run("INSERT INTO runs (kind, agent_id, status, origin) VALUES ('chat', ?, 'starting', ?)", agentId, origin).lastInsertRowid);
+      r = getRun(runId); // so a failure below marks this run failed, not left "starting" (shown as working)
       const session = await createSession(agent, { title: `Chat with ${agent.name}`, runId, metadata: { hive_chat_agent_id: String(agentId) } });
       r = setRun(runId, { session_id: session.id, status: 'running' });
     }
@@ -652,7 +653,7 @@ function askForApproval(runId, pending) {
   if (r.kind === 'chat') {
     for (const p of pending) {
       const text = p.kind === 'odoo' ? `Approval needed: change Odoo, ${p.detail}${p.reason ? `\n${p.reason}` : ''}` : `Approval needed: ${p.name}${p.detail ? `\n${p.detail}` : ''}`;
-      postMessage(r.agent_id, 'system', text, { type: 'approval', run_id: runId, event_id: p.event_id });
+      postMessage(r.agent_id, 'system', text, { type: 'approval', run_id: runId, event_id: p.event_id, origin: r.origin ?? 'hive' });
     }
   }
 }

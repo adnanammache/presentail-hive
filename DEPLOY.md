@@ -135,6 +135,12 @@ Work is shared by people and AI agents: **My tasks**, **All tasks** and **Projec
 - Task ids, descriptions, assignments, due dates, files and run history are unchanged. Tasks created before this have no recorded creator.
 - The Agent API keeps its original words for existing automations: a Ready task is reported as `todo`, a blocked one as `blocked` (with `stage` and `blocker` alongside). Agents can still set `blocked` (kept as *waiting for information*), and can report measurable progress with `progress: {done, total, label}`.
 
+### Conversations with agents (migrates automatically)
+- Each agent's single chat thread becomes a conversation titled from its first message, and each Slack thread with an agent becomes its own conversation. These existing ones stay **shared** (everyone could see them before). No message is moved, copied or rewritten; each only gets its conversation id.
+- New conversations are **private** to whoever starts them (and workspace owners) until they share them. The server checks this on every read, send, stop and file download, and live updates carry only ids, never message text.
+- Each conversation has its own Claude Managed Agents session, so a new conversation starts fresh. Lessons and instructions apply to all of them.
+- Webhook and polling agents: each message now has a `chat_id`; pass it back on `POST /api/agent/messages` to answer in the right conversation.
+
 ### Adding or changing skills
 Skills are folders in `agent-skills/<name>/` with a `SKILL.md` (plus `scripts/` and `references/`). Commit a change and redeploy. The next time an agent using that skill is synced, Hive uploads the new version automatically.
 
