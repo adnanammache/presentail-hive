@@ -588,6 +588,10 @@ export function dashboardRouter() {
   r.get('/agents/:id/messages', wrap((req) =>
     all('SELECT * FROM (SELECT * FROM messages WHERE agent_id = ? ORDER BY id DESC LIMIT 200) ORDER BY id', req.params.id),
   ));
+  // Whether the agent is still working on its Hive chat turn (managed agents), for the typing indicator.
+  r.get('/agents/:id/chat-run', wrap((req) =>
+    get("SELECT id, status FROM runs WHERE kind = 'chat' AND agent_id = ? AND COALESCE(origin, 'hive') = 'hive' ORDER BY id DESC LIMIT 1", req.params.id) ?? { id: null, status: null },
+  ));
   r.post('/agents/:id/messages', wrap(async (req) => {
     if (!req.body.body?.trim()) throw bad('body is required');
     if (!get('SELECT id FROM agents WHERE id = ?', req.params.id)) throw notFound('Agent');

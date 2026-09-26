@@ -51,6 +51,11 @@ function Bubble({ m, agent }) {
 
 export default function Chat({ agent, claudeReady }) {
   const { data: messages, setData } = useApi(`/agents/${agent.id}/messages`);
+  // A managed agent's turn can span several messages (and tool calls between them): keep showing
+  // it's typing until its chat run actually stops, not just until the first message arrives.
+  const managed = agent.platform === 'managed';
+  const { data: chatRun } = useApi(managed ? `/agents/${agent.id}/chat-run` : null, ['run']);
+  const working = managed && ['starting', 'running'].includes(chatRun?.status);
   const live = useContext(LiveContext);
   const [draft, setDraft] = useState('');
   const [waiting, setWaiting] = useState(false);
@@ -67,7 +72,7 @@ export default function Chat({ agent, claudeReady }) {
   );
   useEffect(() => {
     scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: 'smooth' });
-  }, [messages?.length, waiting]);
+  }, [messages?.length, waiting, working]);
 
   const claudePowered = ['claude', 'managed'].includes(agent.platform);
   const willReply = agent.status !== 'paused' && ((claudePowered && claudeReady) || agent.webhook_url);
@@ -94,7 +99,7 @@ export default function Chat({ agent, claudeReady }) {
         {messages?.map((m) => (
           <Bubble key={m.id} m={m} agent={agent} />
         ))}
-        {waiting && (
+        {(waiting || working) && (
           <div className="msg">
             <Avatar name={agent.name} color={agent.color} size={28} />
             <div className="bubble typing">
