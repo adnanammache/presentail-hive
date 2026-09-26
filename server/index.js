@@ -39,6 +39,9 @@ for (const file of ['manifest.webmanifest', 'sw.js', 'icon.svg', 'icon-192.png',
   app.get(`/${file}`, (req, res, next) => (existsSync(join(dist, file)) ? res.sendFile(join(dist, file)) : next()));
 }
 
+// Brand artwork for the sign-in page (public: it's shown before sign-in).
+app.use('/brand', express.static(join(dist, 'brand'), { maxAge: '7d', fallthrough: false }));
+
 // Agent faces as PNGs, for Slack to show next to each agent's messages (public: no names in them).
 app.get('/avatars/:file', async (req, res) => {
   const png = await agentAvatarPng(Number.parseInt(req.params.file, 10));
