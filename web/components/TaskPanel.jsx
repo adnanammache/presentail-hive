@@ -43,7 +43,7 @@ function InlineText({ value, onSave, multiline, placeholder, label, className })
   );
 }
 
-function Files({ task }) {
+function Files({ task, onOpenFile }) {
   const { data: files, reload } = useApi(`/tasks/${task.id}/files`, ['task']);
   const { data: links, reload: reloadLinks } = useApi(`/tasks/${task.id}/links`, ['task']);
   const { data: runs } = useApi(task.agent_id ? `/tasks/${task.id}/runs` : null, ['run']);
@@ -81,11 +81,22 @@ function Files({ task }) {
         <div className="deliverables">
           <div className="small strong">Deliverables</div>
           <div className="run-files">
-            {outputs.map((o) => (
-              <a key={`${o.run_id}-${o.id}`} className="file-chip out" href={`/api/runs/${o.run_id}/outputs/${o.id}`} download={o.filename}>
-                <Icon name="file" size={13} /> {o.filename}
-              </a>
-            ))}
+            {outputs.map((o) =>
+              onOpenFile ? (
+                <span key={`${o.run_id}-${o.id}`} className="file-chip out">
+                  <button type="button" className="link-btn" onClick={() => onOpenFile(`out:${o.run_id}:${o.id}`, o.filename)} title="Open beside the conversation">
+                    <Icon name="file" size={13} /> {o.filename}
+                  </button>
+                  <a href={`/api/runs/${o.run_id}/outputs/${o.id}`} download={o.filename} aria-label={`Download ${o.filename}`}>
+                    <Icon name="download" size={12} />
+                  </a>
+                </span>
+              ) : (
+                <a key={`${o.run_id}-${o.id}`} className="file-chip out" href={`/api/runs/${o.run_id}/outputs/${o.id}`} download={o.filename}>
+                  <Icon name="file" size={13} /> {o.filename}
+                </a>
+              ),
+            )}
             {delivered.map((l) => (
               <a key={l.id} className="file-chip out" href={l.url} target="_blank" rel="noreferrer">
                 <Icon name="link" size={13} /> {l.label || l.url.replace(/^https?:\/\//, '')}
@@ -97,7 +108,16 @@ function Files({ task }) {
       <div className="run-files">
         {files?.map((f) => (
           <span key={f.id} className="file-chip">
-            <Icon name="paperclip" size={13} /> {f.filename} <span className="muted">{Math.max(1, Math.round(f.size / 1024))} KB</span>
+            {onOpenFile ? (
+              <button type="button" className="link-btn" onClick={() => onOpenFile(`task:${task.id}:${f.id}`, f.filename)} title="Open beside the conversation">
+                <Icon name="paperclip" size={13} /> {f.filename}
+              </button>
+            ) : (
+              <>
+                <Icon name="paperclip" size={13} /> {f.filename}
+              </>
+            )}{' '}
+            <span className="muted">{Math.max(1, Math.round(f.size / 1024))} KB</span>
             <button type="button" aria-label={`Remove ${f.filename}`} onClick={() => api(`/tasks/${task.id}/files/${f.id}`, { method: 'DELETE' }).then(reload, (e) => setErr(e.message))}>
               <Icon name="x" size={12} />
             </button>
@@ -266,7 +286,11 @@ function BlockerEditor({ task, save }) {
   );
 }
 
-export default function TaskPanel({ taskId, onClose, me }) {
+/**
+ * embedded: shown inside another view (the agent workspace's side panel) rather than as an overlay;
+ * Escape and focus are then left to that view. onOpenFile(ref, filename): open a file beside the chat.
+ */
+export default function TaskPanel({ taskId, onClose, me, embedded, onOpenFile }) {
   const { data: task, reload, error: loadError } = useApi(taskId ? `/tasks/${taskId}` : null, ['task', 'run']);
   const { data: agents } = useApi('/agents', ['agent']);
   const { data: projects } = useApi('/projects', ['project']);
@@ -280,13 +304,15 @@ export default function TaskPanel({ taskId, onClose, me }) {
     setError('');
     setNote('');
     setSched(null);
-    panel.current?.focus();
-  }, [taskId]);
+    if (!embedded) panel.current?.focus();
+  }, [taskId, embedded]);
   useEffect(() => {
+    if (embedded) return;
     const onKey = (e) => e.key === 'Escape' && !e.defaultPrevented && !document.querySelector('.task-composer:focus-within') && onClose();
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  }, [onClose, embedded]);
+  const cls = `task-panel${embedded ? ' embedded' : ''}`;
 
   if (!taskId) return null;
   const run = async (fn) => {
@@ -306,7 +332,7 @@ export default function TaskPanel({ taskId, onClose, me }) {
 
   if (!task)
     return (
-      <aside className="task-panel" aria-label="Task details" ref={panel} tabIndex={-1}>
+      <aside className={cls} aria-label="Task details" ref={panel} tabIndex={-1}>
         <header className="panel-head">
           <span className="spacer" />
           <button type="button" className="icon-btn" aria-label="Close" onClick={onClose}>
@@ -329,7 +355,7 @@ export default function TaskPanel({ taskId, onClose, me }) {
   const schedValues = sched ?? { ...formFromTask(task), needs_approval: Boolean(task.needs_approval) };
 
   return (
-    <aside className="task-panel" aria-labelledby="panel-title" ref={panel} tabIndex={-1}>
+    <aside className={cls} aria-labelledby="panel-title" ref={panel} tabIndex={-1}>
       <header className="panel-head">
         <nav className="crumbs small" aria-label="Breadcrumb">
           {task.project_id ? <a href={`#/projects/${task.project_id}`}>{task.project_name}</a> : <span>No project</span>}
@@ -337,9 +363,15 @@ export default function TaskPanel({ taskId, onClose, me }) {
           <span>#{task.id}</span>
         </nav>
         <span className="spacer" />
-        <button type="button" className="icon-btn" aria-label="Close task details" onClick={onClose}>
-          <Icon name="x" />
-        </button>
+        {embedded ? (
+          <a className="btn btn-sm" href={`#/tasks/${task.id}`} title="Open this task on its own">
+            <Icon name="expand" size={13} /> Full view
+          </a>
+        ) : (
+          <button type="button" className="icon-btn" aria-label="Close task details" onClick={onClose}>
+            <Icon name="x" />
+          </button>
+        )}
       </header>
 
       <div className="panel-body">
@@ -397,10 +429,10 @@ export default function TaskPanel({ taskId, onClose, me }) {
             <div className="small strong">This is waiting for your review.</div>
             <textarea rows={2} value={note} onChange={(e) => setNote(e.target.value)} placeholder="What needs changing? (needed to request changes)" aria-label="Review note" />
             <div className="approval-actions">
-              <button type="button" className="btn btn-sm btn-danger-ghost" disabled={!note.trim() || busy} onClick={() => run(() => api(`/tasks/${task.id}/review`, { method: 'POST', body: { decision: 'changes', note } })).then(() => setNote(''))}>
+              <button type="button" className="btn btn-sm btn-danger-ghost" disabled={!note.trim() || busy} onClick={() => run(() => api(`/tasks/${task.id}/review`, { method: 'POST', body: { decision: 'changes', note, version: task.review_version } })).then(() => setNote(''))}>
                 Request changes
               </button>
-              <button type="button" className="btn btn-sm btn-primary" disabled={busy} onClick={() => run(() => api(`/tasks/${task.id}/review`, { method: 'POST', body: { decision: 'approve', note } }))}>
+              <button type="button" className="btn btn-sm btn-primary" disabled={busy} onClick={() => run(() => api(`/tasks/${task.id}/review`, { method: 'POST', body: { decision: 'approve', note, version: task.review_version } }))}>
                 <Icon name="check" size={13} /> Approve
               </button>
             </div>
@@ -411,10 +443,10 @@ export default function TaskPanel({ taskId, onClose, me }) {
             <div className="small strong">{task.agent_name ?? 'The agent'} prepared this and is waiting for approval before submitting or paying anything.</div>
             <textarea rows={2} value={note} onChange={(e) => setNote(e.target.value)} placeholder="Note for the agent (needed to send back)" aria-label="Approval note" />
             <div className="approval-actions">
-              <button type="button" className="btn btn-sm btn-danger-ghost" disabled={!note.trim() || busy} onClick={() => run(() => api(`/tasks/${task.id}/send-back`, { method: 'POST', body: { note } })).then(() => setNote(''))}>
+              <button type="button" className="btn btn-sm btn-danger-ghost" disabled={!note.trim() || busy} onClick={() => run(() => api(`/tasks/${task.id}/send-back`, { method: 'POST', body: { note, version: task.review_version } })).then(() => setNote(''))}>
                 Send back
               </button>
-              <button type="button" className="btn btn-sm btn-primary" disabled={busy} onClick={() => run(() => api(`/tasks/${task.id}/approve`, { method: 'POST', body: { note } }))}>
+              <button type="button" className="btn btn-sm btn-primary" disabled={busy} onClick={() => run(() => api(`/tasks/${task.id}/approve`, { method: 'POST', body: { note, version: task.review_version } }))}>
                 <Icon name="check" size={13} /> Approve
               </button>
             </div>
@@ -518,7 +550,7 @@ export default function TaskPanel({ taskId, onClose, me }) {
         )}
 
         <Section title="Attachments and deliverables">
-          <Files task={task} />
+          <Files task={task} onOpenFile={onOpenFile} />
         </Section>
 
         {task.agent_id && managed && (

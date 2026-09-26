@@ -194,6 +194,10 @@ test('resurfacing: a new message from someone else, a mention or a new request, 
   let s = await state();
   assert.equal(s.archived, false);
   assert.equal(s.resurfaced.reason, 'message');
+  await call(MEMBER, 'POST', `/chats/${chat.id}/read`, { message_id: s.resurfaced.message_id - 1 });
+  assert.ok((await state()).resurfaced, 'the note stays until they have read that message');
+  await call(MEMBER, 'POST', `/chats/${chat.id}/read`, { message_id: s.resurfaced.message_id });
+  assert.equal((await state()).resurfaced, null, 'read: the note goes');
 
   // Archive again: the earlier message never brings it back; only a new qualifying event does.
   await archive();

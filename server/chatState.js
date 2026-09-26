@@ -62,7 +62,10 @@ export function restoreChat(chat, user, { seq } = {}) {
   return { changed: changes > 0, state: chatState(chat.id, user) };
 }
 
-/** Everything up to this message has been seen (never moves backwards, never past the conversation's end). */
+/**
+ * Everything up to this message has been seen (never moves backwards, never past the conversation's
+ * end). Once they've read the message that brought it back, the "returned to active" note goes.
+ */
 export function markRead(chat, user, messageId) {
   const last = get('SELECT MAX(id) AS id FROM messages WHERE chat_id = ?', chat.id)?.id ?? 0;
   const upTo = Math.min(Number(messageId) || last, last);
@@ -72,6 +75,11 @@ export function markRead(chat, user, messageId) {
     `UPDATE chat_user_state SET last_read_message_id = MAX(COALESCE(last_read_message_id, 0), ?), updated_at = datetime('now')
      WHERE chat_id = ? AND user_email = ?`,
     upTo, chat.id, email,
+  );
+  run(
+    `UPDATE chat_user_state SET resurfaced_at = NULL, resurfaced_reason = NULL, resurfaced_message_id = NULL
+     WHERE chat_id = ? AND user_email = ? AND resurfaced_message_id IS NOT NULL AND last_read_message_id >= resurfaced_message_id`,
+    chat.id, email,
   );
   return chatState(chat.id, user);
 }

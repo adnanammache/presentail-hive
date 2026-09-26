@@ -7,6 +7,7 @@ export default defineConfig({
   build: { outDir: '../dist', emptyOutDir: true },
   server: {
     port: 5173,
-    proxy: { '/api': { target: 'http://localhost:3001', changeOrigin: true } },
+    // '^/api/' rather than '/api': the prefix alone also catches the page's own /api.js module.
+    proxy: { '^/api/': { target: 'http://localhost:3001', changeOrigin: true } },
   },
 });

@@ -1,33 +1,18 @@
 // Conversations with an agent: pick or start a conversation, read it (Markdown, the agent's activity
-// from its real run events, approvals), and write (files, voice notes, Stop for the running turn).
-// Used by the agent workspace and the Inbox. Drafts are kept per conversation in this browser.
+// from its real run events, approvals), and write (files, voice notes, file references, Stop for the
+// running turn). Used by the agent workspace (with the history panel, status strip and side panel) and
+// the Inbox. Drafts are kept per person and conversation in this browser, and survive switching,
+// archiving and restoring.
 import { Fragment, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { LiveContext, api, toDate, useApi } from '../api.js';
 import { Avatar, Icon, Modal } from './ui.jsx';
 import { PersonAvatar, useTaskUI } from './work.jsx';
 import Markdown from './Markdown.jsx';
+import Menu from './Menu.jsx';
+import StatusStrip from './StatusStrip.jsx';
+import { draftKey, lastChatKey, legacyDraftKey, readDraft, store, writeDraft } from './chatUtil.js';
 
 // ---------------------------------------------------------------- small helpers
-
-const store = {
-  get: (k) => {
-    try {
-      return localStorage.getItem(k);
-    } catch {
-      return null;
-    }
-  },
-  set: (k, v) => {
-    try {
-      if (v == null || v === '') localStorage.removeItem(k);
-      else localStorage.setItem(k, v);
-    } catch {
-      /* private mode: drafts just aren't kept */
-    }
-  },
-};
-export const lastChatKey = (agentId) => `hive:lastChat:${agentId}`;
-const draftKey = (agentId, chatId) => `hive:chatDraft:${agentId}:${chatId ?? 'new'}`;
 
 export const fileSize = (n) => (n < 1024 ? `${n} B` : n < 1048576 ? `${Math.round(n / 1024)} KB` : `${(n / 1048576).toFixed(1)} MB`);
 const clock = (s) => toDate(s)?.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -146,7 +131,34 @@ function MessageActions({ m, onLesson, onTask }) {
   );
 }
 
-function Message({ m, agent, me, people, onLesson, onTask, last }) {
+/** A file (or a passage of one) a message refers to. */
+function RefChip({ r, onOpen, onRemove }) {
+  const label = (
+    <>
+      <Icon name="file" size={13} />
+      <span className="ref-name clamp-1">{r.filename}</span>
+      {r.quote && <span className="ref-quote clamp-2">“{r.quote}”</span>}
+    </>
+  );
+  return (
+    <span className={`ref-chip ${r.quote ? 'has-quote' : ''}`}>
+      {onOpen ? (
+        <button type="button" className="ref-open" onClick={() => onOpen(r.ref, r.filename)} title={`Open ${r.filename} beside the conversation`}>
+          {label}
+        </button>
+      ) : (
+        <span className="ref-open">{label}</span>
+      )}
+      {onRemove && (
+        <button type="button" className="icon-btn sm" aria-label={`Remove the reference to ${r.filename}`} onClick={onRemove}>
+          <Icon name="x" size={12} />
+        </button>
+      )}
+    </span>
+  );
+}
+
+function Message({ m, agent, me, people, onLesson, onTask, last, onOpenFile, onOpenTask }) {
   const meta = parseMeta(m);
   if (m.sender === 'system')
     return (
@@ -155,11 +167,16 @@ function Message({ m, agent, me, people, onLesson, onTask, last }) {
         <time>{clock(m.created_at)}</time>
         {meta?.type === 'approval' && <ApprovalButtons meta={meta} />}
         {meta?.type === 'lesson' && <LessonButtons meta={meta} />}
-        {meta?.type === 'task_created' && (
-          <a className="link" href={`#/tasks/${meta.task_id}`}>
-            Open task
-          </a>
-        )}
+        {meta?.type === 'task_created' &&
+          (onOpenTask ? (
+            <button type="button" className="link-btn link" onClick={() => onOpenTask(meta.task_id)}>
+              Open task
+            </button>
+          ) : (
+            <a className="link" href={`#/tasks/${meta.task_id}`}>
+              Open task
+            </a>
+          ))}
       </div>
     );
   const mine = m.sender === 'user';
@@ -186,12 +203,32 @@ function Message({ m, agent, me, people, onLesson, onTask, last }) {
           {mine ? <div className="bubble-text">{m.body}</div> : <Markdown text={m.body} />}
           {attached.length > 0 && (
             <div className="bubble-files">
-              {attached.map((f) => (
-                <a key={f.id} className="bubble-file" href={`/api/chat-files/${f.id}`} download={f.filename}>
-                  <Icon name="file" size={14} />
-                  <span className="grow clamp-1">{f.filename}</span>
-                  <span className="bubble-file-size">{fileSize(f.size)}</span>
-                </a>
+              {attached.map((f) =>
+                onOpenFile ? (
+                  <div key={f.id} className="bubble-file">
+                    <Icon name="file" size={14} />
+                    <button type="button" className="grow clamp-1 bubble-file-open" onClick={() => onOpenFile(`chat:${f.id}`, f.filename)} title="Open beside the conversation">
+                      {f.filename}
+                    </button>
+                    <span className="bubble-file-size">{fileSize(f.size)}</span>
+                    <a href={`/api/chat-files/${f.id}`} download={f.filename} className="bubble-file-dl" aria-label={`Download ${f.filename}`}>
+                      <Icon name="download" size={13} />
+                    </a>
+                  </div>
+                ) : (
+                  <a key={f.id} className="bubble-file" href={`/api/chat-files/${f.id}`} download={f.filename}>
+                    <Icon name="file" size={14} />
+                    <span className="grow clamp-1">{f.filename}</span>
+                    <span className="bubble-file-size">{fileSize(f.size)}</span>
+                  </a>
+                ),
+              )}
+            </div>
+          )}
+          {meta?.refs?.length > 0 && (
+            <div className="bubble-refs">
+              {meta.refs.map((r, i) => (
+                <RefChip key={`${r.ref}-${i}`} r={r} onOpen={onOpenFile} />
               ))}
             </div>
           )}
@@ -504,6 +541,7 @@ function ConversationPicker({ chats, current, onPick, onChanged }) {
                 <span className="grow">
                   <span className="clamp-1">{c.title}</span>
                   <span className="muted small">
+                    {c.archived ? 'Archived · ' : ''}
                     {c.source === 'slack' ? 'Slack · ' : ''}
                     {c.visibility === 'shared' ? 'Shared · ' : ''}
                     {c.last_message_at ? `${dayLabel(c.last_message_at)} ${clock(c.last_message_at)}` : 'No messages yet'}
@@ -521,35 +559,59 @@ function ConversationPicker({ chats, current, onPick, onChanged }) {
 
 // ---------------------------------------------------------------- the chat
 
+const HEADER_MENU = (current, actions, startRename) => [
+  { label: 'Rename', icon: 'edit', hidden: !current?.can_manage, onSelect: startRename },
+  current?.can_manage ? 'sep' : null,
+  current?.archived
+    ? { label: 'Restore', icon: 'archive', hidden: !actions?.restore, onSelect: () => actions.restore(current) }
+    : { label: 'Archive', icon: 'archive', hidden: !actions?.archive, onSelect: () => actions.archive(current) },
+];
+
 /**
  * chatId / onSelectChat: the selected conversation, when a parent keeps it (the agent page puts it in
  * the address). Without them, the chat keeps it itself (Inbox). toolbar: extra buttons on the right.
+ * workspace: the agent workspace layout (title, sharing, status strip; the parent shows the history).
+ *   actions: { rename, share, archive, restore } for the open conversation; headerStart: buttons at
+ *   the left of the header (show the history); onOpenFile(ref, filename) / onOpenTask(id): open beside
+ *   the chat; referenceRequest: { nonce, ref, filename, quote? } adds a file reference to the draft;
+ *   refreshKey: bump after the parent changed a conversation.
  */
-export default function Chat({ agent, claudeReady, chatId: selectedProp, onSelectChat, onShownChat, toolbar, compact }) {
+export default function Chat({
+  agent, claudeReady, chatId: selectedProp, onSelectChat, onShownChat, toolbar, compact,
+  workspace, actions, headerStart, onOpenFile, onOpenTask, referenceRequest, refreshKey,
+}) {
   const live = useContext(LiveContext);
   const { openComposer } = useTaskUI();
   const { data: me } = useApi('/me');
   const { data: peopleList } = useApi('/people');
   const people = useMemo(() => new Map((Array.isArray(peopleList) ? peopleList : peopleList?.people ?? []).map((p) => [p.email, p])), [peopleList]);
   const { data: chats, setData: setChats, reload: reloadChats } = useApi(`/agents/${agent.id}/chats`, ['chat']);
+  useEffect(() => {
+    if (refreshKey) reloadChats();
+  }, [refreshKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Which conversation: the parent's, else the last one opened here, else the latest.
+  // Which conversation: the parent's, else the last one this person opened here, else their latest
+  // active one. Archived conversations open only when asked for (a link, the history, search).
+  const email = me?.email;
   const [ownSelected, setOwnSelected] = useState(null);
-  const wanted = (onSelectChat ? selectedProp : ownSelected) ?? (Number(store.get(lastChatKey(agent.id))) || null);
-  const current = chats?.find((c) => c.id === Number(wanted)) ?? (wanted === 'new' ? null : chats?.[0] ?? null);
+  const wanted = (onSelectChat ? selectedProp : ownSelected) ?? (email ? Number(store.get(lastChatKey(email, agent.id))) || null : null);
+  const remembered = !(onSelectChat ? selectedProp : ownSelected);
+  const found = chats?.find((c) => c.id === Number(wanted));
+  const current = me && chats ? ((remembered && found?.archived ? null : found) ?? (wanted === 'new' ? null : chats.find((c) => !c.archived) ?? null)) : null;
   const chatId = current?.id ?? null;
+  const ready = Boolean(chats && me);
   const select = useCallback(
     (id) => {
-      store.set(lastChatKey(agent.id), id ? String(id) : null);
+      if (email) store.set(lastChatKey(email, agent.id), id && id !== 'new' ? String(id) : null);
       if (onSelectChat) onSelectChat(id);
       else setOwnSelected(id);
     },
-    [agent.id, onSelectChat],
+    [agent.id, onSelectChat, email],
   );
   useEffect(() => {
-    if (chatId) store.set(lastChatKey(agent.id), String(chatId));
-    if (chats) onShownChat?.(chatId);
-  }, [agent.id, chatId, Boolean(chats)]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (chatId && email) store.set(lastChatKey(email, agent.id), String(chatId));
+    if (ready) onShownChat?.(chatId, current);
+  }, [agent.id, chatId, ready, current?.archived, current?.title]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Messages of the selected conversation, a page at a time.
   const [thread, setThread] = useState({ chatId: null, messages: [], hasMore: false, loading: false, error: '' });
@@ -564,9 +626,9 @@ export default function Chat({ agent, claudeReady, chatId: selectedProp, onSelec
     try {
       const page = await api(`/chats/${id}/messages?limit=50`);
       atBottom.current = true;
-      setThread({ chatId: id, messages: page.messages, hasMore: page.has_more, loading: false, error: '' });
+      setThread((t) => (t.chatId === id ? { chatId: id, messages: page.messages, hasMore: page.has_more, loading: false, error: '' } : t));
     } catch (err) {
-      setThread((t) => ({ ...t, loading: false, error: err.message }));
+      setThread((t) => (t.chatId === id ? { ...t, loading: false, error: err.message } : t));
     }
   }, []);
   useEffect(() => {
@@ -627,7 +689,7 @@ export default function Chat({ agent, claudeReady, chatId: selectedProp, onSelec
   }, [live, agent.id, chatId, reloadChats, reloadActivity]);
   // After reconnecting, catch up on anything missed.
   useEffect(() => {
-    if (live?.connected && chatId) (newerRef.current(), reloadActivity());
+    if (live?.connected && chatId) (newerRef.current(), reloadActivity(), reloadChats());
   }, [live?.connected]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Scrolling: stay at the bottom only if the reader is there; keep position when loading earlier.
@@ -639,11 +701,14 @@ export default function Chat({ agent, claudeReady, chatId: selectedProp, onSelec
       keepFromBottom.current = null;
     } else if (atBottom.current) el.scrollTop = el.scrollHeight;
   }, [thread.messages, activity]);
+  const [reading, setReading] = useState(0); // bumps when the reader reaches the bottom
   const onScroll = () => {
     const el = scroller.current;
     if (!el) return;
+    const was = atBottom.current;
     atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
     if (atBottom.current) setUnseen(0);
+    if (atBottom.current && !was) setReading((n) => n + 1);
     if (el.scrollTop < 60 && thread.hasMore && !thread.loading) loadEarlier();
   };
   const jumpToLatest = () => {
@@ -651,11 +716,35 @@ export default function Chat({ agent, claudeReady, chatId: selectedProp, onSelec
     if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
     atBottom.current = true;
     setUnseen(0);
+    setReading((n) => n + 1);
   };
 
+  // Read position: what this person has actually had in view (at the bottom, page visible).
+  const readUpTo = useRef({});
+  useEffect(() => {
+    const lastId = thread.chatId === chatId ? thread.messages.at(-1)?.id : null;
+    if (!chatId || !lastId || !atBottom.current || document.visibilityState !== 'visible') return;
+    if ((readUpTo.current[chatId] ?? 0) >= lastId) return;
+    const t = setTimeout(() => {
+      readUpTo.current[chatId] = lastId;
+      api(`/chats/${chatId}/read`, { method: 'POST', body: { message_id: lastId } }).catch(() => {});
+    }, 600);
+    return () => clearTimeout(t);
+  }, [chatId, thread, reading]);
+
   // ------------------------------------------------ composing
+  // Drafts (text and file references) per person and conversation, in this browser. Staged files
+  // stay with their conversation while this page is open.
   const [draft, setDraft] = useState('');
-  const [files, setFiles] = useState([]); // [{ file, uploaded? }]
+  const [refs, setRefs] = useState([]);
+  const [files, setFilesState] = useState([]); // [{ file, uploaded? }]
+  const stagedByChat = useRef(new Map());
+  const setFiles = (fn) =>
+    setFilesState((fs) => {
+      const next = typeof fn === 'function' ? fn(fs) : fn;
+      stagedByChat.current.set(chatId ?? 'new', next);
+      return next;
+    });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null); // { text, retry? }
   const sending = useRef(false);
@@ -663,19 +752,46 @@ export default function Chat({ agent, claudeReady, chatId: selectedProp, onSelec
   const input = useRef(null);
   const voice = useVoiceNote();
   useEffect(() => {
-    setDraft(store.get(draftKey(agent.id, chatId)) ?? '');
-    setFiles([]);
+    if (!email) return;
+    let raw = store.get(draftKey(email, agent.id, chatId));
+    if (raw == null && store.get(legacyDraftKey(agent.id, chatId)) != null) {
+      // A draft from before drafts were kept per person: it becomes this person's.
+      raw = store.get(legacyDraftKey(agent.id, chatId));
+      store.set(draftKey(email, agent.id, chatId), writeDraft({ text: raw, refs: [] }));
+      store.set(legacyDraftKey(agent.id, chatId), null);
+    }
+    const d = readDraft(raw);
+    setDraft(d.text);
+    setRefs(d.refs);
+    setFilesState(stagedByChat.current.get(chatId ?? 'new') ?? []);
     setError(null);
-  }, [agent.id, chatId]);
+  }, [agent.id, chatId, email]);
+  const saveDraft = (text, list) => email && store.set(draftKey(email, agent.id, chatId), writeDraft({ text, refs: list }));
   const editDraft = (text) => {
     setDraft(text);
-    store.set(draftKey(agent.id, chatId), text);
+    saveDraft(text, refs);
   };
+  const editRefs = (list) => {
+    setRefs(list);
+    saveDraft(draft, list);
+  };
+  // "Discuss" in the side panel: a reference chip in the draft, never sent until the person sends it.
+  const lastRequest = useRef(null);
+  useEffect(() => {
+    if (!referenceRequest || referenceRequest.nonce === lastRequest.current || !email) return;
+    lastRequest.current = referenceRequest.nonce;
+    const { nonce, ...r } = referenceRequest; // eslint-disable-line no-unused-vars
+    const same = (x) => x.ref === r.ref && (x.quote ?? '') === (r.quote ?? '');
+    const list = refs.some(same) ? refs : [...refs, r].slice(-5);
+    editRefs(list);
+    setTimeout(() => input.current?.focus(), 30);
+  }, [referenceRequest, email]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const run = activity?.run;
   const working = Boolean(run?.working);
   const claudePowered = ['claude', 'managed'].includes(agent.platform);
   const willReply = agent.status !== 'paused' && ((claudePowered && claudeReady) || agent.webhook_url);
+  const archived = Boolean(current?.archived);
 
   const addFiles = (list) => {
     const picked = [...(list ?? [])];
@@ -689,7 +805,13 @@ export default function Chat({ agent, claudeReady, chatId: selectedProp, onSelec
     if (chatId) return chatId;
     const created = await api(`/agents/${agent.id}/chats`, { method: 'POST', body: {} });
     setChats((cs) => [created, ...(cs ?? [])]);
-    store.set(draftKey(agent.id, 'new'), null);
+    // The draft moves with it into the new conversation.
+    if (email) {
+      store.set(draftKey(email, agent.id, created.id), writeDraft({ text: draft, refs }));
+      store.set(draftKey(email, agent.id, 'new'), null);
+    }
+    stagedByChat.current.set(created.id, stagedByChat.current.get('new') ?? []);
+    stagedByChat.current.delete('new');
     select(created.id);
     return created.id;
   };
@@ -697,7 +819,7 @@ export default function Chat({ agent, claudeReady, chatId: selectedProp, onSelec
   const send = async (e) => {
     e?.preventDefault();
     const body = draft.trim();
-    if ((!body && !files.length) || sending.current) return;
+    if ((!body && !files.length) || sending.current || archived) return;
     sending.current = true;
     setBusy(true);
     setError(null);
@@ -708,15 +830,19 @@ export default function Chat({ agent, claudeReady, chatId: selectedProp, onSelec
         if (!f.uploaded) f.uploaded = await uploadChatFile(agent.id, f.file, f.file.name);
         ids.push(f.uploaded.id);
       }
-      const m = await api(`/chats/${id}/messages`, { method: 'POST', body: { body, file_ids: ids } });
+      const m = await api(`/chats/${id}/messages`, { method: 'POST', body: { body, file_ids: ids, refs: refs.map(({ ref, quote }) => ({ ref, ...(quote ? { quote } : {}) })) } });
       atBottom.current = true;
       setThread((t) => (t.chatId === id ? { ...t, messages: addMessage(t.messages, m) } : t));
       setDraft('');
-      store.set(draftKey(agent.id, id), null);
-      setFiles([]);
+      setRefs([]);
+      if (email) store.set(draftKey(email, agent.id, id), null);
+      stagedByChat.current.delete(id);
+      setFilesState([]);
       setTimeout(reloadActivity, 300);
     } catch (err) {
-      setError({ text: `Not sent: ${err.message}`, retry: true });
+      // Archived meanwhile (another tab): the draft stays; the banner explains.
+      if (err.status === 409) reloadChats();
+      setError({ text: `Not sent: ${err.message}`, retry: err.status !== 409 });
     } finally {
       sending.current = false;
       setBusy(false);
@@ -779,6 +905,33 @@ export default function Chat({ agent, claudeReady, chatId: selectedProp, onSelec
     setTimeout(() => input.current?.focus(), 30);
   };
 
+  // ------------------------------------------------ the workspace header: title, audience, sharing
+  const [renaming, setRenaming] = useState(null);
+  const [headError, setHeadError] = useState('');
+  useEffect(() => (setRenaming(null), setHeadError('')), [chatId]);
+  const doRename = async (e) => {
+    e.preventDefault();
+    try {
+      await actions.rename(current, renaming);
+      setRenaming(null);
+      setHeadError('');
+    } catch (err) {
+      setHeadError(err.message);
+    }
+  };
+  const doShare = async () => {
+    try {
+      await actions.share(current);
+      setHeadError('');
+    } catch (err) {
+      setHeadError(err.message);
+    }
+  };
+  const restoreAndReply = async () => {
+    await actions?.restore(current);
+    setTimeout(() => input.current?.focus(), 50);
+  };
+
   const items = useMemo(() => timeline(thread.chatId === chatId ? thread.messages : [], activity?.blocks ?? []), [thread, chatId, activity]);
   const lastMsgId = [...items].reverse().find((i) => i.kind === 'msg' && i.m.sender !== 'system')?.id;
   const showTyping = working && !activity?.blocks?.some((b) => b.state === 'running' || b.state === 'approval');
@@ -788,10 +941,66 @@ export default function Chat({ agent, claudeReady, chatId: selectedProp, onSelec
   else if (claudePowered && !claudeReady) hint = 'Set ANTHROPIC_API_KEY on the server so Claude agents can reply.';
   else if (!willReply) hint = `${agent.name} has no webhook. It will pick messages up when it polls the Agent API.`;
 
+  const workspaceHeader = (
+    <div className="chat-head">
+      <div className="chat-col chat-head-row">
+        {headerStart}
+        {renaming != null ? (
+          <form className="convo-rename grow" onSubmit={doRename}>
+            <input autoFocus value={renaming} onChange={(e) => setRenaming(e.target.value)} aria-label="Conversation name" maxLength={80} onKeyDown={(e) => e.key === 'Escape' && (e.stopPropagation(), setRenaming(null))} />
+            <button className="btn btn-sm btn-primary" disabled={!renaming.trim()}>
+              Save
+            </button>
+            <button type="button" className="btn btn-sm" onClick={() => setRenaming(null)}>
+              Cancel
+            </button>
+          </form>
+        ) : (
+          <div className="grow chat-head-title">
+            <h2 className="clamp-1" title={current?.title}>
+              {current ? current.title : 'New conversation'}
+            </h2>
+            {current && (
+              <span className={`scope-chip ${current.visibility}`} title={current.audience?.label}>
+                <Icon name={current.visibility === 'shared' ? 'users' : 'lock'} size={13} />
+                <span>{current.visibility === 'shared' ? current.audience?.label ?? 'Shared' : 'Private'}</span>
+                <span className="sr-only">{current.visibility === 'shared' ? '' : current.audience?.label}</span>
+              </span>
+            )}
+            {current?.archived && <span className="chip-soft">Archived</span>}
+            {current?.source === 'slack' && <span className="chip-soft">Slack thread</span>}
+          </div>
+        )}
+        {current?.can_manage && actions?.share && renaming == null && (
+          <Menu
+            label="Sharing"
+            icon="users"
+            text="Share"
+            buttonClass="btn btn-sm"
+            items={[
+              current.visibility === 'shared'
+                ? { label: 'Make private (you and workspace owners)', icon: 'lock', onSelect: doShare }
+                : { label: 'Share with everyone in the workspace', icon: 'users', onSelect: doShare },
+            ]}
+          />
+        )}
+        {current && renaming == null && <Menu label="Conversation actions" items={HEADER_MENU(current, actions, () => setRenaming(current.title))} buttonClass="btn btn-sm icon-only" />}
+        {toolbar}
+      </div>
+      {headError && (
+        <div className="chat-col">
+          <div className="chat-hint chat-error" role="alert">
+            {headError}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+
   let lastDay = '';
   return (
     <div
-      className={`chat ${compact ? 'chat-compact' : ''}`}
+      className={`chat ${compact ? 'chat-compact' : ''} ${workspace ? 'chat-ws' : ''}`}
       onDragOver={(e) => e.dataTransfer.types.includes('Files') && e.preventDefault()}
       onDrop={(e) => {
         if (!e.dataTransfer.files.length) return;
@@ -799,21 +1008,31 @@ export default function Chat({ agent, claudeReady, chatId: selectedProp, onSelec
         addFiles(e.dataTransfer.files);
       }}
     >
-      <div className="chat-toolbar">
-        <div className="chat-col chat-toolbar-row">
-          <ConversationPicker
-            chats={chats ?? []}
-            current={current}
-            onPick={select}
-            onChanged={(c) => setChats((cs) => cs.map((x) => (x.id === c.id ? c : x)))}
-          />
-          <div className="grow" />
-          {toolbar}
-          <button type="button" className="btn btn-primary" onClick={newConversation}>
-            <Icon name="plus" size={16} /> <span className="hide-sm">New conversation</span>
-          </button>
+      {workspace ? (
+        workspaceHeader
+      ) : (
+        <div className="chat-toolbar">
+          <div className="chat-col chat-toolbar-row">
+            <ConversationPicker
+              chats={chats ?? []}
+              current={current}
+              onPick={select}
+              onChanged={(c) => setChats((cs) => cs.map((x) => (x.id === c.id ? c : x)))}
+            />
+            <div className="grow" />
+            {toolbar}
+            <button type="button" className="btn btn-primary" onClick={newConversation}>
+              <Icon name="plus" size={16} /> <span className="hide-sm">New conversation</span>
+            </button>
+          </div>
         </div>
-      </div>
+      )}
+
+      {workspace && chatId && (
+        <div className="chat-col">
+          <StatusStrip chatId={chatId} agent={agent} onOpenTask={onOpenTask} onReply={() => input.current?.focus()} />
+        </div>
+      )}
 
       <div className="chat-scroll" ref={scroller} onScroll={onScroll}>
         <div className="chat-col chat-thread" aria-live="polite">
@@ -822,8 +1041,8 @@ export default function Chat({ agent, claudeReady, chatId: selectedProp, onSelec
               {thread.loading ? 'Loading…' : 'Load earlier messages'}
             </button>
           )}
-          {!chats && <div className="chat-empty muted">Loading conversations…</div>}
-          {chats && !chatId && (
+          {!ready && <div className="chat-empty muted">Loading conversations…</div>}
+          {ready && !chatId && (
             <div className="chat-empty">
               <Avatar id={agent.id} name={agent.name} color={agent.color} size={48} />
               <strong>New conversation with {agent.name}</strong>
@@ -852,7 +1071,7 @@ export default function Chat({ agent, claudeReady, chatId: selectedProp, onSelec
                   </div>
                 )}
                 {i.kind === 'msg' ? (
-                  <Message m={i.m} agent={agent} me={me} people={people} onLesson={setLessonFrom} onTask={taskFrom} last={i.id === lastMsgId} />
+                  <Message m={i.m} agent={agent} me={me} people={people} onLesson={setLessonFrom} onTask={taskFrom} last={i.id === lastMsgId} onOpenFile={onOpenFile} onOpenTask={onOpenTask} />
                 ) : (
                   <ActivityBlock block={i.b} agent={agent} onStop={i.b.run_id === run?.id && working ? stop : null} />
                 )}
@@ -871,7 +1090,7 @@ export default function Chat({ agent, claudeReady, chatId: selectedProp, onSelec
               </div>
             </div>
           )}
-          {run?.error && !working && <div className="chat-hint chat-error">The last run stopped with an error: {run.error}</div>}
+          {run?.error && !working && !workspace && <div className="chat-hint chat-error">The last run stopped with an error: {run.error}</div>}
         </div>
       </div>
 
@@ -883,8 +1102,27 @@ export default function Chat({ agent, claudeReady, chatId: selectedProp, onSelec
 
       <div className="chat-composer">
         <div className="chat-col">
+          {archived && (
+            <div className="archived-banner" role="status">
+              <Icon name="archive" size={18} />
+              <div className="grow">
+                <strong>Archived</strong>
+                <span className="muted small">Restore this conversation to continue chatting.{draft.trim() || refs.length || files.length ? ' Your draft is kept.' : ''}</span>
+              </div>
+              {actions?.restore && (
+                <>
+                  <button type="button" className="btn btn-sm" onClick={() => actions.restore(current)}>
+                    Restore
+                  </button>
+                  <button type="button" className="btn btn-sm btn-primary" onClick={restoreAndReply}>
+                    Restore and reply
+                  </button>
+                </>
+              )}
+            </div>
+          )}
           {hint && <div className="chat-hint">{hint}</div>}
-          {working && (
+          {working && !workspace && (
             <div className="chat-note small">
               {agent.name} is working in this conversation. A message you send now is delivered to the running conversation; Stop ends only this run.
             </div>
@@ -918,7 +1156,14 @@ export default function Chat({ agent, claudeReady, chatId: selectedProp, onSelec
               </button>
             </div>
           ) : (
-            <form className="chat-box" onSubmit={send}>
+            <form className={`chat-box ${archived ? 'is-archived' : ''}`} onSubmit={send}>
+              {refs.length > 0 && (
+                <div className="chat-staged" aria-label="Referring to">
+                  {refs.map((r, i) => (
+                    <RefChip key={`${r.ref}-${i}`} r={r} onOpen={onOpenFile} onRemove={() => editRefs(refs.filter((_, j) => j !== i))} />
+                  ))}
+                </div>
+              )}
               {files.length > 0 && (
                 <div className="chat-staged">
                   {files.map((f, i) => (
@@ -937,7 +1182,7 @@ export default function Chat({ agent, claudeReady, chatId: selectedProp, onSelec
                 ref={input}
                 rows={1}
                 value={draft}
-                placeholder={`Message ${agent.name}…`}
+                placeholder={archived ? 'Restore this conversation to send a message.' : refs.length ? 'What do you want to ask about it?' : `Message ${agent.name}…`}
                 aria-label={`Message ${agent.name}`}
                 onChange={(e) => editDraft(e.target.value)}
                 onPaste={(e) => e.clipboardData.files.length && (e.preventDefault(), addFiles(e.clipboardData.files))}
@@ -952,17 +1197,22 @@ export default function Chat({ agent, claudeReady, chatId: selectedProp, onSelec
                   <Icon name="paperclip" size={18} />
                 </button>
                 {canRecord && (
-                  <button type="button" className="icon-btn" onClick={startVoice} aria-label="Record a voice note" title="Record a voice note" disabled={busy}>
+                  <button type="button" className="icon-btn" onClick={startVoice} aria-label="Record a voice note" title="Record a voice note" disabled={busy || archived}>
                     <Icon name="mic" size={18} />
                   </button>
                 )}
                 <div className="grow" />
-                {working && (
-                  <button type="button" className="btn btn-sm" onClick={stop} title="Stop this run (the agent stays on)">
+                {working && !workspace && (
+                  <button type="button" className="btn btn-sm" onClick={stop} title="Stop this conversation's run (the agent stays on)">
                     <Icon name="stop" size={13} /> Stop
                   </button>
                 )}
-                <button className="btn btn-primary send-btn" disabled={busy || (!draft.trim() && !files.length)} aria-label="Send message" title="Send">
+                <button
+                  className="btn btn-primary send-btn"
+                  disabled={busy || archived || (!draft.trim() && !files.length)}
+                  aria-label="Send message"
+                  title={archived ? 'Restore this conversation to send' : 'Send'}
+                >
                   {busy ? <span className="spinner light" /> : <Icon name="send" size={18} />}
                 </button>
               </div>

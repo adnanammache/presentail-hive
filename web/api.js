@@ -12,7 +12,13 @@ export async function api(path, { method = 'GET', body, raw, type } = {}) {
     location.href = data.login; // session expired: back to "Continue with Google"
     return new Promise(() => {});
   }
-  if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+  if (!res.ok) {
+    // status and the body's extra fields (e.g. warnings) let callers react to specific refusals.
+    const err = new Error(data.error || `Request failed (${res.status})`);
+    err.status = res.status;
+    err.data = data;
+    throw err;
+  }
   return data;
 }
 
@@ -101,12 +107,20 @@ export function useApi(path, types = []) {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const typesKey = types.join(',');
+  // Only the latest request may set data: a slow answer for an earlier path (or an earlier refresh)
+  // must never overwrite a newer one.
+  const latest = useRef(0);
   const reload = useCallback(() => {
+    const n = ++latest.current;
     if (!path) return Promise.resolve();
-    return api(path).then(setData, (e) => setError(e.message));
+    return api(path).then(
+      (d) => n === latest.current && (setData(d), setError(null)),
+      (e) => n === latest.current && setError(e.message),
+    );
   }, [path]);
   useEffect(() => {
     setData(null);
+    setError(null);
     reload();
   }, [reload]);
   useEffect(() => {

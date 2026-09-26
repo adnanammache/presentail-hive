@@ -37,8 +37,11 @@ function Section({ title, children, action }) {
   );
 }
 
-export default function WorkOverview({ agent, data, error, chatId, onClose, onViewRecurring, onRetry }) {
-  const { openTask, openComposer, openSchedule } = useTaskUI();
+/** onOpenTask / onOpenFile: open beside the conversation (the workspace's side panel) instead of an overlay. */
+export default function WorkOverview({ agent, data, error, chatId, onClose, onViewRecurring, onRetry, onOpenTask, onOpenFile }) {
+  const ui = useTaskUI();
+  const { openComposer, openSchedule } = ui;
+  const openTask = onOpenTask ?? ui.openTask;
   const tz = viewerZone(data?.timezone);
   const createTask = () => openComposer({ assignee: `agent:${agent.id}`, ...(chatId ? { source_chat_id: chatId } : {}) });
   return (
@@ -133,9 +136,15 @@ export default function WorkOverview({ agent, data, error, chatId, onClose, onVi
                     {icon.label}
                   </span>
                   <span className="grow">
-                    <span className="wo-item-title clamp-1" title={f.filename}>
-                      {f.filename}
-                    </span>
+                    {onOpenFile && f.ref ? (
+                      <button type="button" className="link-btn wo-item-title clamp-1 wo-file-open" title={`Open ${f.filename} beside the conversation`} onClick={() => onOpenFile(f.ref, f.filename)}>
+                        {f.filename}
+                      </button>
+                    ) : (
+                      <span className="wo-item-title clamp-1" title={f.filename}>
+                        {f.filename}
+                      </span>
+                    )}
                     <span className="muted small">
                       {f.kind === 'deliverable' ? 'From the agent' : f.kind === 'task' ? 'Task file' : 'Shared here'} · {fmtDay(toDate(f.at)?.toISOString().slice(0, 10), { year: false })}
                       {f.size ? ` · ${fileSize(f.size)}` : ''}

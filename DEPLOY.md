@@ -141,6 +141,12 @@ Work is shared by people and AI agents: **My tasks**, **All tasks** and **Projec
 - Each conversation has its own Claude Managed Agents session, so a new conversation starts fresh. Lessons and instructions apply to all of them.
 - Webhook and polling agents: each message now has a `chat_id`; pass it back on `POST /api/agent/messages` to answer in the right conversation.
 
+### Conversation history and archiving (migrates automatically)
+- A new `chat_user_state` table holds each person's own state of a conversation: archived or not, how far they've read, and why it came back to Active. It starts empty; nothing existing is changed, moved or marked archived. Messages that existed before the update count as read (the newest message id at that moment is stored as `chat_read_baseline` in `app_meta`), so history doesn't suddenly show as unread.
+- Archiving is per person. It never deletes messages or files, completes tasks, stops runs, pauses schedules, removes lessons or changes who can see the conversation, and other people's histories are unaffected. Archived conversations stay readable through search and links; sending in one is refused until that person restores it.
+- An archived conversation comes back to that person's Active list, once per event, for a new message from someone else, a message that @mentions them (name or email), or a new approval request in it that they can give. The agent's replies and progress never bring it back. No extra notification is sent.
+- No new variables are needed.
+
 ### Adding or changing skills
 Skills are folders in `agent-skills/<name>/` with a `SKILL.md` (plus `scripts/` and `references/`). Commit a change and redeploy. The next time an agent using that skill is synced, Hive uploads the new version automatically.
 

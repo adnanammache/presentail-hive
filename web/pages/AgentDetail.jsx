@@ -1,18 +1,23 @@
 // The agent workspace: a compact header with the agent's real status, tabs (Chat, Tasks, Knowledge,
-// Tools & access, Activity), and the Work overview next to the chat. Routes:
+// Tools & access, Activity). Chat is three panes: this person's conversation history (Active /
+// Archived, searchable), the conversation, and an optional side panel for the Work overview, files
+// and tasks, opened without leaving the chat. Routes:
 //   #/agents/:id                   chat, last conversation opened here
-//   #/agents/:id/chat/:chatId      a conversation
+//   #/agents/:id/chat/:chatId      a conversation (archived ones open too; links never break)
+//   #/agents/:id/chat/new          a new conversation (created only when the first message is sent)
 //   #/agents/:id/:tab              tasks | knowledge | tools | activity
 // Older tab names still work: skills, connect → tools; lessons → knowledge; workflows → tasks;
 // colleagues → chat with About open. #/agents/:id/tasks/recurring opens the recurring tasks.
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ago, api, fmtDateTime, toDate, useApi } from '../api.js';
-import { Avatar, Badge, Empty, Icon, Loading, PLATFORM_LABELS, runTone } from '../components/ui.jsx';
+import { Avatar, Badge, Empty, Icon, Loading, Modal, PLATFORM_LABELS, runTone } from '../components/ui.jsx';
 import { AgentForm } from '../components/forms.jsx';
 import { usePref, useTaskUI } from '../components/work.jsx';
 import Chat from '../components/Chat.jsx';
 import Capabilities from '../components/Capabilities.jsx';
 import WorkOverview from '../components/WorkOverview.jsx';
+import ConversationHistory from '../components/ConversationHistory.jsx';
+import ContextViewer, { MIN_WIDTH } from '../components/ContextViewer.jsx';
 import { TaskCard } from '../components/TaskViews.jsx';
 import { RecurringSection } from '../components/Recurring.jsx';
 import Markdown from '../components/Markdown.jsx';
@@ -587,6 +592,47 @@ function MoreMenu({ agent, canManage, onPause, onDelete, onAbout }) {
 
 // ---------------------------------------------------------------- the page
 
+const HISTORY_WIDTH = 288;
+const CHAT_MIN = 440;
+
+/** The width of an element, kept up to date. */
+function useWidth(ref) {
+  const [w, setW] = useState(0);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(([e]) => setW(Math.round(e.contentRect.width)));
+    ro.observe(el);
+    return () => ro.disconnect();
+  });
+  return w;
+}
+
+function ArchiveConfirm({ chat, warnings, onKeep, onArchive }) {
+  const keep = useRef(null);
+  useEffect(() => keep.current?.focus(), []);
+  return (
+    <Modal title="Archive this conversation?" onClose={onKeep}>
+      <div className="form">
+        <p className="muted small">“{chat.title}” will leave your active conversations. Nothing stops or changes:</p>
+        <ul className="archive-warnings">
+          {warnings.map((w) => (
+            <li key={w}>{w}</li>
+          ))}
+        </ul>
+        <div className="form-actions">
+          <button ref={keep} type="button" className="btn" onClick={onKeep}>
+            Keep open
+          </button>
+          <button type="button" className="btn btn-primary" onClick={onArchive}>
+            Archive anyway
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 export default function AgentDetail({ id, meta, tab: routeTab, param }) {
   const { data: agent, setData, error: agentError } = useApi(`/agents/${id}`, ['agent']);
   const { data: me } = useApi('/me');
@@ -597,18 +643,19 @@ export default function AgentDetail({ id, meta, tab: routeTab, param }) {
   const [about, setAbout] = useState(routeTab === 'colleagues');
   const [actionError, setActionError] = useState('');
   const { openComposer, openTask } = useTaskUI();
-  const wide = useWide();
-  const [panelPref, setPanelPref] = usePref('workPanel', 'open');
-  const [drawer, setDrawer] = useState(false);
 
   // The old Colleagues link opens About; going to another section closes it.
   useEffect(() => setAbout(routeTab === 'colleagues'), [routeTab, param]);
   const tab = ALIASES[routeTab] ?? (TABS.some(([k]) => k === routeTab) ? routeTab : 'chat');
   const chatParam = tab === 'chat' && routeTab === 'chat' ? param : undefined;
   const selectedChat = chatParam === 'new' ? 'new' : chatParam ? Number(chatParam) : undefined;
+  const routeChat = useRef(selectedChat);
+  routeChat.current = selectedChat;
 
-  // The conversation the chat is showing (it tells us), for the Work overview.
+  // The conversation the chat is showing (it tells us), for the Work overview and archiving.
   const [shownChat, setShownChat] = useState(null);
+  const [shown, setShown] = useState(null);
+  const onShownChat = useCallback((chatId, chat) => (setShownChat(chatId), setShown(chat ?? null)), []);
 
   const { data: ws, error: wsError, reload: reloadWs } = useApi(`/agents/${id}/workspace${shownChat ? `?chat_id=${shownChat}` : ''}`, ['run', 'task', 'agent', 'workflow', 'chat']);
 
@@ -616,6 +663,148 @@ export default function AgentDetail({ id, meta, tab: routeTab, param }) {
     location.hash = `#/agents/${id}${t === 'chat' && !extra ? '' : `/${t}`}${extra ? `/${extra}` : ''}`;
   }, [id]);
   const selectChat = useCallback((chatId) => (location.hash = `#/agents/${id}/chat/${chatId ?? 'new'}`), [id]);
+
+  // ------------------------------------------------ layout: history | chat | side panel
+  const body = useRef(null);
+  const bodyWidth = useWidth(body);
+  const historyFits = useWide('(min-width: 1024px)');
+  const [historyPref, setHistoryPref] = usePref('agentHistory', 'open');
+  const [historyDrawer, setHistoryDrawer] = useState(false);
+  const historyInline = historyFits && historyPref === 'open';
+  const [overviewPref, setOverviewPref] = usePref('workPanel', 'open');
+  const [ctxWidth, setCtxWidth] = usePref('ctxWidth', 440);
+  const [ctxItems, setCtxItems] = useState([]);
+  const [ctxActive, setCtxActive] = useState(null);
+  const [ctxDrawer, setCtxDrawer] = useState(false);
+  const available = (bodyWidth || 0) - (historyInline ? HISTORY_WIDTH : 0) - CHAT_MIN;
+  const viewerInline = bodyWidth > 0 && available >= MIN_WIDTH;
+  const viewerWidth = Math.max(MIN_WIDTH, Math.min(ctxWidth, available));
+  const opener = useRef(null);
+  // Closing a pane puts focus back where it was opened from (or on the button that reopens it).
+  const restoreFocus = () =>
+    setTimeout(() => (opener.current?.isConnected ? opener.current : document.querySelector('.chat-head [aria-label="Work overview"]'))?.focus(), 0);
+
+  const overviewItem = { key: 'overview', kind: 'overview', title: 'Work overview' };
+  const items = [...(overviewPref === 'open' ? [overviewItem] : []), ...ctxItems];
+  const viewerShown = tab === 'chat' && items.length > 0 && (viewerInline || ctxDrawer);
+
+  const openItem = (item) => {
+    const from = document.activeElement;
+    if (from && from !== document.body && !from.closest?.('.ws-viewer, .ws-viewer-drawer')) opener.current = from;
+    if (item.kind === 'overview') setOverviewPref('open');
+    else setCtxItems((list) => (list.some((i) => i.key === item.key) ? list : [...list, item].slice(-5)));
+    setCtxActive(item.key);
+    if (!viewerInline) setCtxDrawer(true);
+  };
+  const taskTitle = (taskId) => tasks?.find((t) => t.id === Number(taskId))?.title ?? ws?.current_tasks?.find((t) => t.id === Number(taskId))?.title ?? `Task #${taskId}`;
+  const openFile = (ref, filename) => openItem({ key: `file:${ref}`, kind: 'file', fileRef: ref, title: filename || 'File' });
+  const openTaskHere = (taskId) => openItem({ key: `task:${taskId}`, kind: 'task', taskId: Number(taskId), title: taskTitle(taskId) });
+  const closeItem = (key) => {
+    if (key === 'overview') setOverviewPref('closed');
+    else setCtxItems((list) => list.filter((i) => i.key !== key));
+    if (items.length <= 1) (setCtxDrawer(false), restoreFocus());
+  };
+  const closeAll = () => {
+    setOverviewPref('closed');
+    setCtxItems([]);
+    setCtxDrawer(false);
+    restoreFocus();
+  };
+  const toggleOverview = () => {
+    if (viewerShown && overviewPref === 'open' && (ctxActive === 'overview' || !ctxItems.length)) closeItem('overview');
+    else openItem(overviewItem);
+  };
+
+  // "Discuss": a reference chip in the composer. On a narrow screen, back to the chat to write.
+  const [referenceRequest, setReferenceRequest] = useState(null);
+  const discuss = (ref) => {
+    setReferenceRequest({ nonce: Date.now(), ...ref });
+    if (!viewerInline) setCtxDrawer(false);
+  };
+
+  // Escape closes a drawer (the side panel inline stays until closed with its button).
+  useEffect(() => {
+    if (!historyDrawer && !(ctxDrawer && !viewerInline)) return;
+    const esc = (e) => {
+      if (e.key !== 'Escape' || e.defaultPrevented) return;
+      if (ctxDrawer && !viewerInline) (setCtxDrawer(false), restoreFocus());
+      else if (historyDrawer) (setHistoryDrawer(false), restoreFocus());
+    };
+    window.addEventListener('keydown', esc);
+    return () => window.removeEventListener('keydown', esc);
+  }, [historyDrawer, ctxDrawer, viewerInline]);
+
+  // ------------------------------------------------ conversation actions (history rows and the chat header)
+  const [refreshKey, setRefreshKey] = useState(0);
+  const bump = () => setRefreshKey((n) => n + 1);
+  const [toast, setToast] = useState(null);
+  const [confirmArchive, setConfirmArchive] = useState(null);
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), toast.undo ? 10000 : 6000);
+    return () => clearTimeout(t);
+  }, [toast]);
+
+  const archive = async (c, { force = false } = {}) => {
+    let res;
+    try {
+      res = await api(`/chats/${c.id}/archive`, { method: 'POST', body: force ? { force: true } : {} });
+    } catch (err) {
+      if (err.status === 409 && err.data?.warnings?.length) return setConfirmArchive({ chat: c, warnings: err.data.warnings });
+      return setToast({ tone: 'red', text: `Couldn't archive “${c.title}”: ${err.message}` });
+    }
+    setConfirmArchive(null);
+    bump();
+    // The open conversation: move to the latest active one (or the empty state; nothing is created).
+    let next = null;
+    if (c.id === shownChat) {
+      const page = await api(`/agents/${id}/conversations?filter=active&limit=1`).catch(() => null);
+      next = page?.chats?.find((x) => x.id !== c.id)?.id ?? 'new';
+      selectChat(next);
+    }
+    setToast({ text: `Archived “${c.title}”.`, undo: { chat: c, seq: res.archive_seq, next } });
+  };
+  const undo = async ({ chat, seq, next }) => {
+    setToast(null);
+    try {
+      const r = await api(`/chats/${chat.id}/restore`, { method: 'POST', body: { seq } });
+      bump();
+      if (r.stale) return setToast({ text: `“${chat.title}” was changed since, so it was left as it is.` });
+      // Back to it only if the person is still where archiving took them.
+      if (next != null && String(routeChat.current ?? 'new') === String(next)) selectChat(chat.id);
+    } catch (err) {
+      setToast({ tone: 'red', text: `Couldn't undo: ${err.message}` });
+    }
+  };
+  const restore = async (c) => {
+    try {
+      await api(`/chats/${c.id}/restore`, { method: 'POST', body: {} });
+      bump();
+      setToast({ text: `Restored “${c.title}” to your active conversations.` });
+    } catch (err) {
+      setToast({ tone: 'red', text: `Couldn't restore: ${err.message}` });
+    }
+  };
+  const actions = {
+    rename: async (c, title) => {
+      await api(`/chats/${c.id}`, { method: 'PATCH', body: { title } });
+      bump();
+    },
+    share: async (c) => {
+      await api(`/chats/${c.id}`, { method: 'PATCH', body: { visibility: c.visibility === 'shared' ? 'private' : 'shared' } });
+      bump();
+    },
+    archive,
+    restore,
+  };
+  const pickChat = (chatId) => {
+    selectChat(chatId);
+    if (historyDrawer) setHistoryDrawer(false);
+  };
+  const newConversation = () => {
+    pickChat('new');
+    setTimeout(() => document.querySelector('.chat-box textarea')?.focus(), 50);
+  };
 
   if (agentError) return <Empty title="Agent not found">It may have been deleted. <a href="#/agents">Back to Team & agents</a></Empty>;
   if (!agent) return <Loading />;
@@ -639,28 +828,50 @@ export default function AgentDetail({ id, meta, tab: routeTab, param }) {
   const togglePause = () =>
     api(`/agents/${agent.id}`, { method: 'PATCH', body: { status: agent.status === 'paused' ? 'idle' : 'paused' } }).then(setData, (err) => setActionError(err.message));
   const viewRecurring = () => {
-    setDrawer(false);
+    setCtxDrawer(false);
     go('tasks', 'recurring');
   };
 
   const status = ws?.status;
   const paused = agent.status === 'paused';
   const isHuman = agent.platform === 'human';
-  const panelOpen = tab === 'chat' && wide && panelPref === 'open';
   const overview = (
-    <WorkOverview
+    <WorkOverview agent={agent} data={ws} error={wsError} chatId={shownChat} onRetry={reloadWs} onViewRecurring={viewRecurring} onOpenTask={openTaskHere} onOpenFile={openFile} />
+  );
+  const history = (drawer) => (
+    <ConversationHistory
       agent={agent}
-      data={ws}
-      error={wsError}
-      chatId={shownChat}
-      onRetry={reloadWs}
-      onViewRecurring={viewRecurring}
-      onClose={wide ? () => setPanelPref('closed') : () => setDrawer(false)}
+      currentId={shownChat}
+      onSelect={pickChat}
+      onNew={newConversation}
+      actions={actions}
+      refreshKey={refreshKey}
+      drawer={drawer}
+      onCollapse={drawer ? undefined : () => setHistoryPref('closed')}
+      onClose={drawer ? () => (setHistoryDrawer(false), restoreFocus()) : undefined}
+    />
+  );
+  const viewer = (mode) => (
+    <ContextViewer
+      items={items}
+      active={ctxActive}
+      onActivate={setCtxActive}
+      onCloseItem={closeItem}
+      onCloseAll={closeAll}
+      mode={mode}
+      width={viewerWidth}
+      maxWidth={Math.max(MIN_WIDTH, available)}
+      onResize={setCtxWidth}
+      overview={overview}
+      me={me}
+      onOpenFile={openFile}
+      onOpenTask={openTaskHere}
+      onDiscuss={discuss}
     />
   );
 
   return (
-    <div className={`agent-ws ${panelOpen ? 'with-panel' : ''}`}>
+    <div className="agent-ws">
       <div className="agent-main">
         <header className="agent-head">
           <nav className="agent-crumbs" aria-label="Breadcrumb">
@@ -730,20 +941,69 @@ export default function AgentDetail({ id, meta, tab: routeTab, param }) {
         </header>
 
         {tab === 'chat' && (
-          <Chat
-            agent={agent}
-            claudeReady={meta?.claude}
-            chatId={selectedChat}
-            onSelectChat={selectChat}
-            onShownChat={setShownChat}
-            toolbar={
-              !panelOpen && (
-                <button type="button" className="btn" onClick={() => (wide ? setPanelPref('open') : setDrawer(true))} aria-label="Show work overview">
-                  <Icon name="panel" size={16} /> <span className="hide-sm">Work overview</span>
+          <div className="ws-body" ref={body}>
+            {historyInline && (
+              <aside className="ws-history" aria-labelledby="ch-title" style={{ width: HISTORY_WIDTH }}>
+                {history(false)}
+              </aside>
+            )}
+            <Chat
+              agent={agent}
+              claudeReady={meta?.claude}
+              chatId={selectedChat}
+              onSelectChat={selectChat}
+              onShownChat={onShownChat}
+              workspace
+              actions={actions}
+              refreshKey={refreshKey}
+              onOpenFile={openFile}
+              onOpenTask={openTaskHere}
+              referenceRequest={referenceRequest}
+              headerStart={
+                !historyInline && (
+                  <>
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      aria-label="Show conversations"
+                      onClick={(e) => {
+                        if (historyFits) setHistoryPref('open');
+                        else ((opener.current = e.currentTarget), setHistoryDrawer(true));
+                      }}
+                    >
+                      <Icon name="sidebar" size={15} /> <span className="hide-sm">Conversations</span>
+                    </button>
+                    <button type="button" className="btn btn-sm icon-only" aria-label="New conversation" title="New conversation" onClick={newConversation}>
+                      <Icon name="plus" size={15} />
+                    </button>
+                  </>
+                )
+              }
+              toolbar={
+                <button type="button" className={`btn btn-sm ${viewerShown && overviewPref === 'open' ? 'on' : ''}`} onClick={toggleOverview} aria-pressed={viewerShown && overviewPref === 'open'} aria-label="Work overview">
+                  <Icon name="panel" size={15} /> <span className="hide-sm">Work overview</span>
                 </button>
-              )
-            }
-          />
+              }
+            />
+            {viewerShown && viewerInline && (
+              <aside className="ws-viewer" style={{ width: viewerWidth }} aria-label="Beside the conversation">
+                {viewer('inline')}
+              </aside>
+            )}
+            {toast && (
+              <div className={`toast ws-toast tone-${toast.tone ?? 'neutral'}`} role="status">
+                <span>{toast.text}</span>
+                {toast.undo && (
+                  <button type="button" className="link-btn" onClick={() => undo(toast.undo)}>
+                    Undo
+                  </button>
+                )}
+                <button type="button" className="icon-btn sm" aria-label="Dismiss" onClick={() => setToast(null)}>
+                  <Icon name="x" size={14} />
+                </button>
+              </div>
+            )}
+          </div>
         )}
 
         {tab === 'tasks' && (
@@ -811,20 +1071,31 @@ export default function AgentDetail({ id, meta, tab: routeTab, param }) {
         )}
       </div>
 
-      {panelOpen && (
-        <aside className="work-panel" aria-labelledby="wo-title">
-          {overview}
-        </aside>
-      )}
-      {!wide && drawer && tab === 'chat' && (
+      {tab === 'chat' && historyDrawer && !historyInline && (
         <>
-          <div className="drawer-backdrop" onClick={() => setDrawer(false)} />
-          <aside className="task-panel work-drawer" role="dialog" aria-modal="true" aria-labelledby="wo-title">
-            {overview}
+          <div className="drawer-backdrop" onClick={() => (setHistoryDrawer(false), restoreFocus())} />
+          <aside className="ws-history-drawer" role="dialog" aria-modal="true" aria-labelledby="ch-title">
+            {history(true)}
+          </aside>
+        </>
+      )}
+      {viewerShown && !viewerInline && (
+        <>
+          <div className="drawer-backdrop" onClick={() => (setCtxDrawer(false), restoreFocus())} />
+          <aside className="task-panel ws-viewer-drawer" role="dialog" aria-modal="true" aria-label="Beside the conversation">
+            {viewer('drawer')}
           </aside>
         </>
       )}
 
+      {confirmArchive && (
+        <ArchiveConfirm
+          chat={confirmArchive.chat}
+          warnings={confirmArchive.warnings}
+          onKeep={() => setConfirmArchive(null)}
+          onArchive={() => archive(confirmArchive.chat, { force: true })}
+        />
+      )}
       {about && <About agent={agent} status={status} onClose={() => setAbout(false)} />}
       {modal?.kind === 'agent' && <AgentForm agent={agent} onClose={() => setModal(null)} onSaved={setData} />}
     </div>
