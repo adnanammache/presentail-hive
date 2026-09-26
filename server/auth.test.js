@@ -98,3 +98,28 @@ test('logout clears the session cookie', async () => {
   assert.equal(res.headers.get('location'), '/login');
   assert.match(res.headers.get('set-cookie'), /hive_session=;.*Max-Age=0/);
 });
+
+test('invitation links go through Google sign-in; bad links explain themselves; deactivated sessions stop working', async () => {
+  const { createInvite, revokeInvite, deactivate } = await import('./people.js');
+  const owner = { email: 'owner@presentail.com', role: 'owner', name: 'Owner' };
+  delete process.env.RESEND_API_KEY; // no email in tests: the link is returned instead
+  const { invite, delivery } = await createInvite({ email: 'guest@example.com' }, owner);
+  const token = delivery.link.split('/invite/')[1];
+  const res = await get(`/invite/${token}`);
+  assert.equal(res.status, 302);
+  assert.equal(res.headers.get('location'), '/auth/google?login_hint=guest%40example.com');
+  assert.match(res.headers.get('set-cookie'), /hive_invite=/);
+  const hint = await get('/auth/google?login_hint=guest%40example.com');
+  assert.match(hint.headers.get('location'), /login_hint=guest%40example.com/);
+  assert.match((await get('/invite/not-a-real-token')).headers.get('location'), /error=This%20invitation%20link%20is%20not%20valid/);
+  revokeInvite(invite.id, owner);
+  assert.match((await get(`/invite/${token}`)).headers.get('location'), /withdrawn/);
+
+  // A session for someone whose access is turned off no longer gets in.
+  const { run } = await import('./db.js');
+  run("INSERT OR IGNORE INTO users (email, name, role) VALUES ('owner@presentail.com', 'Owner', 'owner'), ('gone@presentail.com', 'Gone', 'member')");
+  const cookie = createSessionToken({ email: 'gone@presentail.com', name: 'Gone' });
+  assert.equal((await get('/api/me', cookie)).status, 200);
+  deactivate('gone@presentail.com', owner);
+  assert.equal((await get('/api/me', cookie)).status, 401);
+});

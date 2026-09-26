@@ -44,9 +44,16 @@ export function usePref(key, initial) {
   return [value, set];
 }
 
-/** A person's initials avatar (never an agent's photo, even with the same name). */
-export function PersonAvatar({ name = '?', size = 24 }) {
+/**
+ * A person's avatar, used on every screen: their photo (uploaded, else their sign-in account's,
+ * resolved by the server) or their initials. Never an agent's picture, even with the same name.
+ */
+export function PersonAvatar({ name = '?', size = 24, photo }) {
+  const [broken, setBroken] = useState(false);
+  useEffect(() => setBroken(false), [photo]);
   const initials = name.split(/[\s.@]+/).filter(Boolean).map((w) => w[0]).slice(0, 2).join('').toUpperCase();
+  if (photo && !broken)
+    return <img className="person-avatar photo" src={photo} alt="" width={size} height={size} style={{ width: size, height: size }} referrerPolicy="no-referrer" onError={() => setBroken(true)} />;
   return (
     <span className="person-avatar" style={{ width: size, height: size, fontSize: size * 0.4 }} aria-hidden="true">
       {initials}
@@ -66,7 +73,7 @@ export function AssigneeChip({ assignee, size = 24, compact }) {
   const agent = assignee.type === 'agent';
   return (
     <span className="assignee-chip">
-      {agent ? <BotAvatar id={assignee.id} name={assignee.name} color={assignee.color} size={size} /> : <PersonAvatar name={assignee.name} size={size} />}
+      {agent ? <BotAvatar id={assignee.id} name={assignee.name} color={assignee.color} size={size} /> : <PersonAvatar name={assignee.name} size={size} photo={assignee.avatar_url} />}
       <span className="assignee-name clamp-1">{assignee.name}</span>
       {!compact && (
         <span className={`type-tag ${agent ? 'agent' : 'person'}`}>
@@ -85,7 +92,7 @@ export function useAssignees() {
   return useMemo(
     () => ({
       loading: !people || !agents,
-      people: (people ?? []).map((p) => ({ type: 'user', ref: `user:${p.email}`, email: p.email, name: p.name || p.email, detail: p.role === 'owner' ? 'Owner' : p.role === 'approver' ? 'Approver' : 'Member' })),
+      people: (people ?? []).map((p) => ({ type: 'user', ref: `user:${p.email}`, email: p.email, name: p.name || p.email, detail: p.title || (p.role === 'owner' ? 'Owner' : p.role === 'approver' ? 'Approver' : 'Member'), avatar_url: p.avatar_url })),
       agents: (agents ?? []).map((a) => ({ type: 'agent', ref: `agent:${a.id}`, id: a.id, name: a.name, detail: [a.title, a.team_name].filter(Boolean).join(' · '), color: a.color, status: a.status })),
     }),
     [people, agents],
@@ -173,7 +180,7 @@ export function AssigneePicker({ value, onChange, label = 'Assign to', allowNone
                           {x.type === 'agent' ? (
                             <BotAvatar id={x.id} name={x.name} color={x.color} size={26} />
                           ) : x.type === 'user' ? (
-                            <PersonAvatar name={x.name} size={26} />
+                            <PersonAvatar name={x.name} size={26} photo={x.avatar_url} />
                           ) : (
                             <span className="person-avatar none" style={{ width: 26, height: 26 }} aria-hidden="true" />
                           )}
@@ -211,3 +218,7 @@ export function DueLabel({ date, done }) {
     </span>
   );
 }
+
+/** Opens a person's profile panel (yours when no email is given) and your preferences. */
+export const PeopleUIContext = createContext({ openPerson: () => {}, openPreferences: () => {} });
+export const usePeopleUI = () => useContext(PeopleUIContext);

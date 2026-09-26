@@ -5,7 +5,7 @@ import { ago, api, fmtDateTime, fmtDay, useApi } from '../api.js';
 import { DateInput, Icon } from './ui.jsx';
 import TaskRun, { uploadFiles } from './TaskRun.jsx';
 import { HandoffBar, TeachBar } from './forms.jsx';
-import { AssigneeChip, AssigneePicker, BLOCKERS, DueLabel, PRIORITY_LABELS, STAGES, stageLabel } from './work.jsx';
+import { AssigneeChip, AssigneePicker, BLOCKERS, DueLabel, PRIORITY_LABELS, PersonAvatar, STAGES, stageLabel } from './work.jsx';
 import { ScheduleFields, SeriesBar, formFromTask, scheduleBody } from './schedule.jsx';
 
 const ACTIVE_RUN = ['starting', 'running', 'needs_approval'];
@@ -152,6 +152,7 @@ function Comments({ task }) {
         {comments?.map((c) => (
           <li key={c.id}>
             <div className="comment-head">
+              {c.author_type === 'user' && <PersonAvatar name={c.author_name} photo={c.avatar_url} size={22} />}
               <strong>{c.author_name}</strong>
               <span className="muted small">{ago(c.created_at)}</span>
             </div>
@@ -179,6 +180,7 @@ function Activity({ task }) {
       {events.map((e) => (
         <li key={e.id}>
           <span className="activity-text">
+            {e.actor_ref?.startsWith('user:') && <PersonAvatar name={e.actor} photo={e.avatar_url} size={18} />}
             <strong>{e.actor}</strong> · {e.text}
           </span>
           <time className="muted small" dateTime={e.created_at} title={fmtDateTime(e.created_at, 'Asia/Dubai')}>

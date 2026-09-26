@@ -26,7 +26,7 @@ export function MemberStack({ members, max = 4 }) {
     <span className="member-stack" aria-label={members.map((m) => `${m.name} (${m.type === 'agent' ? 'AI agent' : 'person'})`).join(', ')}>
       {shown.map((m) => (
         <span key={`${m.type}:${m.ref}`} className="member" title={`${m.name}${m.type === 'agent' ? ' · AI agent' : ''}`}>
-          {m.type === 'agent' ? <BotAvatar id={m.agent_id} name={m.name} color={m.color} size={26} /> : <PersonAvatar name={m.name} size={26} />}
+          {m.type === 'agent' ? <BotAvatar id={m.agent_id} name={m.name} color={m.color} size={26} /> : <PersonAvatar name={m.name} size={26} photo={m.avatar_url} />}
         </span>
       ))}
       {members.length > max && <span className="member more">+{members.length - max}</span>}
@@ -83,7 +83,7 @@ export function ProjectForm({ project, onClose, onSaved }) {
   const row = (x) => (
     <label key={x.ref} className="member-row">
       <input type="checkbox" checked={v.members.has(x.ref)} onChange={() => toggle(x.ref)} />
-      {x.type === 'agent' ? <BotAvatar id={x.id} name={x.name} color={x.color} size={24} /> : <PersonAvatar name={x.name} size={24} />}
+      {x.type === 'agent' ? <BotAvatar id={x.id} name={x.name} color={x.color} size={24} /> : <PersonAvatar name={x.name} size={24} photo={x.avatar_url} />}
       <span className="grow">
         {x.name}
         <span className="muted small"> · {x.detail}</span>

@@ -16,19 +16,27 @@ const ownerEmails = () => (process.env.OWNER_EMAILS || '').split(',').map((e) =>
 
 const parse = (u) => (u ? { ...u, teams: JSON.parse(u.teams || '[]') } : null);
 
+const safePhoto = (url) => (/^https:\/\/[^\s]+$/.test(url ?? '') ? String(url).slice(0, 1000) : null);
+
 /** The Hive user for a signed-in person (created on first sight). `null` email = local/password mode. */
-export function userFor({ email, name } = {}) {
+export function userFor({ email, name, picture } = {}) {
   const e = String(email || '').toLowerCase();
   if (!e) return { email: '', name: name || 'Admin', role: 'owner', teams: [] }; // no Google sign-in: single-admin mode
   let u = get('SELECT * FROM users WHERE email = ?', e);
   if (!u) {
     const first = !get("SELECT 1 FROM users WHERE role = 'owner'") && !ownerEmails().length;
     const role = ownerEmails().includes(e) || first ? 'owner' : 'member';
-    run('INSERT OR IGNORE INTO users (email, name, role) VALUES (?, ?, ?)', e, name || e, role);
+    run('INSERT OR IGNORE INTO users (email, name, role, provider_photo) VALUES (?, ?, ?, ?)', e, name || e, role, safePhoto(picture));
     u = get('SELECT * FROM users WHERE email = ?', e);
     emit('user', {});
   } else {
-    run("UPDATE users SET name = COALESCE(?, name), last_seen_at = datetime('now') WHERE email = ?", name || null, e);
+    // The account's name only until the person edits their profile; the account photo is kept up
+    // to date but never replaces an uploaded photo or a removal (see people.js avatarUrl).
+    run(
+      `UPDATE users SET name = CASE WHEN profile_updated_at IS NULL THEN COALESCE(?, name) ELSE name END,
+         provider_photo = COALESCE(?, provider_photo), last_seen_at = datetime('now') WHERE email = ?`,
+      name || null, safePhoto(picture), e,
+    );
   }
   u = parse(u);
   if (ownerEmails().includes(e)) u.role = 'owner';
@@ -42,7 +50,7 @@ export function setUserRole(email, { role, teams }, actor) {
   if (!u) throw new Error('Unknown person');
   if (role !== undefined && !ROLES.includes(role)) throw new Error(`role must be one of ${ROLES.join(', ')}`);
   if (role && role !== 'owner' && u.role === 'owner') {
-    const owners = get("SELECT COUNT(*) AS n FROM users WHERE role = 'owner'").n;
+    const owners = get("SELECT COUNT(*) AS n FROM users WHERE role = 'owner' AND status = 'active'").n; // owners whose access is off don't count
     if (owners <= 1) throw new Error('Hive needs at least one owner');
   }
   if (actor && actor.email === u.email && role && role !== 'owner') throw new Error("You can't remove your own owner role");
