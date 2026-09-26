@@ -227,7 +227,7 @@ function Shell() {
 }
 
 function Photos({ children }) {
-  const { data: agents } = useApi('/agents', ['agent']);
+  const { data: agents, reload } = useApi('/agents', ['agent']);
   const value = useMemo(() => {
     const byId = new Map();
     const byName = new Map();
@@ -235,8 +235,8 @@ function Photos({ children }) {
       const url = photoUrl(a);
       if (url) byId.set(a.id, url), byName.set(a.name, url);
     }
-    return { byId, byName };
-  }, [agents]);
+    return { byId, byName, reload };
+  }, [agents, reload]);
   return <PhotosContext.Provider value={value}>{children}</PhotosContext.Provider>;
 }
 

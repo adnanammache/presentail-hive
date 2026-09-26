@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api, fmtDateTime, useApi } from '../api.js';
+import { api, fmtDateTime, useApi, useReloadPhotos } from '../api.js';
 import { Field, Icon, Modal, PLATFORM_LABELS } from './ui.jsx';
 import { recommendModel } from '../../shared/modelAdvice.js';
 import BotAvatar from './BotAvatar.jsx';
@@ -262,6 +262,8 @@ async function squarePhoto(file) {
 function PhotoField({ agent, onChange }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const reloadPhotos = useReloadPhotos();
+  const done = (a) => (onChange(a), reloadPhotos());
   const pick = async (e) => {
     const file = e.target.files?.[0];
     e.target.value = '';
@@ -270,14 +272,14 @@ function PhotoField({ agent, onChange }) {
     setBusy(true);
     try {
       const blob = await squarePhoto(file);
-      onChange(await api(`/agents/${agent.id}/photo`, { method: 'POST', raw: blob }));
+      done(await api(`/agents/${agent.id}/photo`, { method: 'POST', raw: blob }));
     } catch (err) {
       setError(err.message);
     } finally {
       setBusy(false);
     }
   };
-  const remove = async () => onChange(await api(`/agents/${agent.id}/photo`, { method: 'DELETE' }));
+  const remove = async () => done(await api(`/agents/${agent.id}/photo`, { method: 'DELETE' }));
   return (
     <div className="photo-field">
       <BotAvatar id={agent.id} name={agent.name} color={agent.color} size={64} />

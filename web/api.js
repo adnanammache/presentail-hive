@@ -27,6 +27,8 @@ export function usePhoto({ id, name } = {}) {
   if (!photos) return null;
   return (id != null && photos.byId.get(Number(id))) || (name && photos.byName.get(name)) || null;
 }
+/** Refetch the photos now, e.g. right after an upload (don't wait for the live event, which may be down). */
+export const useReloadPhotos = () => useContext(PhotosContext)?.reload ?? (() => {});
 
 export function useLiveSource() {
   const listeners = useRef(new Set());
