@@ -25,8 +25,18 @@ function claude() {
 }
 export const claudeConfigured = () => Boolean(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN);
 
-export function postMessage(agentId, sender, body, meta = null) {
-  const { lastInsertRowid } = run('INSERT INTO messages (agent_id, sender, body, meta) VALUES (?, ?, ?, ?)', agentId, sender, body, meta ? JSON.stringify(meta) : null);
+// SQLite's "YYYY-MM-DD HH:MM:SS" (UTC) for a timestamp, or null if it isn't one.
+const sqlTime = (at) => {
+  const d = at ? new Date(at) : null;
+  return d && !Number.isNaN(d.getTime()) ? d.toISOString().replace('T', ' ').slice(0, 19) : null;
+};
+
+/** `at`: when it was actually said (e.g. an agent reply picked up late), if not now. */
+export function postMessage(agentId, sender, body, meta = null, { at } = {}) {
+  const { lastInsertRowid } = run(
+    "INSERT INTO messages (agent_id, sender, body, meta, created_at) VALUES (?, ?, ?, ?, COALESCE(?, datetime('now')))",
+    agentId, sender, body, meta ? JSON.stringify(meta) : null, sqlTime(at),
+  );
   const message = get('SELECT * FROM messages WHERE id = ?', lastInsertRowid);
   if (sender === 'agent') run("UPDATE agents SET last_seen_at = datetime('now') WHERE id = ?", agentId);
   emit('message', { agent_id: agentId, message });

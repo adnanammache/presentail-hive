@@ -105,3 +105,15 @@ function Markdown({ text, className = '' }) {
 
 // Re-renders only when its own text changes, so a new message doesn't re-parse the whole thread.
 export default memo(Markdown);
+
+/**
+ * A message as plain text, for one-line previews (inbox, dashboard): the words without the
+ * Markdown marks, parsed the same way (so `a*b` and code keep their asterisks).
+ */
+export const MarkdownText = memo(function MarkdownText({ text }) {
+  return (
+    <ReactMarkdown remarkPlugins={[remarkGfm, htmlAsText]} allowedElements={[]} unwrapDisallowed>
+      {String(text ?? '')}
+    </ReactMarkdown>
+  );
+});

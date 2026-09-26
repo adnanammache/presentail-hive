@@ -1,6 +1,7 @@
 import { ago, api, useApi } from '../api.js';
 import { Avatar, Empty, Loading } from '../components/ui.jsx';
 import Chat from '../components/Chat.jsx';
+import { MarkdownText } from '../components/Markdown.jsx';
 
 export default function Inbox({ id, meta }) {
   const { data: agents } = useApi('/agents', ['agent', 'message']);
@@ -20,7 +21,7 @@ export default function Inbox({ id, meta }) {
                 <strong>{a.name}</strong>
                 <span className="muted small">{a.last_message_at ? ago(a.last_message_at) : ''}</span>
               </div>
-              <div className="row-sub clamp-1">{a.last_message ?? a.title}</div>
+              <div className="row-sub clamp-1">{a.last_message ? <MarkdownText text={a.last_message} /> : a.title}</div>
             </div>
           </a>
         ))}

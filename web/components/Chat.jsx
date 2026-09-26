@@ -62,6 +62,11 @@ export default function Chat({ agent, claudeReady }) {
   const live = useContext(LiveContext);
   const [draft, setDraft] = useState('');
   const [waiting, setWaiting] = useState(false);
+  const [error, setError] = useState(null);
+  const [stopping, setStopping] = useState(false);
+  useEffect(() => {
+    if (!working) setStopping(false);
+  }, [working]);
 
   useEffect(
     () =>
@@ -84,10 +89,29 @@ export default function Chat({ agent, claudeReady }) {
     const body = draft.trim();
     if (!body) return;
     setDraft('');
+    setError(null);
     scroll.pin(); // your own message always brings you back down
-    const m = await api(`/agents/${agent.id}/messages`, { method: 'POST', body: { body } });
+    let m;
+    try {
+      m = await api(`/agents/${agent.id}/messages`, { method: 'POST', body: { body } });
+    } catch (err) {
+      // Never lose what was typed: put it back (ahead of anything typed since).
+      setDraft((d) => (d.trim() ? `${body}\n${d}` : body));
+      setError(`Couldn't send: ${err.message}. Your message is back in the box. Try again.`);
+      return;
+    }
     setData((ms) => (ms.some((x) => x.id === m.id) ? ms : [...ms, m]));
     if (willReply) setWaiting(true);
+  };
+
+  const stop = async () => {
+    setStopping(true);
+    try {
+      await api(`/runs/${chatRun.id}/interrupt`, { method: 'POST' });
+    } catch (err) {
+      setStopping(false);
+      setError(`Couldn't stop ${agent.name}: ${err.message}`);
+    }
   };
 
   let hint = null;
@@ -110,6 +134,11 @@ export default function Chat({ agent, claudeReady }) {
               <i />
               <i />
             </div>
+            {working && chatRun?.id && (
+              <button type="button" className="typing-stop" onClick={stop} disabled={stopping}>
+                {stopping ? 'Stopping…' : 'Stop'}
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -117,6 +146,11 @@ export default function Chat({ agent, claudeReady }) {
         <button type="button" className="chat-jump" onClick={() => scroll.toBottom()}>
           New messages ↓
         </button>
+      )}
+      {error && (
+        <div className="chat-hint chat-error" role="alert">
+          {error}
+        </div>
       )}
       {hint && <div className="chat-hint">{hint}</div>}
       <form className="composer" onSubmit={send}>

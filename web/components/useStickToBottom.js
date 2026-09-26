@@ -35,6 +35,17 @@ export default function useStickToBottom(key, reset) {
     else setUnseen(true);
   }, [key, toBottom]);
 
+  // A banner or hint appearing shrinks the list: stay on the newest message if you were there.
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => {
+      if (pinned.current) el.scrollTop = el.scrollHeight;
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
   const onScroll = useCallback(() => {
     const el = ref.current;
     if (!el) return;
