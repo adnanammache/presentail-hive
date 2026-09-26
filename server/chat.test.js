@@ -98,7 +98,7 @@ test('an agent saves what it is taught in chat as a lesson; from a member it is 
   // The owner (first test) shares a fact: the agent saves it, live.
   fake.script.push(lessonCall('sevt_l1', 'UAE VAT is filed quarterly; returns are due on the 28th.'), idle);
   await say('UAE VAT returns are due on September 28, we file quarterly', 'owner@presentail.com');
-  await waitFor(() => get("SELECT status FROM runs WHERE agent_id = ? AND kind = 'chat'", id)?.status === 'waiting' && fake.calls.sent.length >= 2, 'lesson saved');
+  await waitFor(() => get("SELECT status FROM runs WHERE agent_id = ? AND kind = 'chat' ORDER BY id DESC", id)?.status === 'waiting' && fake.calls.sent.length >= 2, 'lesson saved');
   assert.ok(fake.calls.agentsCreate.at(-1).tools.some((t) => t.name === 'save_lesson'));
   assert.match(fake.calls.agentsCreate.at(-1).system, /save_lesson/);
   assert.match(fake.calls.sent[1].events[0].content[0].text, /^Saved\./);
@@ -109,13 +109,13 @@ test('an agent saves what it is taught in chat as a lesson; from a member it is 
   // Saving it again changes nothing.
   fake.script.push(lessonCall('sevt_l2', 'UAE VAT is filed quarterly; returns are due on the 28th.'), idle);
   await say('Remember the VAT dates', 'member@presentail.com');
-  await waitFor(() => get("SELECT status FROM runs WHERE agent_id = ? AND kind = 'chat'", id)?.status === 'waiting' && fake.calls.sent.length >= 4, 'duplicate answered');
+  await waitFor(() => get("SELECT status FROM runs WHERE agent_id = ? AND kind = 'chat' ORDER BY id DESC", id)?.status === 'waiting' && fake.calls.sent.length >= 4, 'duplicate answered');
   assert.match(fake.calls.sent[3].events[0].content[0].text, /already one of your lessons/);
 
   // A member's fact becomes a suggestion, switched off.
   fake.script.push(lessonCall('sevt_l3', 'Always round VAT down.'), idle);
   await say('Always round VAT down', 'member@presentail.com');
-  await waitFor(() => get("SELECT status FROM runs WHERE agent_id = ? AND kind = 'chat'", id)?.status === 'waiting' && fake.calls.sent.length >= 6, 'suggestion saved');
+  await waitFor(() => get("SELECT status FROM runs WHERE agent_id = ? AND kind = 'chat' ORDER BY id DESC", id)?.status === 'waiting' && fake.calls.sent.length >= 6, 'suggestion saved');
   assert.match(fake.calls.sent[5].events[0].content[0].text, /suggestion, switched off/);
   assert.equal(get("SELECT active FROM agent_lessons WHERE agent_id = ? AND text = 'Always round VAT down.'", id).active, 0);
   assert.equal(get('SELECT COUNT(*) AS n FROM agent_lessons WHERE agent_id = ? AND active = 1', id).n, 1);

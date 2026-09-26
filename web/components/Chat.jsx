@@ -35,6 +35,11 @@ const Bubble = memo(function Bubble({ m, agent }) {
         <span>{m.body}</span>
         <time>{time}</time>
         {meta?.type === 'approval' && <ApprovalButtons meta={meta} />}
+        {meta?.type === 'task_created' && (
+          <a className="link" href={`#/tasks/${meta.task_id}`}>
+            Open task
+          </a>
+        )}
       </div>
     );
   }
