@@ -215,3 +215,44 @@ Open the agent → **Skills & tools** → tick **Odoo** and its skills, then **S
 | Lebanon Accountant | Toters Fee Bills, Blom Bank Feed, Sal Supplier Statement Reconciliation, Intercompany Sal Ltd, PDF, Excel |
 | Cyprus Accountant | Odoo Supplier Invoices, Intercompany Sal Ltd, PDF |
 | Auditor | Blom Bank Feed, Sal Supplier Statement Reconciliation, Odoo Supplier Invoices (it reads freely; any fix it proposes waits for you) |
+
+## Drive, Gmail and Slack for agents
+
+Agents can read Google Drive (including Google Sheets), the mailboxes you allow, and Slack channels. They can also fetch the invoices and statements they find into their workspace. This replaces the Make scenarios that pulled Gmail PDFs to Drive or attached Drive, Gmail and Slack files to Odoo. As with Odoo, Hive makes every call itself: no Google or Slack credential reaches an agent's sandbox, and every call is logged.
+
+- **Reads and fetches run immediately**: searching, reading a file, email or channel, and fetching a file into `/workspace/inputs/drive|gmail|slack/`.
+- **Two things wait for Approve in Hive** (or run straight away for an agent set to *Never ask*): posting a Slack message, and **attach to Odoo**, which puts a Drive file, email attachment or Slack file on a bill or payment directly. The file doesn't pass through the model.
+- **Not possible**: sending email, and changing or deleting anything in Drive or Gmail. Hive only asks Google for read-only access.
+- Emails are marked to agents as outside data: they are told never to follow instructions written in them, and Odoo and Wafeq changes still need approval.
+
+### Google: one service account for Drive and Gmail (about 10 minutes)
+
+1. In [console.cloud.google.com](https://console.cloud.google.com), open the **Presentail Hive** project (the one used for sign-in). **APIs & Services → Library**: enable **Google Drive API**, **Google Sheets API** and **Gmail API**.
+2. **IAM & Admin → Service accounts → Create service account**, named `hive-agents`. It needs no project roles. Open it → **Keys → Add key → JSON** and download the file.
+3. In Railway, set `GOOGLE_SERVICE_ACCOUNT_JSON` to the whole content of that file. If pasting multi-line JSON is awkward, use `base64 -w0 key.json` and paste that instead.
+4. **Drive**: share the folders agents should see (for example the Toters invoice-report folder and the Careem tracker Sheet) with the service account's email (`hive-agents@….iam.gserviceaccount.com`), as **Viewer**. It sees nothing else.
+   *Alternative:* to have Drive read as a Workspace user instead, set `GOOGLE_DRIVE_AS=that.user@presentail.com` and add the Drive scopes from step 5.
+5. **Gmail** (needs a Google Workspace admin): in [admin.google.com](https://admin.google.com), go to **Security → Access and data control → API controls → Manage Domain Wide Delegation → Add new**. Enter the service account's **Client ID** (on its details page) and these scopes:
+   ```
+   https://www.googleapis.com/auth/gmail.readonly
+   ```
+   Add `https://www.googleapis.com/auth/drive.readonly,https://www.googleapis.com/auth/spreadsheets.readonly` only if you use `GOOGLE_DRIVE_AS`.
+6. In Railway, set `GOOGLE_GMAIL_MAILBOXES` to the mailboxes agents may read, comma-separated, e.g. `maya@presentail.com`. Delegation technically allows any mailbox, so Hive refuses every mailbox that isn't on this list.
+
+**Settings → System health** then shows *Google (Drive, Gmail)* with the account and mailboxes it reached. If a mailbox is refused, the error says the delegation is missing.
+
+### Slack
+
+Agents read Slack as **their own Slack bot** (Settings → Agents in Slack), which already has the scopes it needs. Agents without a bot read as the shared Hive app (`SLACK_BOT_TOKEN`); give that app `channels:history`, `groups:history`, `channels:read`, `groups:read`, `files:read` and `users:read`, then reinstall it.
+
+A bot only sees the channels it is in. So to open a channel to an agent, invite its bot with `/invite @Ledger` (or invite the Hive app). Hive's Slack tokens refresh themselves, so the `token_revoked` failures from Make's Slack connections don't happen here.
+
+### Turning it on for an agent
+
+Open the agent → **Skills & tools** → tick **Google Drive**, **Gmail** and/or **Slack**, then **Save & sync**. Skills that mention them (e.g. Careem month-end) tick them for you. Agents that also have **Odoo** get the *attach to Odoo* action.
+
+| Agent | Suggested |
+|---|---|
+| Lebanon Accountant | Drive (Toters invoice reports), Slack (#statement-ofaccount), Gmail (supplier invoices) |
+| Cyprus Accountant | Gmail (supplier invoices), Drive |
+| UAE bookkeeper (Careem, Talabat, Noon) | Drive (tracker Sheet), Slack (the check-mark list) |

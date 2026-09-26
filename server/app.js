@@ -462,8 +462,8 @@ export function dashboardRouter() {
     connections: [
       { key: 'anthropic', name: 'Anthropic (Claude)', connected: managedReady(), env: 'ANTHROPIC_API_KEY', purpose: 'Powers every agent.' },
       ...integrationList().map((i) => ({ key: i.key, name: i.name, connected: i.configured, env: i.env, purpose: i.description })),
-      { key: 'slack', name: 'Slack alerts', connected: slackConfigured(), env: 'SLACK_BOT_TOKEN + SLACK_ALERT_CHANNEL', purpose: 'Pings you when an agent needs approval, finishes, or gets stuck.' },
-      { key: 'google', name: 'Google sign-in', connected: authMode() === 'google', env: 'GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET', purpose: 'Continue with Google for @presentail.com accounts.' },
+      { key: 'slack_alerts', name: 'Slack alerts', connected: slackConfigured(), env: 'SLACK_BOT_TOKEN + SLACK_ALERT_CHANNEL', purpose: 'Pings you when an agent needs approval, finishes, or gets stuck.' },
+      { key: 'google_signin', name: 'Google sign-in', connected: authMode() === 'google', env: 'GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET', purpose: 'Continue with Google for @presentail.com accounts.' },
     ],
     slack: {
       buttons: slackButtonsEnabled(),

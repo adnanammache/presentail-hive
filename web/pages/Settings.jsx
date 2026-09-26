@@ -8,8 +8,11 @@ const HOW = {
   anthropic: 'Create a key at console.anthropic.com (a workspace with Managed Agents access) and add it in Railway as ANTHROPIC_API_KEY.',
   odoo: 'In Odoo: click your avatar → My Profile → Account Security → New API Key (use a user with accounting rights on all companies). Add it in Railway as ODOO_API_KEY. Optional: ODOO_URL (default https://presentail.odoo.com) and ODOO_DB (default presentail). The key stays in Hive; agents never see it.',
   wafeq: 'In Wafeq: Settings → API keys → create a key. Add it in Railway as WAFEQ_API_KEY. It stays in Hive: agents reach Wafeq through Hive, reads are live and every change waits for one batch approval.',
-  slack: 'At api.slack.com/apps: Create app → From scratch → OAuth & Permissions → add the chat:write scope → Install to workspace. Copy the Bot token (xoxb-…) into SLACK_BOT_TOKEN. Put your Slack member ID (Profile → ⋯ → Copy member ID) or a channel ID into SLACK_ALERT_CHANNEL; for a channel, invite the app to it first.',
-  google: 'See DEPLOY.md → Continue with Google.',
+  slack_alerts: 'At api.slack.com/apps: Create app → From scratch → OAuth & Permissions → add the chat:write scope → Install to workspace. Copy the Bot token (xoxb-…) into SLACK_BOT_TOKEN. Put your Slack member ID (Profile → ⋯ → Copy member ID) or a channel ID into SLACK_ALERT_CHANNEL; for a channel, invite the app to it first.',
+  google_signin: 'See DEPLOY.md → Continue with Google.',
+  drive: 'In Google Cloud (the Presentail Hive project): create a service account, add a JSON key and paste the whole file into GOOGLE_SERVICE_ACCOUNT_JSON. Then share the Drive folders agents should see with the service account\'s email (Viewer). See DEPLOY.md → Drive, Gmail and Slack for agents.',
+  gmail: 'Uses the same service account as Drive. A Google Workspace admin allows it to read mail (Security → API controls → Domain-wide delegation, scope gmail.readonly); then list the mailboxes agents may read in GOOGLE_GMAIL_MAILBOXES. See DEPLOY.md → Drive, Gmail and Slack for agents.',
+  slack: 'Agents read Slack as their own bot (Settings → Agents in Slack) or as the Hive app (SLACK_BOT_TOKEN, with channels:history, groups:history, channels:read, groups:read, files:read and users:read). Invite the bot to each channel agents should read.',
 };
 
 function OdooLog() {
@@ -152,7 +155,7 @@ export default function Settings() {
                 )}
               </div>
             )}
-            {c.key === 'slack' && c.connected && (
+            {c.key === 'slack_alerts' && c.connected && (
               <div className="settings-action">
                 <button className="btn btn-sm" onClick={test}>
                   Send test alert

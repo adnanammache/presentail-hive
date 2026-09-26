@@ -10,6 +10,7 @@ Presentail's hive of AI agents: see every agent, what it's working on, what's sc
 - **Recurring tasks**: schedules (daily, selected weekdays, every n weeks, monthly incl. last day, quarterly, yearly, chosen months) in each schedule's own time zone. Each occurrence creates a normal task for a person or an agent, with its own reporting period and due date, and starts the agent if asked. Agents set these up themselves from a chat ("Every Monday at 9 AM Dubai time, check outstanding supplier invoices"). See DEPLOY.md → Recurring tasks.
 - **Agent workspace / Inbox**: conversations with every agent (start as many as you like; each is private to whoever started it, plus workspace owners, unless shared). Replies render as Markdown, the agent's tool activity shows as it works, and a Work overview beside the chat lists the conversation's task, what's coming up and recent files. Claude agents reply live. Webhook agents can reply synchronously or later through the API.
 - **Odoo, safely**: agents read Odoo freely. Every create/write/post/reconcile waits for Approve in Hive (or *Approve all for this run*), configuration is off-limits, and every change is logged with who approved it. Hive holds the key (`ODOO_API_KEY`).
+- **Drive, Gmail and Slack for agents**: agents search and read Drive files and Google Sheets, the mailboxes you allow, and the Slack channels their bot is in, and fetch the invoices and statements they find into their workspace. Attaching a file to an Odoo record goes straight from the source (no Make scenario) and, like posting in Slack, waits for approval. Nothing can send email or change a Drive file. See DEPLOY.md → Drive, Gmail and Slack for agents.
 - **Org chart**: Presentail's teams and agents as a tree, with status, open tasks and AI spend per agent.
 - **AI spend**: month-to-date cost of agent runs, daily for 30 days, by team and by agent. It appears on the dashboard, team headers and agent cards.
 - **Agent output files**: reports and spreadsheets an agent saves are downloadable from the task.
@@ -43,6 +44,9 @@ APP_PASSWORD=choose-one ANTHROPIC_API_KEY=sk-ant-... npm start   # serves UI + A
 | `ODOO_API_KEY` (+ optional `ODOO_URL`, `ODOO_DB`) | Odoo for agents, executed by Hive with approvals. |
 | `RESEND_API_KEY`, `MAIL_FROM` | Optional: email invitations to new people (otherwise Hive gives you the link to share). |
 | `WAFEQ_API_KEY` | Wafeq integration for managed agents. Agents reach Wafeq through Hive: reads are live, writes are queued and approved as one batch. The key never leaves Hive. |
+| `GOOGLE_SERVICE_ACCOUNT_JSON` | Drive and Gmail for agents: a Google service account key (the JSON, or base64 of it). Read-only. |
+| `GOOGLE_DRIVE_AS` | Optional: a Workspace user Drive reads as (needs domain-wide delegation). Default: the service account, which sees what is shared with it. |
+| `GOOGLE_GMAIL_MAILBOXES` | Mailboxes agents may read, comma-separated (needs domain-wide delegation). |
 | `DEFAULT_CLAUDE_MODEL` | Model used when an agent doesn't set one (default `claude-opus-5`). |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Turns on **Continue with Google** sign-in (see DEPLOY.md). |
 | `ALLOWED_EMAIL_DOMAIN` | Google accounts allowed in (default `presentail.com`, comma-separated). |
@@ -103,6 +107,7 @@ server/            Express API + scheduler (plain ESM JavaScript)
   recurring.js     recurrence rules, time zones, reporting periods, deadlines (croner)
   schedules.js     recurring tasks: permissions, occurrences, delivery, retries
   scheduleTools.js the recurring-task tools managed agents get
+  connectors.js    the drive, gmail and slack tools (google.js, slackRead.js do the calls)
   db.js            SQLite schema (node:sqlite)
   seed.js          sample data
   api.test.js      API tests: npm test

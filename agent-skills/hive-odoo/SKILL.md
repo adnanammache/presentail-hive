@@ -59,7 +59,9 @@ accounts, taxes, journals, mappings, VAT maths and the traps. Only the *transpor
 | `execute_kw(model, 'write', [[ids], vals])` | `odoo(model, 'write', co, ids=[…], params={vals})` |
 | A Make "poster" scenario that loops over many records | One `create` with a `vals_list`, or a few batched calls |
 | Make data stores, webhooks, feeders, gateway 502s, scenario ids | Ignore. They don't exist here |
-| "Attach the PDF" via a Make/Drive step | `odoo('ir.attachment', 'create', co, params={vals_list: [{name, res_model, res_id, datas: <base64>, mimetype}]})` using the file in /workspace/inputs |
+| "Attach the PDF" when the file is in /workspace/inputs | `odoo('ir.attachment', 'create', co, params={vals_list: [{name, res_model, res_id, datas: <base64>, mimetype}]})` |
+| "Attach Drive file to Odoo move", "Attach invoice PDF from Gmail", "Attach Slack file to Odoo move" (Make scenarios), or a files.slack.com link driven through Chrome | If you have the `drive` / `gmail` / `slack` tool: its `attach_to_odoo` action with the file plus `res_model`, `res_id`, `company_id`. The file goes straight from the source to Odoo |
+| "Pull Gmail PDFs to Drive", Drive connector `search_files` / `read_file_content`, Slack connector `slack_read_channel` / `slack_read_file` | The `gmail`, `drive` and `slack` tools: `search` / `read` / `history`, then `fetch` to get the file into /workspace/inputs to read it |
 
 Always re-check an id with a quick read before relying on it if the skill says it was "verified
 on" a past date.

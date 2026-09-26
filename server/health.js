@@ -73,6 +73,15 @@ export const CHECKS = {
       if (!res.ok) throw new Error(`Wafeq answered ${res.status}${res.status === 401 || res.status === 403 ? ': the API key is not valid' : ''}`);
     },
   },
+  google: {
+    name: 'Google (Drive, Gmail)',
+    configured: () => Boolean(process.env.GOOGLE_SERVICE_ACCOUNT_JSON),
+    env: 'GOOGLE_SERVICE_ACCOUNT_JSON',
+    check: async () => {
+      const { testGoogle } = await import('./google.js');
+      return testGoogle();
+    },
+  },
   slack: {
     name: 'Slack',
     configured: () => Boolean(process.env.SLACK_BOT_TOKEN),

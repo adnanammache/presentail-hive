@@ -12,7 +12,7 @@ import { readFile } from 'node:fs/promises';
 import { all, get, run, update } from './db.js';
 import { emit } from './events.js';
 import { logActivity } from './activity.js';
-import { INTEGRATIONS, parseList, skillFiles, skillHash, skillLibrary } from './capabilities.js';
+import { INTEGRATIONS, integrationReady, parseList, skillFiles, skillHash, skillLibrary } from './capabilities.js';
 import { postMessage } from './dispatch.js';
 import { notifyRun, settleApprovalAlert } from './notify.js';
 import { TASK_TOOL, finishTask } from './handoff.js';
@@ -29,6 +29,7 @@ import { checkBudget, checkThresholds } from './budget.js';
 import { recordHealth } from './health.js';
 import { odooTool, checkAgentCall, classify, describeCall, formatResult, odooCall } from './odoo.js';
 import { SCHEDULE_GUIDE, SCHEDULE_TOOLS, SCHEDULE_TOOL_NAMES, handleScheduleTool } from './scheduleTools.js';
+import { CONNECTOR_NAMES, checkConnectorCall, classifyConnector, connectorPreview, connectorTool, describeConnector, runConnector, safeFilename } from './connectors.js';
 
 const DEFAULT_MODEL = process.env.DEFAULT_CLAUDE_MODEL || 'claude-opus-5';
 const ENV_NAME = process.env.HIVE_ENVIRONMENT_NAME || (process.env.NODE_ENV === 'production' ? 'presentail-hive' : 'presentail-hive-dev');
@@ -50,7 +51,7 @@ const meta = {
   set: (key, value) => run('INSERT INTO app_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value', key, JSON.stringify(value)),
 };
 
-const configuredIntegrations = () => Object.entries(INTEGRATIONS).filter(([, i]) => process.env[i.env]);
+const configuredIntegrations = () => Object.entries(INTEGRATIONS).filter(([k]) => integrationReady(k));
 
 // ---------------------------------------------------------------- infrastructure
 
@@ -148,7 +149,7 @@ async function ensureSkill(item) {
 export function composeSystem(agent) {
   const team = agent.team_id ? get('SELECT name FROM teams WHERE id = ?', agent.team_id)?.name : null;
   const wanted = parseList(agent.integrations);
-  const available = wanted.filter((k) => INTEGRATIONS[k] && process.env[INTEGRATIONS[k].env]);
+  const available = wanted.filter((k) => integrationReady(k));
   const missing = wanted.filter((k) => !available.includes(k));
   const autonomous = agent.approval === 'autonomous';
   const lines = [
@@ -164,6 +165,8 @@ export function composeSystem(agent) {
           .map((k) =>
             k === 'wafeq'
               ? `Wafeq (through Hive: your Wafeq scripts read the address from /workspace/hive/wafeq.json automatically. Reads are live; writes are queued, not sent: the scripts report them as QUEUED. After a real run, call \`wafeq_plan\` with action "submit"; ${autonomous ? 'Hive posts the whole batch straight away' : 'a person approves the whole batch and Hive posts it'}, then tells you the real ids. Never try to reach api.wafeq.com directly)`
+              : CONNECTOR_NAMES.has(k)
+              ? `${INTEGRATIONS[k].name} (through the \`${k}\` tool; Hive runs each call: reading and fetching files run immediately, ${k === 'slack' ? 'posting and ' : ''}attaching to Odoo ${autonomous ? 'also run immediately' : 'wait for a person to approve'})`
               : INTEGRATIONS[k].via === 'hive'
               ? `${INTEGRATIONS[k].name} (through the \`${k}\` tool; Hive runs each call, ${autonomous ? 'reads and changes alike run immediately' : 'reads are immediate and every change waits for a person to approve it, so say what you are about to change and why before calling'})`
               : `${INTEGRATIONS[k].name} (credentials are in $${INTEGRATIONS[k].env}; use it exactly as your skills describe)`,
@@ -225,6 +228,7 @@ async function buildAgentConfig(agent) {
       },
       ...(parseList(agent.integrations).includes('odoo') ? [odooTool({ autonomous })] : []),
       ...(parseList(agent.integrations).includes('wafeq') ? [wafeqTool({ autonomous })] : []),
+      ...['drive', 'gmail', 'slack'].filter((k) => parseList(agent.integrations).includes(k)).map((k) => connectorTool(k, { autonomous, odoo: parseList(agent.integrations).includes('odoo') })),
       TASK_TOOL,
       AGENT_DM_TOOL,
       ...LESSON_TOOLS,
@@ -526,7 +530,7 @@ export async function confirmTool(runId, eventId, allow, denyMessage, { by = 'Hi
     if (r.kind !== 'task') throw new Error('"Approve the rest" is only available on tasks. Approve each change here.');
     run('UPDATE runs SET auto_approve = 1 WHERE id = ?', runId);
   }
-  const resolving = allow && approveRest ? pending.filter((p) => p.event_id === eventId || p.kind === 'odoo') : [item];
+  const resolving = allow && approveRest ? pending.filter((p) => p.event_id === eventId || p.kind === 'odoo' || p.kind === 'connector') : [item];
   await resolvePending(runId, resolving, allow, denyMessage, by);
 }
 
@@ -560,6 +564,15 @@ async function resolvePending(runId, resolving, allow, denyMessage, by) {
         : (clearPlan(runId), `Rejected by ${by}${denyMessage ? `: ${denyMessage}` : ''}. Nothing was sent to Wafeq and the queue was cleared.`);
       if (allow) logActivity(r.agent_id, 'task', `Wafeq batch approved by ${by}: ${p.detail}`);
       events.push({ type: 'user.custom_tool_result', custom_tool_use_id: p.event_id, content: [{ type: 'text', text }], ...(/^Stopped|^Rejected/.test(text) ? { is_error: true } : {}) });
+      continue;
+    }
+    if (p.kind === 'connector') {
+      if (allow) events.push(await executeConnector(runId, p.event_id, by));
+      else {
+        const why = `Rejected by ${by}${denyMessage ? `: ${denyMessage}` : ''}. Nothing was done.`;
+        run("UPDATE connector_actions SET status = 'rejected', approved_by = ?, result = ?, finished_at = datetime('now') WHERE event_id = ?", by, why, p.event_id);
+        events.push({ type: 'user.custom_tool_result', custom_tool_use_id: p.event_id, content: [{ type: 'text', text: why }], is_error: true });
+      }
       continue;
     }
     if (p.kind === 'odoo') {
@@ -616,6 +629,60 @@ function odooPendingItem(action) {
     reason: input.reason ?? '',
     preview: JSON.stringify(payload, null, 2), // in full: approvers see everything that will be sent
   };
+}
+
+// ---------------------------------------------------------------- Drive, Gmail, Slack (custom tools)
+
+const agentHasOdoo = (agentId) => parseList(get('SELECT integrations FROM agents WHERE id = ?', agentId)?.integrations).includes('odoo');
+
+function recordConnectorCall(runId, agentId, eventId, name, input) {
+  run(
+    `INSERT OR IGNORE INTO connector_actions (run_id, agent_id, event_id, connector, action, input, kind, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'queued')`,
+    runId, agentId, eventId, name, String(input?.action ?? ''), JSON.stringify(input ?? {}), classifyConnector(name, input),
+  );
+}
+
+async function executeConnector(runId, eventId, by) {
+  const c = get('SELECT * FROM connector_actions WHERE event_id = ?', eventId);
+  const result = (text, isError) => ({ type: 'user.custom_tool_result', custom_tool_use_id: eventId, content: [{ type: 'text', text }], ...(isError ? { is_error: true } : {}) });
+  if (!c) return result('Unknown tool call', true);
+  const done = (status, text, extra = {}) =>
+    run(
+      "UPDATE connector_actions SET status = ?, approved_by = ?, result = ?, file_key = ?, mount_path = ?, finished_at = datetime('now') WHERE id = ?",
+      status, by, text.slice(0, 20000), extra.file_key ?? null, extra.mount_path ?? null, c.id,
+    );
+  try {
+    const agent = get('SELECT * FROM agents WHERE id = ?', c.agent_id);
+    const out = await runConnector(c.connector, JSON.parse(c.input), { agent });
+    if (out.file) {
+      const path = await mountFetched(runId, c.connector, out.file);
+      const text = `Saved ${out.file.filename} (${Math.max(1, Math.round(out.file.bytes.length / 1024))} KB, ${out.file.mimeType}) at ${path}`;
+      done('executed', text, { file_key: out.file.key, mount_path: path });
+      return result(text);
+    }
+    done('executed', out.text);
+    if (c.kind === 'write') logActivity(c.agent_id, 'task', `${describeConnector(c.connector, JSON.parse(c.input))} (approved by ${by})`);
+    return result(out.text);
+  } catch (err) {
+    done('failed', err.message);
+    return result(err.message, true);
+  }
+}
+
+/** Put a fetched file into the run's session, at /workspace/inputs/<connector>/<name>. Same file twice: same place. */
+async function mountFetched(runId, connector, file) {
+  const r = getRun(runId);
+  const before = get("SELECT mount_path FROM connector_actions WHERE run_id = ? AND file_key = ? AND status = 'executed' AND mount_path IS NOT NULL", runId, file.key);
+  if (before) return before.mount_path;
+  const taken = new Set(all('SELECT mount_path FROM connector_actions WHERE run_id = ? AND mount_path IS NOT NULL', runId).map((x) => x.mount_path));
+  const name = safeFilename(file.filename);
+  const dot = name.lastIndexOf('.');
+  let path = `/workspace/inputs/${connector}/${name}`;
+  for (let n = 2; taken.has(path); n++) path = `/workspace/inputs/${connector}/${dot > 0 ? `${name.slice(0, dot)} (${n})${name.slice(dot)}` : `${name} (${n})`}`;
+  const uploaded = await api().beta.files.upload({ file: await toFile(file.bytes, name, { type: file.mimeType }) });
+  await api().beta.sessions.resources.add(r.session_id, { type: 'file', file_id: uploaded.id, mount_path: path });
+  return path;
 }
 
 /** The agent is paused on tool calls: answer Odoo reads now, queue Odoo changes for approval. */
@@ -691,6 +758,23 @@ async function resolveToolCalls(runId, customIds, builtinPending) {
       results.push({ type: 'user.custom_tool_result', custom_tool_use_id: id, content: [{ type: 'text', text: reply }] });
       continue;
     }
+    if (CONNECTOR_NAMES.has(call.name)) {
+      const c = get('SELECT * FROM connector_actions WHERE event_id = ?', id);
+      const input = c ? JSON.parse(c.input) : {};
+      const problem = c && checkConnectorCall(c.connector, input, { hasOdoo: agentHasOdoo(r.agent_id) });
+      if (!c) results.push({ type: 'user.custom_tool_result', custom_tool_use_id: id, content: [{ type: 'text', text: 'Unknown tool call' }], is_error: true });
+      else if (problem || (r.kind === 'consult' && c.kind === 'write')) {
+        const msg = problem ? `Not run: ${problem}` : 'You were asked this by another agent, so you can only read here. Tell them what should happen.';
+        run("UPDATE connector_actions SET status = 'refused', result = ?, finished_at = datetime('now') WHERE id = ?", msg, c.id);
+        results.push({ type: 'user.custom_tool_result', custom_tool_use_id: id, content: [{ type: 'text', text: msg }], is_error: true });
+      } else if (c.kind !== 'write' || r.auto_approve || autonomous) {
+        results.push(await executeConnector(runId, id, c.kind !== 'write' ? 'automatic (read-only)' : r.auto_approve ? 'approved for this run' : NEVER_ASK));
+      } else {
+        run("UPDATE connector_actions SET status = 'pending' WHERE id = ?", c.id);
+        waiting.push({ event_id: id, kind: 'connector', name: c.connector, detail: describeConnector(c.connector, input), reason: input.reason ?? '', preview: connectorPreview(c.connector, input) });
+      }
+      continue;
+    }
     const action = get('SELECT * FROM odoo_actions WHERE event_id = ?', id);
     if (!action) {
       results.push({ type: 'user.custom_tool_result', custom_tool_use_id: id, content: [{ type: 'text', text: 'Unknown tool' }], is_error: true });
@@ -727,11 +811,16 @@ function taskCreated(r, eventId, created) {
 function askForApproval(runId, pending) {
   const r = setRun(runId, { status: 'needs_approval', pending: JSON.stringify(pending) });
   // Still in progress, but blocked until someone approves (shown as "Waiting for approval").
-  if (r.task_id) setBlocker(r.task_id, { kind: 'approval', reason: pending.map((p) => (p.kind === 'odoo' ? `Change Odoo: ${p.detail}` : p.kind === 'wafeq' ? `Post to Wafeq: ${p.detail}` : `Run ${p.name}`)).join('; '), owner: 'An approver' });
+  if (r.task_id) setBlocker(r.task_id, { kind: 'approval', reason: pending.map((p) => (p.kind === 'odoo' ? `Change Odoo: ${p.detail}` : p.kind === 'wafeq' ? `Post to Wafeq: ${p.detail}` : p.kind === 'connector' ? p.detail : `Run ${p.name}`)).join('; '), owner: 'An approver' });
   notifyRun(runId, 'approval', { pending });
   if (r.kind === 'chat') {
     for (const p of pending) {
-      const text = p.kind === 'odoo' ? `Approval needed: change Odoo, ${p.detail}${p.reason ? `\n${p.reason}` : ''}` : `Approval needed: ${p.name}${p.detail ? `\n${p.detail}` : ''}`;
+      const text =
+        p.kind === 'odoo'
+          ? `Approval needed: change Odoo, ${p.detail}${p.reason ? `\n${p.reason}` : ''}`
+          : p.kind === 'connector'
+            ? `Approval needed: ${p.detail}${p.reason ? `\n${p.reason}` : ''}`
+            : `Approval needed: ${p.name}${p.detail ? `\n${p.detail}` : ''}`;
       postMessage(r.agent_id, 'system', text, { type: 'approval', run_id: runId, event_id: p.event_id, origin: r.origin ?? 'hive' });
     }
   }
@@ -825,6 +914,7 @@ function summarize(ev) {
       if (ev.name === 'list_lessons') return { name: 'list_lessons', detail: '', kind: 'custom', input: {} };
       if (SCHEDULE_TOOL_NAMES.has(ev.name))
         return { name: ev.name, detail: String(ev.input?.title ?? (ev.input?.schedule_id != null ? `#${ev.input.schedule_id}` : ev.input?.query ?? '')).slice(0, 300), kind: 'custom', input: ev.input ?? {} };
+      if (CONNECTOR_NAMES.has(ev.name)) return { name: ev.name, detail: describeConnector(ev.name, ev.input ?? {}).slice(0, 300), kind: classifyConnector(ev.name, ev.input) };
       if (ev.name === 'message_agent') return { name: 'message_agent', detail: `→ ${ev.input?.agent ?? '?'}: ${String(ev.input?.message ?? '').slice(0, 500)}`, kind: 'custom', input: ev.input ?? {} };
       return { name: ev.name, detail: ev.name === 'odoo' ? describeCall(ev.input || {}) : '', kind: ev.name === 'odoo' ? classify(ev.input?.model, ev.input?.method) : 'custom' };
     case 'user.custom_tool_result':
@@ -861,6 +951,7 @@ export function handleEvent(runId, ev) {
       break;
     case 'agent.custom_tool_use':
       if (ev.name === 'odoo') recordOdooCall(runId, r.agent_id, ev.id, ev.input);
+      if (CONNECTOR_NAMES.has(ev.name)) recordConnectorCall(runId, r.agent_id, ev.id, ev.name, ev.input);
       emit('run', { run_id: runId, task_id: r.task_id, agent_id: r.agent_id });
       break;
     case 'agent.message':
@@ -974,7 +1065,7 @@ export async function recoverToolCalls(runId) {
   const toResolve = [];
   const results = [];
   for (const id of open) {
-    const action = get('SELECT * FROM odoo_actions WHERE event_id = ?', id);
+    const action = get('SELECT * FROM odoo_actions WHERE event_id = ?', id) ?? get('SELECT * FROM connector_actions WHERE event_id = ?', id);
     if (action && !['queued', 'pending'].includes(action.status)) {
       // Already decided before the restart: send what happened instead of running it again.
       results.push({ type: 'user.custom_tool_result', custom_tool_use_id: id, content: [{ type: 'text', text: action.result || action.status }], ...(action.status === 'executed' ? {} : { is_error: true }) });

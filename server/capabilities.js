@@ -6,6 +6,8 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
+import { get } from './db.js';
+import { gmailConfigured, googleConfigured } from './google.js';
 
 export const SKILLS_DIR = join(process.cwd(), 'agent-skills');
 
@@ -25,10 +27,48 @@ export const INTEGRATIONS = {
     hosts: [], // through Hive's gateway (wafeq.js): the key never enters the agent's sandbox
     via: 'hive',
   },
+  // Drive, Gmail and Slack: read-only through Hive (connectors.js). Files the agent fetches land in
+  // its workspace; posting in Slack and attaching a file to Odoo wait for approval.
+  drive: {
+    name: 'Google Drive',
+    description: 'Search and read Drive files and Google Sheets, fetch files into the workspace, attach them to Odoo. Read-only: sees what is shared with Hive\'s Google account.',
+    env: 'GOOGLE_SERVICE_ACCOUNT_JSON',
+    ready: googleConfigured,
+    hosts: [],
+    via: 'hive',
+  },
+  gmail: {
+    name: 'Gmail',
+    description: 'Search and read the mailboxes in GOOGLE_GMAIL_MAILBOXES and fetch attachments (invoices, statements). Read-only: agents cannot send email.',
+    env: 'GOOGLE_GMAIL_MAILBOXES',
+    ready: gmailConfigured,
+    hosts: [],
+    via: 'hive',
+  },
+  slack: {
+    name: 'Slack',
+    description: 'Read the channels and threads its bot is invited to and fetch the files posted there. Posting a message waits for your approval unless the agent is set to Never ask.',
+    env: 'SLACK_BOT_TOKEN',
+    // Agents with their own Slack bot can read without the shared Hive app.
+    ready: () => Boolean(process.env.SLACK_BOT_TOKEN) || Boolean(get('SELECT 1 FROM agent_slack_apps WHERE bot_token IS NOT NULL LIMIT 1')),
+    hosts: [],
+    via: 'hive',
+  },
+};
+
+/** Is this integration set up on the server? */
+export const integrationReady = (key) => {
+  const i = INTEGRATIONS[key];
+  if (!i) return false;
+  try {
+    return Boolean(i.ready ? i.ready() : process.env[i.env]);
+  } catch {
+    return false;
+  }
 };
 
 export const integrationList = () =>
-  Object.entries(INTEGRATIONS).map(([key, i]) => ({ key, name: i.name, description: i.description, env: i.env, configured: Boolean(process.env[i.env]) }));
+  Object.entries(INTEGRATIONS).map(([key, i]) => ({ key, name: i.name, description: i.description, env: i.env, configured: integrationReady(key) }));
 
 const BUILTIN_SKILLS = [
   { key: 'anthropic:pdf', name: 'PDF', description: 'Read, extract and create PDF files (Anthropic).', source: 'anthropic', skill_id: 'pdf' },
@@ -89,7 +129,13 @@ export function skillLibrary() {
             name: key.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
             description: description.split(/(?<=\.)\s/)[0] || description,
             source: 'presentail',
-            integrations: [/wafeq/i.test(description) && 'wafeq', /odoo/i.test(description) && 'odoo'].filter(Boolean),
+            integrations: [
+              /wafeq/i.test(description) && 'wafeq',
+              /odoo/i.test(description) && 'odoo',
+              /google drive|google sheet|\bdrive\b/i.test(description) && 'drive',
+              /gmail/i.test(description) && 'gmail',
+              /slack/i.test(description) && 'slack',
+            ].filter(Boolean),
           };
         })
     : [];

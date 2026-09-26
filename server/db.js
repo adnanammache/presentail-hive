@@ -201,6 +201,25 @@ CREATE TABLE IF NOT EXISTS odoo_actions (
   created_at   TEXT NOT NULL DEFAULT (datetime('now')),
   finished_at  TEXT
 );
+-- Drive, Gmail and Slack calls agents make through Hive (connectors.js).
+CREATE TABLE IF NOT EXISTS connector_actions (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id       INTEGER REFERENCES runs(id) ON DELETE SET NULL,
+  agent_id     INTEGER REFERENCES agents(id) ON DELETE SET NULL,
+  event_id     TEXT NOT NULL UNIQUE,
+  connector    TEXT NOT NULL,                     -- drive | gmail | slack
+  action       TEXT NOT NULL,
+  input        TEXT NOT NULL,
+  kind         TEXT NOT NULL,                     -- read | fetch | write | forbidden
+  status       TEXT NOT NULL,                     -- queued | pending | executed | failed | rejected | refused
+  approved_by  TEXT,
+  result       TEXT,
+  file_key     TEXT,                              -- fetch: the source (drive:<id>, gmail:…, slack:<id>)
+  mount_path   TEXT,                              -- fetch: where it was put in the agent's workspace
+  created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  finished_at  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_connector_actions_run ON connector_actions(run_id);
 CREATE INDEX IF NOT EXISTS idx_runs_task ON runs(task_id, id);
 CREATE INDEX IF NOT EXISTS idx_run_events_run ON run_events(run_id, id);
 `);

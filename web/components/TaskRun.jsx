@@ -201,6 +201,28 @@ export default function TaskRun({ task, agentName, hideFiles }) {
                   </button>
                 </div>
               </div>
+            ) : p.kind === 'connector' ? (
+              <div key={p.event_id} className="approval odoo">
+                <div className="small strong">{agentName} wants to go ahead</div>
+                <div className="odoo-call">
+                  <code>{p.detail}</code>
+                </div>
+                {p.reason && <div className="small">{p.reason}</div>}
+                {p.preview && (
+                  <details open={p.preview.length < 1200}>
+                    <summary className="small">{p.name === 'slack' && p.detail.startsWith('Post') ? 'The message, exactly as it will be posted' : 'Everything it will do'}</summary>
+                    <pre className="code approval-preview">{p.preview}</pre>
+                  </details>
+                )}
+                <div className="approval-actions">
+                  <button type="button" className="btn btn-sm btn-danger-ghost" onClick={() => confirm(p.event_id, false)}>
+                    Reject
+                  </button>
+                  <button type="button" className="btn btn-sm btn-primary" onClick={() => confirm(p.event_id, true)}>
+                    <Icon name="check" size={13} /> Approve
+                  </button>
+                </div>
+              </div>
             ) : p.kind === 'odoo' ? (
               <div key={p.event_id} className="approval odoo">
                 <div className="small strong">{agentName} wants to change Odoo</div>
