@@ -110,6 +110,8 @@ const NEW_TEAM = '__new';
 
 export function AgentForm({ agent, defaults = {}, onClose, onSaved }) {
   const { data: teams } = useApi('/teams', ['agent']);
+  const { data: modelList } = useApi('/models');
+  const models = modelList?.models ?? [];
   const { data: allAgents } = useApi('/agents', ['agent']);
   const { values, set, submit, error, saving } = useForm({
     name: '', title: '', team_id: '', new_team: '', description: '', platform: 'claude', model: '', system_prompt: '', webhook_url: '', color: COLORS[0], status: 'idle', reviewer_id: '',
@@ -201,8 +203,8 @@ export function AgentForm({ agent, defaults = {}, onClose, onSaved }) {
         </Field>
         {['claude', 'managed'].includes(values.platform) ? (
           <>
-            <Field label="Model" hint="Leave blank for the default (claude-opus-5).">
-              <input value={values.model} onChange={set('model')} placeholder="claude-opus-5" />
+            <Field label="Model" hint={modelHint(models, values.model)}>
+              <ModelSelect models={models} value={values.model} onChange={set('model')} />
             </Field>
             <Field label="System prompt">
               <textarea rows={4} value={values.system_prompt} onChange={set('system_prompt')} placeholder="You are … Your job is …" />
@@ -219,6 +221,31 @@ export function AgentForm({ agent, defaults = {}, onClose, onSaved }) {
         <Actions saving={saving} error={error} label={agent ? 'Save' : 'Add agent'} />
       </form>
     </Modal>
+  );
+}
+
+// ---------------- Models ----------------
+const modelHint = (models, value) => {
+  const m = models.find((x) => x.id === value) ?? models.find((x) => x.default);
+  if (!m) return 'The Claude model this agent thinks with.';
+  return [m.note, m.price && `${m.price} per million tokens (in / out)`].filter(Boolean).join(' · ');
+};
+
+/** Claude models from Anthropic's live list; "Default" follows Hive's default model. */
+function ModelSelect({ models, value, onChange }) {
+  const def = models.find((m) => m.default);
+  const known = !value || models.some((m) => m.id === value);
+  return (
+    <select value={value ?? ''} onChange={onChange}>
+      <option value="">Default{def ? ` (${def.name})` : ''}</option>
+      {models.map((m) => (
+        <option key={m.id} value={m.id}>
+          {m.name}
+          {m.price ? ` · ${m.price}` : ''}
+        </option>
+      ))}
+      {!known && <option value={value}>{value} (current)</option>}
+    </select>
   );
 }
 

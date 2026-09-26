@@ -10,6 +10,7 @@ import { finishTask, handOff, reviewerFor } from './handoff.js';
 import { agentSpend, parseBudget, teamSpend } from './budget.js';
 import { backupNow, backupPath, listBackups } from './backup.js';
 import { healthReport, runChecks } from './health.js';
+import { listModels } from './models.js';
 import { canApproveFor, isOwner, listUsers, setUserRole, userFor } from './roles.js';
 import { addLesson, deleteLesson, listLessons, updateLesson } from './lessons.js';
 import { closeBoard, dueDate, itemInstructions, monthLabel, saveCloseItem } from './close.js';
@@ -402,6 +403,9 @@ export function dashboardRouter() {
       agents_channel: Boolean(process.env.SLACK_AGENTS_CHANNEL),
     },
   })));
+  // Claude models for the agent form
+  r.get('/models', wrap(async () => ({ models: await listModels() })));
+
   // System health
   r.get('/health', wrap(() => healthReport()));
   r.post('/health/check', wrap(() => runChecks()));
