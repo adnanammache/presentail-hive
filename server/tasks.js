@@ -12,6 +12,7 @@
 //   Execution:       separate from assignment. Saving a task, assigning an agent or moving a card
 //                    never starts, cancels or changes a run; only startExecution does, idempotently.
 import { copyFileSync, mkdirSync, renameSync, rmSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { basename, join } from 'node:path';
 import { DATA_DIR, all, get, run, update } from './db.js';
 import { emit } from './events.js';
@@ -109,7 +110,21 @@ export function decorate(t) {
 
 export function getTask(id, user) {
   const t = get(`${SELECT} WHERE t.id = ?`, id);
-  return t ? { ...decorate(t), ...(user ? { needs_me: needsMe(t, user), can_edit: canEditTask(user, t) } : {}) } : null;
+  return t ? { ...decorate(t), review_version: reviewVersion(t.id), ...(user ? { needs_me: needsMe(t, user), can_edit: canEditTask(user, t) } : {}) } : null;
+}
+
+/**
+ * Which version of a task's result a reviewer is looking at: its result text and its deliverables
+ * (run outputs, attached files, deliverable links). Approving with an older version is refused, so an
+ * approval always applies to what the person actually saw.
+ */
+export function reviewVersion(taskId) {
+  const t = get('SELECT result FROM tasks WHERE id = ?', taskId);
+  if (!t) return null;
+  const o = get('SELECT COALESCE(MAX(o.id), 0) AS m, COUNT(*) AS n FROM run_outputs o JOIN runs r ON r.id = o.run_id WHERE r.task_id = ?', taskId);
+  const f = get('SELECT COALESCE(MAX(id), 0) AS m, COUNT(*) AS n FROM task_files WHERE task_id = ?', taskId);
+  const l = get("SELECT COALESCE(MAX(id), 0) AS m, COUNT(*) AS n FROM task_links WHERE task_id = ? AND kind = 'deliverable'", taskId);
+  return createHash('sha1').update([t.result, o.m, o.n, f.m, f.n, l.m, l.n].join('|')).digest('hex').slice(0, 12);
 }
 
 const today = () => dubaiNow().date;

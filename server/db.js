@@ -896,3 +896,28 @@ CREATE TABLE IF NOT EXISTS slack_oauth_states (
 // Which agent's own bot a Slack conversation lives in (NULL: the shared Hive app).
 addColumn('slack_threads', 'bot_agent_id', 'INTEGER');
 addColumn('agent_slack_apps', 'scopes', 'TEXT'); // the bot scopes Slack accepted for this app (asked for again at install)
+
+// ---------------------------------------------------------------- conversation state per person
+// Archiving is one person's way of organising their history: it never touches the conversation, its
+// messages, files, tasks, runs, schedules, lessons or who can see it. Each person also has a read
+// position, for unread counts. A row exists only once someone has read, archived or restored a
+// conversation; without one, messages up to `chat_read_baseline` (the newest message when this was
+// added) count as read, so existing history doesn't all show up as unread.
+db.exec(`
+CREATE TABLE IF NOT EXISTS chat_user_state (
+  chat_id               INTEGER NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
+  user_email            TEXT NOT NULL,
+  archived_at           TEXT,                   -- NULL: in this person's active history
+  archive_seq           INTEGER NOT NULL DEFAULT 0, -- +1 on every archive and restore, so a late Undo can't undo a newer choice
+  last_read_message_id  INTEGER,
+  resurfaced_at         TEXT,                   -- brought back to active by a new qualifying event
+  resurfaced_reason     TEXT,                   -- message | mention | request
+  resurfaced_message_id INTEGER,
+  updated_at            TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (chat_id, user_email)
+);
+CREATE INDEX IF NOT EXISTS idx_chat_user_state_user ON chat_user_state(user_email, archived_at);
+`);
+if (!db.prepare("SELECT 1 FROM app_meta WHERE key = 'chat_read_baseline'").get()) {
+  db.prepare("INSERT OR IGNORE INTO app_meta (key, value) VALUES ('chat_read_baseline', ?)").run(String(db.prepare('SELECT COALESCE(MAX(id), 0) AS n FROM messages').get().n));
+}

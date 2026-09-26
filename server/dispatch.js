@@ -11,6 +11,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { all, get, run } from './db.js';
 import { broadcast, emit, emitLocal } from './events.js';
 import { ensureChat, titleFrom } from './chatStore.js';
+import { resurfaceOnMessage } from './chatState.js';
 import { logActivity } from './activity.js';
 import { chatWithManagedAgent, startTaskRun } from './managed.js';
 import { briefExtras, readyStatus, setDispatcher } from './taskSchedule.js';
@@ -57,6 +58,9 @@ export function postMessage(agentId, sender, body, meta = null, { at } = {}) {
   run("UPDATE chats SET last_message_at = MAX(COALESCE(last_message_at, ''), ?) WHERE id = ?", message.created_at, chat.id);
   if (sender === 'user' && !chat.title) run('UPDATE chats SET title = ? WHERE id = ?', titleFrom(body), chat.id);
   if (sender === 'agent') run("UPDATE agents SET last_seen_at = datetime('now') WHERE id = ?", agentId);
+  // People who archived this conversation get it back only for a new message from someone else, a
+  // mention, or an approval request they can give (chatState.js); never for the agent's own replies.
+  if (resurfaceOnMessage(chat, message).length) broadcast('chat', { agent_id: agentId, chat_id: chat.id });
   broadcast('message', { agent_id: agentId, chat_id: chat.id, message_id: message.id, sender });
   emitLocal('message', { agent_id: agentId, message });
   return message;

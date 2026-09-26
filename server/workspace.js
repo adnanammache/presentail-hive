@@ -89,25 +89,25 @@ export function recentFiles(agent, chat, linkedTasks) {
       "SELECT f.id, f.filename, f.size, f.created_at FROM chat_files f JOIN messages m ON m.id = f.message_id WHERE m.chat_id = ? AND f.voice = 0 ORDER BY f.id DESC LIMIT 10",
       chat.id,
     ))
-      items.push({ key: `chat-${f.id}`, filename: f.filename, size: f.size, at: f.created_at, kind: 'shared', url: `/api/chat-files/${f.id}` });
+      items.push({ key: `chat-${f.id}`, filename: f.filename, size: f.size, at: f.created_at, kind: 'shared', url: `/api/chat-files/${f.id}`, ref: `chat:${f.id}` });
     for (const o of all(
       "SELECT o.id, o.run_id, o.filename, o.size, o.created_at FROM run_outputs o JOIN runs r ON r.id = o.run_id WHERE r.kind = 'chat' AND r.agent_id = ? AND COALESCE(r.origin, 'hive') = ? ORDER BY o.id DESC LIMIT 10",
       agent.id, chat.origin,
     ))
-      items.push({ key: `out-${o.id}`, filename: o.filename, size: o.size, at: o.created_at, kind: 'deliverable', url: `/api/runs/${o.run_id}/outputs/${o.id}` });
+      items.push({ key: `out-${o.id}`, filename: o.filename, size: o.size, at: o.created_at, kind: 'deliverable', url: `/api/runs/${o.run_id}/outputs/${o.id}`, ref: `out:${o.run_id}:${o.id}` });
   }
   for (const t of linkedTasks) {
     for (const f of all('SELECT id, filename, size, created_at FROM task_files WHERE task_id = ? ORDER BY id DESC LIMIT 10', t.id))
-      items.push({ key: `task-${f.id}`, filename: f.filename, size: f.size, at: f.created_at, kind: 'task', task_id: t.id, url: `/api/tasks/${t.id}/files/${f.id}/download` });
+      items.push({ key: `task-${f.id}`, filename: f.filename, size: f.size, at: f.created_at, kind: 'task', task_id: t.id, url: `/api/tasks/${t.id}/files/${f.id}/download`, ref: `task:${t.id}:${f.id}` });
     for (const o of all("SELECT o.id, o.run_id, o.filename, o.size, o.created_at FROM run_outputs o JOIN runs r ON r.id = o.run_id WHERE r.task_id = ? ORDER BY o.id DESC LIMIT 10", t.id))
-      items.push({ key: `out-${o.id}`, filename: o.filename, size: o.size, at: o.created_at, kind: 'deliverable', task_id: t.id, url: `/api/runs/${o.run_id}/outputs/${o.id}` });
+      items.push({ key: `out-${o.id}`, filename: o.filename, size: o.size, at: o.created_at, kind: 'deliverable', task_id: t.id, url: `/api/runs/${o.run_id}/outputs/${o.id}`, ref: `out:${o.run_id}:${o.id}` });
   }
   if (items.length) return { scope: 'conversation', items: dedupe(items) };
   const broader = all(
     `SELECT o.id, o.run_id, o.filename, o.size, o.created_at, r.task_id FROM run_outputs o JOIN runs r ON r.id = o.run_id
      WHERE r.agent_id = ? AND r.kind = 'task' ORDER BY o.id DESC LIMIT 6`,
     agent.id,
-  ).map((o) => ({ key: `out-${o.id}`, filename: o.filename, size: o.size, at: o.created_at, kind: 'deliverable', task_id: o.task_id, url: `/api/runs/${o.run_id}/outputs/${o.id}` }));
+  ).map((o) => ({ key: `out-${o.id}`, filename: o.filename, size: o.size, at: o.created_at, kind: 'deliverable', task_id: o.task_id, url: `/api/runs/${o.run_id}/outputs/${o.id}`, ref: `out:${o.run_id}:${o.id}` }));
   return { scope: broader.length ? 'agent' : 'none', items: broader };
 }
 const dedupe = (items) => [...new Map(items.map((i) => [i.key, i])).values()].sort((a, b) => b.at.localeCompare(a.at)).slice(0, 8);

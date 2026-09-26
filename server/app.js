@@ -1,7 +1,7 @@
 import express from 'express';
-import { HttpError, bad, check, forbidden, notFound, wrap } from './http.js';
+import { HttpError, bad, check, conflict, forbidden, notFound, wrap } from './http.js';
 import { DATA_DIR, all, get, run, update, newToken } from './db.js';
-import { emit, subscribe } from './events.js';
+import { broadcast, emit, subscribe } from './events.js';
 import { logActivity } from './activity.js';
 import { claudeConfigured, dispatchTask, postMessage, sendToAgent } from './dispatch.js';
 import { integrationList, skillLibrary } from './capabilities.js';
@@ -17,7 +17,9 @@ import { listModels } from './models.js';
 import { canApproveFor, isOwner, listUsers, setUserRole, userFor } from './roles.js';
 import { addLesson, approveLesson, deleteLesson, listLessons, rejectLesson, resolveProposal, setTrustLessons, updateLesson } from './lessons.js';
 import { saveChatFile } from './chatFiles.js';
-import { chatActivity, chatMessages, createChat, listChats, publicChat, sendChatMessage, updateChat } from './chats.js';
+import { archiveWarnings, chatActivity, chatMessages, chatWork, createChat, listChats, listConversations, publicChat, sendChatMessage, updateChat } from './chats.js';
+import { archiveChat, markRead, restoreChat } from './chatState.js';
+import { fileMeta, previewBody } from './files.js';
 import { canManageChat, canSeeChat, ensureChat, getChat, visibleChatParams, visibleChatSql } from './chatStore.js';
 import { workspace } from './workspace.js';
 import { closeBoard, dueDate, itemInstructions, monthLabel, saveCloseItem } from './close.js';
@@ -35,7 +37,7 @@ import { canViewSchedule, suspendSchedulesFor, suspendSchedulesForPerson, cancel
 import { cleanSchedule } from './taskSchedule.js';
 import {
   PRIORITIES, TASK_STATUSES, addLinks, agentActor, agentView, attention, board, clearBlocker, createTask, getTask, listTasks, needsMe,
-  canEditTask, patchTask, personActor, startExecution, taskEvent,
+  canEditTask, patchTask, personActor, reviewVersion, startExecution, taskEvent,
 } from './tasks.js';
 import {
   addDraftFile, addResource, createProject, deleteProject, discardDraft, getDraft, getProject, listProjects, listResources, removeDraftFile,
@@ -61,11 +63,17 @@ const publicAgent = ({ api_token, ...a }) => ({ ...a, slack_url: a.slack_url ?? 
 const withNext = (wf) => ({ ...wf, enabled: wf.status === 'active', next_run_at: wf.status === 'active' ? wf.next_run_at : null });
 
 /** Approve or send back a task that is waiting for approval, and tell the agent. */
+/** A decision sent with the version the person reviewed (optional) must match the task's current one. */
+function staleCheck(t, version) {
+  if (version && version !== reviewVersion(t.id)) throw conflict('This result changed since you opened it. Look at the latest version, then decide.');
+}
+
 async function decideTask(req, approve) {
   const t = get('SELECT * FROM tasks WHERE id = ?', req.params.id);
   if (!t) throw notFound('Task');
   if (!canApproveFor(req.hive, t.agent_id)) throw forbidden("You can't approve this agent's work. Ask an approver or an owner.");
   if (t.status !== 'waiting_approval') throw bad('This task is not waiting for approval');
+  staleCheck(t, req.body?.version);
   const note = String(req.body?.note ?? '').trim().slice(0, 4000);
   if (!approve && !note) throw bad('Say what needs changing');
   const by = req.hive?.name || req.user?.name || 'You';
@@ -772,6 +780,7 @@ export function dashboardRouter() {
       return await sendChatMessage(chat, req.hive, req.body ?? {});
     } catch (err) {
       if (err.status === 403) throw forbidden(err.message);
+      if (err.status === 409) throw conflict(err.message);
       if (err instanceof HttpError) throw err;
       throw bad(err.message);
     }
@@ -788,6 +797,35 @@ export function dashboardRouter() {
       throw bad(err.message);
     }
   }));
+  // The history panel: a page of this person's conversations (active / archived / all, searchable).
+  r.get('/agents/:id/conversations', wrap((req) => {
+    agentOr404(req.params.id);
+    return listConversations(Number(req.params.id), req.hive, { filter: req.query.filter, q: req.query.q, cursor: req.query.cursor, limit: req.query.limit });
+  }));
+  // Archive for this person only. With running work, a pending approval or a request for their input,
+  // it asks first (409 with the warnings) unless `force`; nothing about the work itself changes.
+  r.post('/chats/:id/archive', wrap((req) => {
+    const chat = visibleChat(req);
+    const warnings = req.body?.force ? [] : archiveWarnings(chat, req.hive);
+    if (warnings.length) return Promise.reject(Object.assign(conflict(warnings[0]), { warnings }));
+    const { changed } = archiveChat(chat, req.hive);
+    if (changed) broadcast('chat', { agent_id: chat.agent_id, chat_id: chat.id });
+    return { ...publicChat(chat, req.hive), changed };
+  }));
+  // Back to active. `seq`: Undo passes the archive it is undoing, so it never undoes a later choice.
+  r.post('/chats/:id/restore', wrap((req) => {
+    const chat = visibleChat(req);
+    const { changed, stale } = restoreChat(chat, req.hive, { seq: req.body?.seq ?? null });
+    if (changed) broadcast('chat', { agent_id: chat.agent_id, chat_id: chat.id });
+    return { ...publicChat(chat, req.hive), changed, stale: Boolean(stale) };
+  }));
+  r.post('/chats/:id/read', wrap((req) => {
+    const chat = visibleChat(req);
+    const s = markRead(chat, req.hive, req.body?.message_id);
+    return { last_read_message_id: s?.last_read_message_id ?? null };
+  }));
+  // What is waiting in the conversation (the status strip): runs and linked tasks, see chatWork.
+  r.get('/chats/:id/work', wrap((req) => chatWork(visibleChat(req), req.hive)));
   r.get('/chats/:id/messages', wrap((req) => chatMessages(visibleChat(req).id, req.query)));
   r.post('/chats/:id/messages', wrap((req) => sendIn(visibleChat(req), req)));
   // The agent workspace: status, and the Work overview for a conversation (chat_id, optional).
@@ -862,6 +900,27 @@ export function dashboardRouter() {
     res.download(f.path, f.filename, (err) => err && !res.headersSent && next(notFound('File')));
   });
 
+  // Files beside a conversation: what a file is, and a safe inline preview (see files.js). Access is
+  // checked exactly as for the file's download.
+  r.get('/files/meta', wrap((req) => fileMeta(req.query.ref, req.hive)));
+  r.get('/files/raw', async (req, res, next) => {
+    try {
+      const file = await previewBody(req.query.ref, req.hive, { downloadOutput });
+      if (!file) return res.status(415).json({ error: "This file can't be previewed. Download it instead." });
+      res.set('Content-Type', file.type);
+      res.set('X-Content-Type-Options', 'nosniff');
+      res.set('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(file.filename)}`);
+      res.set('Cache-Control', 'private, no-store');
+      res.set('Cross-Origin-Resource-Policy', 'same-origin');
+      // Nothing in a preview may run: text and images are sandboxed outright. (A PDF is left to the
+      // browser's own viewer, which a sandbox would block; it runs isolated from the page.)
+      if (file.kind !== 'pdf') res.set('Content-Security-Policy', "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; sandbox");
+      res.send(file.body);
+    } catch (err) {
+      next(err);
+    }
+  });
+
   // Tasks
   const me = (req) => personActor(req.hive);
   const taskOr404 = (id) => {
@@ -923,6 +982,7 @@ export function dashboardRouter() {
     const t = taskOr404(req.params.id);
     if (t.status !== 'review') throw bad('This task is not waiting for review');
     if (!needsMe(t, req.hive) && req.hive.role !== 'owner') throw forbidden("You aren't this task's reviewer.");
+    staleCheck(t, req.body?.version);
     const note = String(req.body?.note ?? '').trim().slice(0, 4000);
     if (req.body?.decision === 'approve') {
       const done = patchTask(t.id, { status: 'done' }, me(req));
@@ -1383,5 +1443,5 @@ export function agentRouter() {
 export function errorHandler(err, req, res, next) {
   const status = err.status || 500;
   if (status >= 500) console.error(err);
-  res.status(status).json({ error: err.message });
+  res.status(status).json({ error: err.message, ...(err.warnings ? { warnings: err.warnings } : {}) });
 }
