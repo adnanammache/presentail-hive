@@ -29,13 +29,21 @@ function claude() {
 }
 export const claudeConfigured = () => Boolean(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN);
 
-// SQLite's "YYYY-MM-DD HH:MM:SS" (UTC) for a timestamp, or null if it isn't one.
+// Only a message picked up this late keeps its own time; anything fresher is stamped "now", so a
+// few seconds of clock difference with Anthropic can never put an answer above its question.
+export const LATE_MS = 10_000;
+
+// SQLite's "YYYY-MM-DD HH:MM:SS" (UTC) for a late message's own time, or null for "now".
 const sqlTime = (at) => {
   const d = at ? new Date(at) : null;
-  return d && !Number.isNaN(d.getTime()) ? d.toISOString().replace('T', ' ').slice(0, 19) : null;
+  if (!d || Number.isNaN(d.getTime()) || Date.now() - d.getTime() < LATE_MS) return null;
+  return d.toISOString().replace('T', ' ').slice(0, 19);
 };
 
-/** `at`: when it was actually said (e.g. an agent reply picked up late), if not now. */
+/**
+ * `at`: when it was actually said. A reply picked up late (after a lost stream) keeps that time,
+ * and chats list messages by time, so it sits where it was said rather than at the bottom.
+ */
 export function postMessage(agentId, sender, body, meta = null, { at } = {}) {
   const { lastInsertRowid } = run(
     "INSERT INTO messages (agent_id, sender, body, meta, created_at) VALUES (?, ?, ?, ?, COALESCE(?, datetime('now')))",

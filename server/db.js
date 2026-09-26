@@ -98,6 +98,7 @@ CREATE TABLE IF NOT EXISTS activity (
 
 CREATE INDEX IF NOT EXISTS idx_tasks_agent ON tasks(agent_id);
 CREATE INDEX IF NOT EXISTS idx_messages_agent ON messages(agent_id, id);
+CREATE INDEX IF NOT EXISTS idx_messages_agent_time ON messages(agent_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_runs_workflow ON workflow_runs(workflow_id, id);
 `);
 

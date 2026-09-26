@@ -330,8 +330,8 @@ export function dashboardRouter() {
       `SELECT a.*, tm.name AS team_name, tm.color AS team_color,
         (SELECT COUNT(*) FROM tasks t WHERE t.agent_id = a.id AND t.status != 'done') AS open_tasks,
         (SELECT COUNT(*) FROM workflows w WHERE w.agent_id = a.id AND w.enabled = 1) AS workflows,
-        (SELECT body FROM messages m WHERE m.agent_id = a.id ORDER BY id DESC LIMIT 1) AS last_message,
-        (SELECT created_at FROM messages m WHERE m.agent_id = a.id ORDER BY id DESC LIMIT 1) AS last_message_at,
+        (SELECT body FROM messages m WHERE m.agent_id = a.id ORDER BY created_at DESC, id DESC LIMIT 1) AS last_message,
+        (SELECT created_at FROM messages m WHERE m.agent_id = a.id ORDER BY created_at DESC, id DESC LIMIT 1) AS last_message_at,
         (SELECT COALESCE(SUM(cost_cents), 0) FROM runs r WHERE r.agent_id = a.id AND r.created_at >= date('now', 'start of month')) AS month_cents,
         (SELECT COUNT(*) FROM runs r WHERE r.agent_id = a.id AND r.status = 'needs_approval') AS pending_approvals,
         (SELECT COUNT(*) FROM runs r WHERE r.agent_id = a.id AND r.status IN ('starting', 'running')) AS running_runs
@@ -632,7 +632,8 @@ export function dashboardRouter() {
 
   // Chat
   r.get('/agents/:id/messages', wrap((req) =>
-    all('SELECT * FROM (SELECT * FROM messages WHERE agent_id = ? ORDER BY id DESC LIMIT 200) ORDER BY id', req.params.id),
+    // In the order things were said (a reply picked up late keeps its place, see postMessage).
+    all('SELECT * FROM (SELECT * FROM messages WHERE agent_id = ? ORDER BY created_at DESC, id DESC LIMIT 200) ORDER BY created_at, id', req.params.id),
   ));
   // Whether the agent is still working on its Hive chat turn (managed agents), for the typing indicator.
   r.get('/agents/:id/chat-run', wrap((req) =>

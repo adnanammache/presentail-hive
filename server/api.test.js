@@ -172,3 +172,16 @@ test("chat-run reports the agent's Hive chat run, ignoring Slack threads", async
   run("INSERT INTO runs (kind, agent_id, status, origin) VALUES ('chat', ?, 'waiting', 'slack:C1:1.2')", agent.id);
   assert.deepEqual((await call(`/agents/${agent.id}/chat-run`)).body, { id, status: 'running' });
 });
+
+test('a chat lists messages in the order they were said, so a late reply sits above later messages', async () => {
+  const { run } = await import('./db.js');
+  const { body: agent } = await newAgent({ name: 'Orderly', platform: 'make' });
+  const add = (sender, body, at) => run('INSERT INTO messages (agent_id, sender, body, created_at) VALUES (?, ?, ?, ?)', agent.id, sender, body, at);
+  add('user', 'Please do the VAT', '2026-09-26 12:47:00');
+  add('user', 'Why no reply?', '2026-09-26 12:49:00');
+  add('agent', 'On it (said at 12:47, picked up late)', '2026-09-26 12:47:30');
+  const { body: thread } = await call(`/agents/${agent.id}/messages`);
+  assert.deepEqual(thread.map((m) => m.body), ['Please do the VAT', 'On it (said at 12:47, picked up late)', 'Why no reply?']);
+  const row = (await call('/agents')).body.find((a) => a.id === agent.id);
+  assert.equal(row.last_message, 'Why no reply?');
+});

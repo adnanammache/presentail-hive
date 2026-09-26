@@ -10,7 +10,7 @@ let Markdown;
 let safeUrl;
 before(async () => {
   vite = await createServer({ configFile: new URL('../vite.config.js', import.meta.url).pathname, server: { middlewareMode: true, hmr: false }, logLevel: 'silent' });
-  ({ default: Markdown, safeUrl } = await vite.ssrLoadModule('/components/Markdown.jsx'));
+  ({ default: Markdown, safeUrl } = await vite.ssrLoadModule('/components/MarkdownRender.jsx'));
 });
 after(() => vite?.close());
 
@@ -100,7 +100,7 @@ test('blockquotes and inline code', () => {
 });
 
 test('previews show the words without the Markdown marks', async () => {
-  const { MarkdownText } = await vite.ssrLoadModule('/components/Markdown.jsx');
+  const { MarkdownText } = await vite.ssrLoadModule('/components/MarkdownRender.jsx');
   const plain = (text) => renderToStaticMarkup(createElement(MarkdownText, { text })).replace(/\s+/g, ' ').trim(); // as shown on one line
   assert.equal(plain('**Access is working.** See [Wafeq](https://wafeq.com)'), 'Access is working. See Wafeq');
   assert.equal(plain('## Summary\n\n- one\n- two'), 'Summary one two');
