@@ -566,6 +566,11 @@ export default function AgentDetail({ id, meta, tab: routeTab, param }) {
               </div>
             </div>
             <div className="agent-actions">
+              {agent.slack_url && (
+                <a className="btn" href={agent.slack_url} target="_blank" rel="noreferrer" title={`Open your DM with ${agent.name} in Slack`}>
+                  <Icon name="chat" size={16} /> <span className="hide-sm">Message in Slack</span>
+                </a>
+              )}
               {isOwner && (
                 <button className="btn" onClick={() => setModal({ kind: 'agent' })}>
                   <Icon name="gear" size={16} /> <span className="hide-sm">Settings</span>

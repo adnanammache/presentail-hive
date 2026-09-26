@@ -1454,4 +1454,15 @@ label.chip { cursor: pointer; }
   .recurring-table td { border: 0; padding: 4px 8px; }
   .recurring-table td:first-child, .recurring-table .actions { grid-column: 1 / -1; text-align: left; }
   .recurring-kv { grid-template-columns: 1fr; }
+/* Settings → Agents in Slack */
+.slack-bots .notice { margin: 10px 0; }
+.slack-bots form input { min-width: 0; }
+.slack-bots-actions { margin: 12px 0 6px; }
+.settings-note .slack-bot-list { list-style: none; margin: 8px 0; padding: 0; border-top: 1px solid var(--border); }
+.slack-bot-row { display: flex; gap: 12px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--border); }
+.slack-bot-row .grow { min-width: 0; }
+.slack-bot-name { font-weight: 600; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+@media (max-width: 640px) {
+  .slack-bot-row { flex-wrap: wrap; }
+  .slack-bot-row > .row-gap { width: 100%; padding-left: 44px; }
 }

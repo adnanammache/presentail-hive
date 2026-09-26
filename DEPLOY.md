@@ -172,6 +172,22 @@ A recurring task creates a normal Hive task every time it comes round: for an AI
 
 **What the update migrates (automatically, once).** Existing workflows keep their cron expression (shown as *Custom (cron)*) and their on/off state (on = Active, off = Paused), and their run history. They were set up by owners, so they count as authorized by the workspace owners until an owner edits, runs or resumes one. New columns on `workflows`, `workflow_runs` and `tasks`, and a `schedule_events` table, are added on startup.
 
+## Agents in Slack (each agent as its own bot)
+
+Every agent can be its own Slack bot, with its own name, photo and DM. People can @mention it or add it to a channel (`/invite @Ledger`). Files sent to it become a task, and approvals come with buttons. Hive creates, updates and deletes these Slack apps itself. No Railway variables are needed.
+
+1. **Connect once.** A Slack admin opens [api.slack.com/apps](https://api.slack.com/apps), clicks **Your App Configuration Tokens → Generate Token** for the Presentail workspace, and pastes the **Refresh Token** (`xoxe-…`) into Hive under **Settings → Agents in Slack → Connect**. Slack replaces these tokens every 12 hours; Hive swaps them by itself and stores them only in its database.
+2. **Create bots for all agents.** For each agent, Hive creates a Slack app with its name, title, colour and photo. It creates the app first and adds the event address after storing the app's signing secret, so every request from Slack is signature-checked.
+3. **Install all in Slack.** Slack requires a person to press **Allow** once per app. Hive goes through them one after another and brings you back to Settings.
+
+After that:
+- Renaming an agent or changing its photo updates its bot.
+- Deleting an agent deletes its bot.
+- **Remove** in Settings takes a bot out of Slack.
+- If someone removes a bot in Slack, Hive notices and shows **Install** again.
+
+The shared Hive app (`SLACK_BOT_TOKEN`) keeps sending alerts, and still works for agents that have no bot yet ("Ledger: …" in a DM to Hive). In a private channel an agent's bot hasn't been added to, the Hive app posts under the agent's name and face instead.
+
 ## Odoo (Lebanon, Cyprus and UAE books)
 
 Agents reach Odoo through Hive, not directly. Hive holds the key, runs each call itself, and applies the rules:
