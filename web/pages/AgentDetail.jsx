@@ -4,17 +4,17 @@
 //   #/agents/:id/chat/:chatId      a conversation
 //   #/agents/:id/:tab              tasks | knowledge | tools | activity
 // Older tab names still work: skills, connect → tools; lessons → knowledge; workflows → tasks;
-// colleagues → chat with About open.
+// colleagues → chat with About open. #/agents/:id/tasks/recurring opens the recurring tasks.
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ago, api, fmtDateTime, toDate, useApi } from '../api.js';
 import { Avatar, Badge, Empty, Icon, Loading, PLATFORM_LABELS, runTone } from '../components/ui.jsx';
-import { AgentForm, WorkflowForm } from '../components/forms.jsx';
+import { AgentForm } from '../components/forms.jsx';
 import { usePref, useTaskUI } from '../components/work.jsx';
 import Chat from '../components/Chat.jsx';
 import Capabilities from '../components/Capabilities.jsx';
 import WorkOverview from '../components/WorkOverview.jsx';
 import { TaskCard } from '../components/TaskViews.jsx';
-import { WorkflowList } from './Workflows.jsx';
+import { RecurringSection } from '../components/Recurring.jsx';
 import Markdown from '../components/Markdown.jsx';
 
 const TABS = [
@@ -468,7 +468,7 @@ export default function AgentDetail({ id, meta, tab: routeTab, param }) {
   const { data: agent, setData, error: agentError } = useApi(`/agents/${id}`, ['agent']);
   const { data: me } = useApi('/me');
   const { data: tasks } = useApi(`/tasks?agent_id=${id}`, ['task']);
-  const { data: allWorkflows } = useApi('/workflows', ['workflow']);
+  const { data: recurring } = useApi(`/workflows?agent_id=${id}`, ['workflow']);
   const [modal, setModal] = useState(null);
   const [about, setAbout] = useState(routeTab === 'colleagues');
   const [actionError, setActionError] = useState('');
@@ -495,10 +495,10 @@ export default function AgentDetail({ id, meta, tab: routeTab, param }) {
 
   if (agentError) return <Empty title="Agent not found">It may have been deleted. <a href="#/agents">Back to Team & agents</a></Empty>;
   if (!agent) return <Loading />;
-  const workflows = allWorkflows?.filter((w) => w.agent_id === agent.id) ?? [];
+  const activeRecurring = recurring?.filter((w) => w.status !== 'ended').length ?? 0;
+  const taskView = tab === 'tasks' && (param === 'recurring' || routeTab === 'workflows') ? 'recurring' : 'tasks';
   const openTasks = tasks?.filter((t) => t.status !== 'done') ?? [];
   const doneTasks = tasks?.filter((t) => t.status === 'done') ?? [];
-  const recurringTasks = openTasks.filter((t) => t.repeat_label);
   const isOwner = me?.role === 'owner';
 
   const remove = async () => {
@@ -514,8 +514,7 @@ export default function AgentDetail({ id, meta, tab: routeTab, param }) {
     api(`/agents/${agent.id}`, { method: 'PATCH', body: { status: agent.status === 'paused' ? 'idle' : 'paused' } }).then(setData, (err) => setActionError(err.message));
   const viewRecurring = () => {
     setDrawer(false);
-    go('tasks');
-    setTimeout(() => document.getElementById('recurring')?.scrollIntoView({ behavior: 'smooth' }), 120);
+    go('tasks', 'recurring');
   };
 
   const status = ws?.status;
@@ -613,49 +612,43 @@ export default function AgentDetail({ id, meta, tab: routeTab, param }) {
 
         {tab === 'tasks' && (
           <div className="tab-body">
-            <div className="tab-actions">
-              <button className="btn btn-primary" onClick={() => openComposer({ assignee: `agent:${agent.id}` })}>
-                <Icon name="plus" size={16} /> Assign task
+            <div className="segmented" role="tablist" aria-label="Tasks or recurring tasks">
+              <button type="button" role="tab" aria-selected={taskView === 'tasks'} className={taskView === 'tasks' ? 'on' : ''} onClick={() => go('tasks')}>
+                Tasks ({openTasks.length})
+              </button>
+              <button type="button" role="tab" aria-selected={taskView === 'recurring'} className={taskView === 'recurring' ? 'on' : ''} onClick={() => go('tasks', 'recurring')}>
+                <Icon name="repeat" size={14} /> Recurring ({activeRecurring})
               </button>
             </div>
-            <h3 className="section-title">Open tasks</h3>
-            {tasks && openTasks.length === 0 && <Empty title="No open tasks" />}
-            <div className="task-list">
-              {openTasks.map((t) => (
-                <TaskCard key={t.id} task={t} onOpen={(task) => openTask(task.id)} draggable={false} />
-              ))}
-            </div>
-            <div id="recurring" className="recurring">
-              <div className="k-head">
-                <div>
-                  <h3 className="section-title">Recurring</h3>
-                  <p className="muted small">Repeating tasks, and workflows that run {agent.name} on a schedule.</p>
-                </div>
-                <button className="btn btn-sm" onClick={() => setModal({ kind: 'workflow', defaults: { agent_id: agent.id } })}>
-                  <Icon name="plus" size={14} /> New workflow
-                </button>
-              </div>
-              {recurringTasks.length > 0 && (
-                <div className="task-list">
-                  {recurringTasks.map((t) => (
-                    <TaskCard key={t.id} task={t} onOpen={(task) => openTask(task.id)} draggable={false} />
-                  ))}
-                </div>
-              )}
-              {workflows.length > 0 ? (
-                <WorkflowList workflows={workflows} onEdit={(w) => setModal({ kind: 'workflow', workflow: w })} onRuns={() => (location.hash = '#/workflows')} />
-              ) : (
-                recurringTasks.length === 0 && <Empty title="Nothing recurring yet">Make a task repeat from the task composer, or add a workflow.</Empty>
-              )}
-            </div>
-            {doneTasks.length > 0 && (
+            {taskView === 'recurring' ? (
+              <RecurringSection
+                query={`agent_id=${agent.id}`}
+                defaults={{ assignee: `agent:${agent.id}` }}
+                emptyText={`Nothing recurring for ${agent.name} yet. Create one here, or ask ${agent.name} in chat, e.g. “Every Monday at 9 AM, check outstanding supplier invoices.”`}
+              />
+            ) : (
               <>
-                <h3 className="section-title">Completed</h3>
-                <div className="task-list faded">
-                  {doneTasks.slice(0, 20).map((t) => (
+                <div className="tab-actions">
+                  <button className="btn btn-primary" onClick={() => openComposer({ assignee: `agent:${agent.id}` })}>
+                    <Icon name="plus" size={16} /> Assign task
+                  </button>
+                </div>
+                {tasks && openTasks.length === 0 && <Empty title="No open tasks" />}
+                <div className="task-list">
+                  {openTasks.map((t) => (
                     <TaskCard key={t.id} task={t} onOpen={(task) => openTask(task.id)} draggable={false} />
                   ))}
                 </div>
+                {doneTasks.length > 0 && (
+                  <>
+                    <h3 className="section-title">Completed</h3>
+                    <div className="task-list faded">
+                      {doneTasks.slice(0, 20).map((t) => (
+                        <TaskCard key={t.id} task={t} onOpen={(task) => openTask(task.id)} draggable={false} />
+                      ))}
+                    </div>
+                  </>
+                )}
               </>
             )}
           </div>
@@ -698,7 +691,6 @@ export default function AgentDetail({ id, meta, tab: routeTab, param }) {
 
       {about && <About agent={agent} status={status} onClose={() => setAbout(false)} />}
       {modal?.kind === 'agent' && <AgentForm agent={agent} onClose={() => setModal(null)} onSaved={setData} />}
-      {modal?.kind === 'workflow' && <WorkflowForm workflow={modal.workflow} defaults={modal.defaults} onClose={() => setModal(null)} />}
     </div>
   );
 }

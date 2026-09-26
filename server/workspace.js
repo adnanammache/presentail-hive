@@ -4,7 +4,6 @@
 import { all, get } from './db.js';
 import { canApproveFor } from './roles.js';
 import { getTask, needsMe } from './tasks.js';
-import { nextRuns } from './scheduler.js';
 import { dubaiNow } from './recurrence.js';
 import { canSeeChat, getChat } from './chatStore.js';
 
@@ -71,10 +70,9 @@ export function upcoming(agent) {
       at: starts ? t.start_on : t.due_date, at_kind: starts ? 'start' : 'due', date_only: true, overdue: !starts && t.due_date < today,
     });
   }
-  for (const w of all('SELECT id, name, schedule, timezone FROM workflows WHERE agent_id = ? AND enabled = 1', agent.id)) {
-    const next = nextRuns(w.schedule, w.timezone)[0];
-    if (next) items.push({ kind: 'workflow', id: w.id, title: w.name, recurring: true, at: new Date(next).toISOString(), at_kind: 'run', date_only: false });
-  }
+  // Recurring schedules keep their next occurrence (schedules.js).
+  for (const w of all("SELECT id, name, next_run_at FROM workflows WHERE agent_id = ? AND status = 'active' AND next_run_at IS NOT NULL", agent.id))
+    items.push({ kind: 'workflow', id: w.id, title: w.name, recurring: true, at: new Date(w.next_run_at).toISOString(), at_kind: 'run', date_only: false });
   const key = (i) => (i.date_only ? `${i.at}T00:00:00Z` : i.at);
   return items.filter((i) => i.at).sort((a, b) => key(a).localeCompare(key(b))).slice(0, 8);
 }

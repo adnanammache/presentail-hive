@@ -38,7 +38,7 @@ function Section({ title, children, action }) {
 }
 
 export default function WorkOverview({ agent, data, error, chatId, onClose, onViewRecurring, onRetry }) {
-  const { openTask, openComposer } = useTaskUI();
+  const { openTask, openComposer, openSchedule } = useTaskUI();
   const tz = viewerZone(data?.timezone);
   const createTask = () => openComposer({ assignee: `agent:${agent.id}`, ...(chatId ? { source_chat_id: chatId } : {}) });
   return (
@@ -100,7 +100,7 @@ export default function WorkOverview({ agent, data, error, chatId, onClose, onVi
                 type="button"
                 key={`${u.kind}-${u.id}-${u.at_kind}`}
                 className="wo-item"
-                onClick={() => (u.kind === 'task' ? openTask(u.id) : onViewRecurring())}
+                onClick={() => (u.kind === 'task' ? openTask(u.id) : openSchedule(u.id))}
               >
                 <Icon name="calendar" size={18} />
                 <span className="grow">

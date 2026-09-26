@@ -76,7 +76,8 @@ export async function sendChatMessage(chat, user, { body: raw, file_ids, voice: 
   if (voice && !body) throw new Error("Couldn't make out any words in that voice note. Try again a little closer to the mic.");
   if (!body && !files.length) throw new Error('Write a message or attach a file');
   const text = body || `Sent ${files.length === 1 ? 'a file' : `${files.length} files`}.`;
-  const meta = { email: user?.email ?? null, origin: chat.origin, ...(voice ? { voice: true } : {}) };
+  // by: who is asking, so the agent's schedule tools know whose instruction it is (trusted, not from the model).
+  const meta = { email: user?.email ?? null, by: user?.email ?? null, origin: chat.origin, ...(voice ? { voice: true } : {}) };
   let agentText = voice ? `(Voice note, transcribed automatically)\n${text}` : text;
 
   const lesson = REMEMBER.test(body) ? body.replace(REMEMBER, '').trim() : '';

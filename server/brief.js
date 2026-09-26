@@ -126,8 +126,9 @@ export function buildBrief({ since } = {}) {
   ].map((f) => ({ ...f, error: (f.error || '').slice(0, 200) }));
 
   const now = Date.now();
-  const today = all('SELECT w.id, w.name, w.schedule, w.timezone, a.name AS agent FROM workflows w LEFT JOIN agents a ON a.id = w.agent_id WHERE w.enabled = 1')
-    .map((w) => ({ ...w, at: nextRuns(w.schedule, w.timezone)[0] }))
+  const today = all(`SELECT w.id, w.name, w.schedule, w.timezone, w.next_run_at, COALESCE(a.name, u.name, w.assignee_email) AS agent FROM workflows w LEFT JOIN agents a ON a.id = w.agent_id LEFT JOIN users u ON u.email = w.assignee_email
+     WHERE COALESCE(w.status, CASE WHEN w.enabled = 1 THEN 'active' END) = 'active'`)
+    .map((w) => ({ ...w, at: w.next_run_at ?? (w.schedule ? nextRuns(w.schedule, w.timezone)[0] : null) }))
     .filter((w) => w.at && new Date(w.at).getTime() - now < 24 * 3600 * 1000)
     .sort((a, b) => a.at.localeCompare(b.at))
     .map(({ id, name, agent, at, timezone }) => ({ id, name, agent, at, timezone }));

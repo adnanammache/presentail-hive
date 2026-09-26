@@ -1421,3 +1421,36 @@ label.chip { cursor: pointer; }
 .msg.mine .md .md-copy:hover { background: rgb(255 255 255 / 0.2); color: #fff; }
 .msg.mine .md .task-list-item input { accent-color: #fff; }
 .dm-q .md, .dm-a .md { margin-top: 4px; }
+
+/* ---------- recurring tasks ---------- */
+.recurring .tab-actions { align-items: center; gap: 12px; }
+.recurring .tab-actions p { margin: 0; }
+.tab-body > .segmented, .main > .segmented { margin-bottom: 14px; }
+.recurring-table td { font-size: 13.5px; }
+.recurring-table .actions { white-space: normal; min-width: 210px; }
+.recurring-table .actions > * { margin: 2px 0 2px 4px; }
+.form-heading { font-size: 12.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin: 6px 0 -2px; }
+.recurring-form fieldset.field { border: 0; padding: 0; margin: 0; min-width: 0; }
+.recurring-form .toggle-row { font-size: 13.5px; }
+.form-more summary { cursor: pointer; font-weight: 600; font-size: 13px; color: var(--accent); padding: 4px 0; }
+.form-more[open] summary { margin-bottom: 10px; }
+.preview-list { margin: 6px 0 0; padding-left: 18px; display: grid; gap: 2px; }
+.schedule-preview .preview-list { color: var(--text); }
+.schedule-preview .muted { color: var(--muted); }
+.recurring-detail { display: flex; flex-direction: column; gap: 12px; }
+.recurring-detail .section-title { margin: 8px 0 0; }
+.recurring-detail .pre { margin: 0; background: var(--panel-2); border-radius: 10px; padding: 10px 12px; font-size: 13.5px; }
+.recurring-kv { grid-template-columns: 120px 1fr; }
+.notice-red { background: var(--red-soft); color: var(--red); }
+.recurring-bar { display: flex; align-items: center; gap: 8px; background: var(--accent-soft); border-radius: 10px; padding: 8px 12px; font-size: 13px; }
+.recurring-bar > svg { color: var(--accent); flex-shrink: 0; }
+.my-recurring { flex-basis: 100%; border: 1px solid var(--border); background: var(--panel); border-radius: var(--radius); padding: 8px 14px; }
+.my-recurring > summary { cursor: pointer; font-weight: 600; font-size: 13.5px; display: inline-flex; gap: 6px; align-items: center; color: var(--accent); }
+.my-recurring[open] > summary { margin-bottom: 10px; }
+@media (max-width: 720px) {
+  .recurring-table thead { display: none; }
+  .recurring-table tr { display: grid; grid-template-columns: 1fr 1fr; border-bottom: 1px solid var(--border); padding: 6px 0; }
+  .recurring-table td { border: 0; padding: 4px 8px; }
+  .recurring-table td:first-child, .recurring-table .actions { grid-column: 1 / -1; text-align: left; }
+  .recurring-kv { grid-template-columns: 1fr; }
+}

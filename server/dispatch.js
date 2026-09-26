@@ -6,6 +6,7 @@
 //      If the webhook responds with {"reply": "..."} that text is posted back into the thread.
 //   3. Everything else waits in the queue — the agent picks it up via the Agent API (/api/agent/*).
 import { lessonsBlock } from './lessons.js';
+import { SCHEDULE_GUIDE, SCHEDULE_TOOLS, SCHEDULE_TOOL_NAMES, chatContext, handleScheduleTool, taskContext } from './scheduleTools.js';
 import Anthropic from '@anthropic-ai/sdk';
 import { all, get, run } from './db.js';
 import { broadcast, emit, emitLocal } from './events.js';
@@ -21,6 +22,8 @@ const DEFAULT_MODEL = process.env.DEFAULT_CLAUDE_MODEL || 'claude-opus-5';
 const FALLBACK_MODELS = new Set(['claude-opus-5', 'claude-fable-5-1']);
 
 let anthropic;
+/** Tests inject a fake Messages API client here. */
+export const setClaudeClient = (c) => (anthropic = c);
 function claude() {
   anthropic ??= new Anthropic();
   return anthropic;
@@ -59,7 +62,12 @@ export function postMessage(agentId, sender, body, meta = null, { at } = {}) {
   return message;
 }
 
-export async function askClaude(agent, messages) {
+/**
+ * Ask a Claude-powered agent (the plain Messages API). With `tools` (a context from scheduleTools.js:
+ * whose conversation or task this is), it also gets the recurring-task tools and Hive answers its
+ * calls in a loop, the same way managed agents' custom tools are answered.
+ */
+export async function askClaude(agent, messages, { tools: toolCtx } = {}) {
   const model = agent.model || DEFAULT_MODEL;
   const params = {
     model,
@@ -67,17 +75,33 @@ export async function askClaude(agent, messages) {
     system:
       (agent.system_prompt || `You are ${agent.name}, ${agent.title || 'an AI agent'} at Presentail.`) +
       '\n\nYou are managed from Presentail Hive, an operations dashboard. Messages marked [System] come from the dashboard itself (task assignments, scheduled workflow runs). Reply concisely with what you did or what you need.' +
+      (toolCtx ? `\n\n${SCHEDULE_GUIDE}` : '') +
       (agent.id ? `\n\n${lessonsBlock(agent.id)}` : ''),
-    messages,
+    ...(toolCtx ? { tools: SCHEDULE_TOOLS.map(({ type, ...tool }) => tool) } : {}),
   };
   if (!model.startsWith('claude-haiku')) params.thinking = { type: 'adaptive' };
   if (FALLBACK_MODELS.has(model)) {
     params.betas = ['server-side-fallback-2026-07-01'];
     params.fallbacks = 'default';
   }
-  const response = await claude().beta.messages.create(params);
-  if (response.stop_reason === 'refusal') return '⚠️ The model declined this request.';
-  return response.content.filter((b) => b.type === 'text').map((b) => b.text).join('\n').trim() || '(no text reply)';
+  const convo = [...messages];
+  for (let round = 0; ; round++) {
+    const response = await claude().beta.messages.create({ ...params, messages: convo });
+    if (response.stop_reason === 'refusal') return '⚠️ The model declined this request.';
+    const calls = response.content.filter((b) => b.type === 'tool_use');
+    if (response.stop_reason !== 'tool_use' || !calls.length || !toolCtx || round >= 8) {
+      return response.content.filter((b) => b.type === 'text').map((b) => b.text).join('\n').trim() || '(no text reply)';
+    }
+    // Send the whole turn back unchanged (thinking included), then every result in one message.
+    convo.push({ role: 'assistant', content: response.content });
+    convo.push({
+      role: 'user',
+      content: calls.map((c) => {
+        const r = SCHEDULE_TOOL_NAMES.has(c.name) ? handleScheduleTool(toolCtx, c.name, c.input ?? {}, { eventId: c.id }) : { text: `Unknown tool ${c.name}`, is_error: true };
+        return { type: 'tool_result', tool_use_id: c.id, content: r.text, ...(r.is_error ? { is_error: true } : {}) };
+      }),
+    });
+  }
 }
 
 /** Convert a thread into alternating user/assistant turns for the Messages API. */
@@ -129,13 +153,23 @@ function setAgentStatus(agent, status) {
  * Hand an event to an agent. Returns the agent's reply text (if it replied synchronously),
  * or null when the event was queued / sent fire-and-forget.
  */
+/** Whose conversation or task a delivery is, for the agent's tools (never taken from the model). */
+function toolContextFor(agent, payload) {
+  if (payload.task?.id) return taskContext(agent, get('SELECT * FROM tasks WHERE id = ?', payload.task.id));
+  if (payload.event === 'message') {
+    const meta = payload.message?.meta ? JSON.parse(payload.message.meta) : {};
+    return chatContext(agent, { origin: payload.origin ?? 'hive', readerEmail: meta.by ?? meta.email ?? null });
+  }
+  return null;
+}
+
 export async function deliver(agent, payload) {
   if (!agent || agent.status === 'paused') return null;
   try {
     let reply = null;
     if (agent.platform === 'claude' && claudeConfigured()) {
       setAgentStatus(agent, 'active');
-      reply = await askClaude(agent, threadToMessages(agent.id, payload.message?.chat_id));
+      reply = await askClaude(agent, threadToMessages(agent.id, payload.message?.chat_id), { tools: toolContextFor(agent, payload) });
       setAgentStatus(agent, 'idle');
     } else if (agent.webhook_url) {
       reply = await callWebhook(agent, payload);
@@ -165,7 +199,7 @@ export async function sendToAgent(agentId, body, meta = null, { files = [], agen
   // Fire and forget: the UI updates over SSE when the reply lands.
   if (agent.platform === 'managed') {
     if (agent.status === 'paused') postMessage(agentId, 'system', `${agent.name} is paused. Resume it to get a reply.`, { origin });
-    else chatWithManagedAgent(agentId, agentText, { origin, files: files.filter((f) => !f.voice) });
+    else chatWithManagedAgent(agentId, agentText, { origin, files: files.filter((f) => !f.voice), by: meta?.by ?? null });
   } else {
     deliver(agent, { event: 'message', message, origin }).catch(() => {});
   }

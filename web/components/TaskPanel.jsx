@@ -5,7 +5,7 @@ import { ago, api, fmtDateTime, fmtDay, useApi } from '../api.js';
 import { DateInput, Icon } from './ui.jsx';
 import TaskRun, { uploadFiles } from './TaskRun.jsx';
 import { HandoffBar, TeachBar } from './forms.jsx';
-import { AssigneeChip, AssigneePicker, BLOCKERS, DueLabel, PRIORITY_LABELS, PersonAvatar, STAGES, stageLabel } from './work.jsx';
+import { AssigneeChip, AssigneePicker, BLOCKERS, DueLabel, PRIORITY_LABELS, PersonAvatar, STAGES, stageLabel, useTaskUI } from './work.jsx';
 import { ScheduleFields, SeriesBar, formFromTask, scheduleBody } from './schedule.jsx';
 import Markdown from './Markdown.jsx';
 
@@ -194,6 +194,29 @@ function Activity({ task }) {
 }
 
 /** Mark blocked (why, and who needs to act) or clear it. */
+/** This task came from a recurring task: which one, for which period, and a way to see the schedule. */
+function RecurringBar({ task }) {
+  const { openSchedule } = useTaskUI();
+  return (
+    <div className="series-bar recurring-bar">
+      <Icon name="repeat" size={15} />
+      <span className="grow">
+        From the recurring task <strong>{task.workflow_name ?? `#${task.workflow_id}`}</strong>
+        {task.scheduled_for && <> · scheduled {fmtDateTime(task.scheduled_for)}</>}
+        {task.period_start && (
+          <>
+            {' '}
+            · covers {fmtDay(task.period_start)} – {fmtDay(task.period_end)}
+          </>
+        )}
+      </span>
+      <button type="button" className="link-btn" onClick={() => openSchedule(task.workflow_id)}>
+        View schedule
+      </button>
+    </div>
+  );
+}
+
 function BlockerEditor({ task, save }) {
   const [editing, setEditing] = useState(false);
   const [kind, setKind] = useState('info');
@@ -398,6 +421,8 @@ export default function TaskPanel({ taskId, onClose, me }) {
           </div>
         )}
         {task.approved_at && <p className="muted small">✓ Approved by {task.approved_by} on {fmtDateTime(task.approved_at, 'Asia/Dubai')}.</p>}
+
+        {task.workflow_id && <RecurringBar task={task} />}
 
         <Section title="Blocker">
           <BlockerEditor task={task} save={save} />

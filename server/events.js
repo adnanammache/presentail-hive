@@ -6,7 +6,9 @@ export function subscribe(req, res) {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
     Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no', // proxies must pass events through as they happen, not buffer them
   });
+  res.flushHeaders?.();
   res.write('retry: 3000\n\n');
   clients.add(res);
   const ping = setInterval(() => res.write(': ping\n\n'), 25000);
