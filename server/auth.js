@@ -210,7 +210,7 @@ function honeycombSvg() {
   <g fill="none" stroke="#D5A348" stroke-width="1.4" stroke-opacity=".85">${outline.map(([x, y, r]) => `<polygon points="${hexPts(x, y, r)}"/>`).join('')}</g>
   <g fill="#D5A348">${filled.map(([x, y, r]) => `<polygon points="${hexPts(x, y, r)}"/>`).join('')}${nodes.map(([x, y]) => `<circle cx="${x}" cy="${y}" r="5"/>`).join('')}</g>
   <path fill="#D5A348" fill-rule="evenodd" d="M${hub.replace(/ /g, ' L')} Z M${359 + 26} 153 a26 26 0 1 0 -52 0 a26 26 0 1 0 52 0 Z"/>
-  <circle cx="359" cy="153" r="25.5" fill="#223B2E"/>
+  <circle cx="359" cy="153" r="25.5" fill="#23372C"/>
 </svg>`;
 }
 
@@ -224,14 +224,14 @@ function loginPage(error) {
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sign in · Presentail Hive</title>
-<meta name="theme-color" content="#223B2E">
+<meta name="theme-color" content="#23372C">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><path fill='%23D5A348' fill-rule='evenodd' d='M32 4 56.2 18v28L32 60 7.8 46V18Z M43 32a11 11 0 1 0-22 0 11 11 0 1 0 22 0Z'/></svg>">
 <style>
 :root{
-  --forest:#223B2E; /* matches the wordmark artwork's background exactly */
+  --forest:#23372C; /* the official logo's background, so the wordmark sits on the same green */
   --ivory:#F8F5ED; --card:#FFFFFF; --gold:#D5A348; --text:#1B2B22; --muted:#697386; --border:#E2DACE;
   --on-forest:#F6F1E4; --red:#B42318; --red-soft:#FEF0EE;
   --sans:"Inter","Segoe UI",ui-sans-serif,system-ui,-apple-system,"Helvetica Neue",Arial,sans-serif;
@@ -309,7 +309,7 @@ form{margin:30px 0 0}
 <div class="page">
   <section class="brand" aria-label="Presentail Hive">
     <div class="lockup">
-      <img src="/brand/presentail-wordmark.png" width="297" height="84" alt="Presentail, flowers &amp; gifts">
+      <img src="/brand/presentail-wordmark.png" width="297" height="83" alt="Presentail, flowers &amp; gifts">
       <span class="divider" aria-hidden="true"></span>
       <span class="hive">HIVE</span>
     </div>
