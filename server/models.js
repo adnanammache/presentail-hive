@@ -9,7 +9,7 @@ export const DEFAULT_MODEL = process.env.DEFAULT_CLAUDE_MODEL || 'claude-opus-5'
 // What we know about the main models: shown next to their names. Prices are list $ per million
 // input / output tokens.
 const NOTES = {
-  'claude-opus-5': { note: 'Recommended: strong and careful, the default for accounting work', price: '$5 / $25' },
+  'claude-opus-5': { note: 'Strong and careful; Hive’s default', price: '$5 / $25' },
   'claude-fable-5-1': { note: 'Most capable, for the hardest reconciliations; about 2× the cost', price: '$10 / $50' },
   'claude-fable-5': { note: 'Previous most-capable model', price: '$10 / $50' },
   'claude-opus-4-8': { note: 'Previous Opus', price: '$5 / $25' },
