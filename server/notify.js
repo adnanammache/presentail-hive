@@ -60,7 +60,7 @@ export async function sendSlack({ text, thread, as, ...rest }) {
     text: text.replace(/[*_`]/g, ''),
     blocks: alertBlocks({ text, ...rest }),
     unfurl_links: false,
-    ...(as ? { username: `${as.name} · ${as.title || 'Agent'}`.slice(0, 80), icon_url: `${baseUrl()}/avatars/${as.id}.png?v=${encodeURIComponent(as.color || '')}` } : {}),
+    ...(as ? { username: `${as.name} · ${as.title || 'Agent'}`.slice(0, 80), icon_url: `${baseUrl()}/avatars/${as.id}.png?v=${encodeURIComponent(`${as.photo_version ?? ''}${as.color ?? ''}`)}` } : {}),
   });
 }
 
@@ -90,7 +90,7 @@ function approvalText(runId) {
 export function notifyRun(runId, kind, extra = {}) {
   const r = get('SELECT * FROM runs WHERE id = ?', runId);
   if (!r) return;
-  const agent = get('SELECT id, name, title, color FROM agents WHERE id = ?', r.agent_id);
+  const agent = get('SELECT id, name, title, color, photo_version FROM agents WHERE id = ?', r.agent_id);
   const task = r.task_id ? get('SELECT id, title FROM tasks WHERE id = ?', r.task_id) : null;
   // Updates go back to the Slack conversation the work came from, if any.
   const origin = String(r.origin ?? '');

@@ -1,3 +1,4 @@
+import { usePhoto } from '../api.js';
 import { useEffect } from 'react';
 
 export const PLATFORM_LABELS = {
@@ -52,11 +53,12 @@ export function Icon({ name, size = 18 }) {
   );
 }
 
-export function Avatar({ name = '?', color = '#6366f1', size = 32, status }) {
+export function Avatar({ name = '?', color = '#6366f1', size = 32, status, id, photo }) {
   const initials = name.split(/\s+/).map((w) => w[0]).slice(0, 2).join('').toUpperCase();
+  const src = photo ?? usePhoto({ id, name });
   return (
-    <span className="avatar" style={{ '--c': color, width: size, height: size, fontSize: size * 0.38 }}>
-      {initials}
+    <span className={`avatar ${src ? 'has-photo' : ''}`} style={{ '--c': color, width: size, height: size, fontSize: size * 0.38 }}>
+      {src ? <img src={src} alt="" className="avatar-img" /> : initials}
       {status && <i className={`dot dot-${status}`} />}
     </span>
   );

@@ -1,6 +1,6 @@
-import { StrictMode, useContext, useEffect, useState } from 'react';
+import { StrictMode, useContext, useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { LiveContext, useApi, useLiveSource } from './api.js';
+import { LiveContext, PhotosContext, photoUrl, useApi, useLiveSource } from './api.js';
 import { Icon } from './components/ui.jsx';
 import Dashboard from './pages/Dashboard.jsx';
 import Agents from './pages/Agents.jsx';
@@ -102,11 +102,27 @@ function Shell() {
   );
 }
 
+function Photos({ children }) {
+  const { data: agents } = useApi('/agents', ['agent']);
+  const value = useMemo(() => {
+    const byId = new Map();
+    const byName = new Map();
+    for (const a of agents ?? []) {
+      const url = photoUrl(a);
+      if (url) byId.set(a.id, url), byName.set(a.name, url);
+    }
+    return { byId, byName };
+  }, [agents]);
+  return <PhotosContext.Provider value={value}>{children}</PhotosContext.Provider>;
+}
+
 function App() {
   const live = useLiveSource();
   return (
     <LiveContext.Provider value={live}>
-      <Shell />
+      <Photos>
+        <Shell />
+      </Photos>
     </LiveContext.Provider>
   );
 }

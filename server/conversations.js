@@ -51,7 +51,7 @@ export function directory() {
 
 // ---------------------------------------------------------------- posting as an agent
 
-export const avatarUrl = (agent) => `${baseUrl()}/avatars/${agent.id}.png?v=${encodeURIComponent(agent.color || '')}`;
+export const avatarUrl = (agent) => `${baseUrl()}/avatars/${agent.id}.png?v=${encodeURIComponent(`${agent.photo_version ?? ''}${agent.color ?? ''}`)}`;
 
 /** Post in Slack under the agent's name and face (needs the chat:write.customize scope). */
 export function postAsAgent(agent, { channel, thread_ts, text, blocks }) {
