@@ -306,6 +306,26 @@ CREATE TABLE IF NOT EXISTS agent_dms (
 );
 `);
 
+// Lessons an agent proposes for itself wait for a person (see lessons.js). Only approved, active
+// lessons go into the agent's instructions.
+{
+  const firstTime = !columns('agent_lessons').includes('status');
+  addColumn('agent_lessons', 'status', "TEXT NOT NULL DEFAULT 'approved'"); // approved | pending_approval | rejected
+  addColumn('agent_lessons', 'reason', 'TEXT'); // why the agent proposed it
+  addColumn('agent_lessons', 'run_id', 'INTEGER REFERENCES runs(id) ON DELETE SET NULL'); // the chat or task run it came from
+  addColumn('agent_lessons', 'reviewed_by', 'TEXT');
+  addColumn('agent_lessons', 'reviewed_at', 'TEXT');
+  addColumn('agent_lessons', 'review_note', 'TEXT'); // a rejection's reason, shown to the agent so it doesn't propose it again
+  addColumn('agent_lessons', 'proposed_text', 'TEXT'); // a better wording the agent offered for this lesson, waiting for a person
+  addColumn('agent_lessons', 'proposed_reason', 'TEXT');
+  addColumn('agent_lessons', 'use_count', 'INTEGER NOT NULL DEFAULT 0'); // times the agent said it applied it
+  addColumn('agent_lessons', 'last_used_at', 'TEXT');
+  addColumn('agents', 'trust_lessons', 'INTEGER NOT NULL DEFAULT 0'); // approve this agent's lessons automatically
+  addColumn('runs', 'lessons_known', 'TEXT'); // JSON ids of the lessons this run's session has been given
+  // Suggestions saved switched off before approvals existed are now waiting for approval.
+  if (firstTime) db.exec("UPDATE agent_lessons SET status = 'pending_approval', active = 1 WHERE source = 'agent' AND active = 0");
+}
+
 db.exec(`
 CREATE TABLE IF NOT EXISTS briefs (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,

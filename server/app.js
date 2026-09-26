@@ -15,7 +15,7 @@ import { backupNow, backupPath, listBackups } from './backup.js';
 import { healthReport, runChecks } from './health.js';
 import { listModels } from './models.js';
 import { canApproveFor, isOwner, listUsers, setUserRole, userFor } from './roles.js';
-import { addLesson, deleteLesson, listLessons, updateLesson } from './lessons.js';
+import { addLesson, approveLesson, deleteLesson, listLessons, rejectLesson, resolveProposal, setTrustLessons, updateLesson } from './lessons.js';
 import { saveChatFile } from './chatFiles.js';
 import { chatActivity, chatMessages, createChat, listChats, publicChat, sendChatMessage, updateChat } from './chats.js';
 import { canManageChat, canSeeChat, ensureChat, getChat, visibleChatParams, visibleChatSql } from './chatStore.js';
@@ -720,6 +720,30 @@ export function dashboardRouter() {
     }
   }));
   r.delete('/lessons/:id', wrap((req) => (lessonGuard(req), deleteLesson(Number(req.params.id)), { ok: true })));
+  // Lessons agents propose: approve (optionally reworded), reject (with a reason the agent sees),
+  // and accept or dismiss a new wording the agent offered for an existing lesson.
+  const reviewer = (req) => req.user?.name || req.user?.email || 'Hive user';
+  const review = (fn) =>
+    wrap((req) => {
+      if (!get('SELECT id FROM agent_lessons WHERE id = ?', req.params.id)) throw notFound('Lesson');
+      lessonGuard(req);
+      try {
+        return fn(Number(req.params.id), req);
+      } catch (err) {
+        throw bad(err.message);
+      }
+    });
+  r.post('/lessons/:id/approve', review((id, req) => approveLesson(id, { text: req.body?.text, by: reviewer(req) })));
+  r.post('/lessons/:id/reject', review((id, req) => rejectLesson(id, { note: req.body?.note, by: reviewer(req) })));
+  r.post('/lessons/:id/proposal', review((id, req) => resolveProposal(id, { accept: Boolean(req.body?.accept), by: reviewer(req) })));
+  // "Always trust this agent's lessons"
+  r.put('/agents/:id/trust-lessons', wrap((req) => {
+    const agentId = Number(req.params.id);
+    if (!get('SELECT id FROM agents WHERE id = ?', agentId)) throw notFound('Agent');
+    if (!canApproveFor(req.hive, agentId)) throw forbidden("Only approvers and owners can decide whether this agent's lessons need approval.");
+    setTrustLessons(agentId, Boolean(req.body?.trust));
+    return { trust_lessons: req.body?.trust ? 1 : 0 };
+  }));
 
   // Messages between agents
   r.get('/agents/:id/dms', wrap((req) =>

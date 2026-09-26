@@ -877,6 +877,19 @@ button.link { background: none; border: 0; padding: 0; cursor: pointer; font: in
 .lesson-list li { display: flex; gap: 8px; align-items: center; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel); }
 .lesson-list li.off { opacity: 0.55; }
 .lesson-list li.off .grow > div:first-child { text-decoration: line-through; }
+.lesson-list li.pending { border-color: var(--amber); background: var(--amber-soft); align-items: flex-start; }
+.lesson-list li.stale { border-style: dashed; }
+.lesson-list li.rejected { opacity: 0.7; }
+.lesson-actions { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+.lesson-reason { margin-top: 4px; }
+.lesson-proposal { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; padding: 6px 8px; border-radius: 8px; background: var(--amber-soft); }
+.lesson-proposal > div { flex: 1 1 100%; }
+.lesson-section { margin: 14px 0; }
+.lesson-section h3 { margin: 0 0 6px; font-size: 14px; }
+.lesson-section summary { cursor: pointer; }
+.lesson-trust { display: flex; gap: 8px; align-items: center; justify-content: flex-start; margin: 4px 0 8px; }
+.lesson-trust input { width: auto; flex: none; margin: 0; }
+@media (max-width: 640px) { .lesson-list li { flex-wrap: wrap; } .lesson-list li > .grow { flex: 1 1 100%; } .lesson-actions { justify-content: flex-start; } }
 .teach-bar input { flex: 1; min-width: 160px; border: 0; background: transparent; padding: 4px 0; }
 .teach-bar input:focus { outline: none; }
 

@@ -3,8 +3,9 @@
 // Configure with SLACK_BOT_TOKEN (a bot token with chat:write) and SLACK_ALERT_CHANNEL
 // (a channel ID like C0123…, or your member ID U0123… for a DM). Without them this is a no-op.
 // With SLACK_SIGNING_SECRET as well, approval alerts get Approve / Reject buttons (see slack.js).
-import { get, run } from './db.js';
-import { pushToAll } from './push.js';
+import { all, get, run } from './db.js';
+import { pushToAll, pushToUser } from './push.js';
+import { canApproveFor, knownUser } from './roles.js';
 import { recordHealth } from './health.js';
 
 export const slackConfigured = () => Boolean(process.env.SLACK_BOT_TOKEN && process.env.SLACK_ALERT_CHANNEL);
@@ -200,5 +201,36 @@ export function notifyWorkflowFailed(workflowName, output, taskId) {
     text: `🔴 Scheduled workflow *${esc(workflowName)}* failed`,
     detail: esc(clip(output, 500)),
     link: taskId ? `${baseUrl()}/#/tasks/${taskId}` : `${baseUrl()}/#/workflows`,
+  });
+}
+
+/**
+ * An agent proposed a lesson (or a new wording for one): tell the people who can approve it, on
+ * their phones and in Slack (with Approve / Reject buttons when Slack buttons are set up).
+ */
+export function notifyLessonPending(lesson, { edit = false } = {}) {
+  if (!lesson) return;
+  const agent = get('SELECT id, name, title, color, photo_version FROM agents WHERE id = ?', lesson.agent_id);
+  const name = agent?.name ?? 'An agent';
+  const text = edit ? lesson.proposed_text : lesson.text;
+  const reason = edit ? lesson.proposed_reason : lesson.reason;
+  const url = `/#/agents/${lesson.agent_id}/lessons`;
+  const title = edit ? `${name} suggested a new wording for a lesson` : `${name} proposed a lesson`;
+  for (const u of all("SELECT email FROM users WHERE status = 'active'")) {
+    if (canApproveFor(knownUser(u.email), lesson.agent_id)) pushToUser(u.email, { title, body: clip(text, 160), url, tag: `lesson-${lesson.id}` }).catch((err) => console.error('[push]', err.message));
+  }
+  const buttons =
+    !edit && slackButtonsEnabled()
+      ? [
+          { type: 'button', style: 'primary', text: { type: 'plain_text', text: 'Approve' }, action_id: 'hive_lesson_approve', value: String(lesson.id) },
+          { type: 'button', style: 'danger', text: { type: 'plain_text', text: 'Reject' }, action_id: 'hive_lesson_reject', value: String(lesson.id) },
+        ]
+      : [];
+  return sendSlack({
+    text: `🧠 *${esc(name)}* ${edit ? `suggested a new wording for lesson #${lesson.id}` : 'proposed a lesson'}. It doesn't apply until someone approves it.`,
+    detail: `>${esc(clip(text, 600))}${reason ? `\n_Why:_ ${esc(clip(reason, 400))}` : ''}`,
+    link: `${baseUrl()}${url}`,
+    linkLabel: 'Review in Hive',
+    buttons,
   });
 }

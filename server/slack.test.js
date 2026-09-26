@@ -102,3 +102,25 @@ test('Approve in Slack resolves exactly the calls in the alert and updates the m
     server.close();
   }
 });
+
+test('a lesson an agent proposes is announced with Approve / Reject, and only approvers can use them', async () => {
+  const { handleAction } = await import('./slack.js');
+  const { proposeLesson, setLessonJudge } = await import('./lessons.js');
+  setLessonJudge(null);
+  const agentId = Number(run("INSERT INTO agents (name, title, api_token) VALUES ('Ziad', 'Tax', 'zl')").lastInsertRowid);
+  const before = slack.length;
+  await proposeLesson({ kind: 'task', agent_id: agentId }, { text: 'UAE sales in Wafeq sit in two places: Cash invoices (`simplified-invoices`) and Invoices (`invoices`). Always check both.', reason: 'Missed marketplace revenue' });
+  const lesson = get('SELECT * FROM agent_lessons WHERE agent_id = ?', agentId);
+  const alert = await waitFor(() => slack.slice(before).find((m) => m.url.endsWith('chat.postMessage') && m.body.text.includes('proposed a lesson')), 'lesson alert');
+  const actions = alert.body.blocks.find((b) => b.type === 'actions').elements;
+  assert.deepEqual(actions.map((a) => a.action_id), ['hive_lesson_approve', 'hive_lesson_reject', 'hive_open']);
+  assert.match(actions[2].url, new RegExp(`/#/agents/${agentId}/lessons$`));
+  assert.match(JSON.stringify(alert.body.blocks), /Missed marketplace revenue/);
+
+  const click = (user, action_id) => handleAction({ user: { id: user, name: user }, actions: [{ action_id, value: String(lesson.id) }] });
+  assert.match(await click('U0STRANGER', 'hive_lesson_approve'), /can't approve this agent's lessons/);
+  assert.equal(get('SELECT status FROM agent_lessons WHERE id = ?', lesson.id).status, 'pending_approval');
+  assert.equal(await click('U0ADNAN', 'hive_lesson_approve'), `Approved lesson #${lesson.id}.`);
+  assert.equal(get('SELECT status, reviewed_by FROM agent_lessons WHERE id = ?', lesson.id).reviewed_by, 'U0ADNAN (Slack)');
+  assert.match(await click('U0ADNAN', 'hive_lesson_reject'), /Already handled: lesson #\d+ is approved/);
+});
