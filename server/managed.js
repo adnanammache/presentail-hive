@@ -27,6 +27,7 @@ import { baseUrl } from './notify.js';
 import { checkBudget, checkThresholds } from './budget.js';
 import { recordHealth } from './health.js';
 import { odooTool, checkAgentCall, classify, describeCall, formatResult, odooCall } from './odoo.js';
+import { SCHEDULE_GUIDE, SCHEDULE_TOOLS, SCHEDULE_TOOL_NAMES, handleScheduleTool } from './scheduleTools.js';
 
 const DEFAULT_MODEL = process.env.DEFAULT_CLAUDE_MODEL || 'claude-opus-5';
 const ENV_NAME = process.env.HIVE_ENVIRONMENT_NAME || (process.env.NODE_ENV === 'production' ? 'presentail-hive' : 'presentail-hive-dev');
@@ -177,6 +178,8 @@ export function composeSystem(agent) {
     '- End every turn with a brief summary: what you did, key totals, what is left, and exactly what you need from the user.',
     '- If something is missing (a file, access, a decision), say precisely what and stop rather than guessing.',
     '',
+    SCHEDULE_GUIDE,
+    '',
     lessonsBlock(agent.id),
   ];
   return lines.filter((l) => l != null).join('\n').replace(/\n{3,}/g, '\n\n').trim();
@@ -222,6 +225,7 @@ async function buildAgentConfig(agent) {
       TASK_TOOL,
       AGENT_DM_TOOL,
       LESSON_TOOL,
+      ...SCHEDULE_TOOLS,
     ],
     metadata: { hive_agent_id: String(agent.id) },
   };
@@ -368,7 +372,7 @@ export function startTaskRun(taskId, { note } = {}) {
  * Chat with a managed agent. Each conversation has its own session: Hive's chat is one, and every
  * Slack thread is another, so people never see each other's conversations or get each other's answers.
  */
-export async function chatWithManagedAgent(agentId, text, { origin = 'hive', files = [] } = {}) {
+export async function chatWithManagedAgent(agentId, text, { origin = 'hive', files = [], by = null } = {}) {
   const agent = get('SELECT * FROM agents WHERE id = ?', agentId);
   const say = (msg) => postMessage(agentId, 'system', msg, { origin });
   let r = get("SELECT * FROM runs WHERE kind = 'chat' AND agent_id = ? AND COALESCE(origin, 'hive') = ? AND status NOT IN ('failed', 'ended') ORDER BY id DESC LIMIT 1", agentId, origin);
@@ -384,7 +388,8 @@ export async function chatWithManagedAgent(agentId, text, { origin = 'hive', fil
       const session = await createSession(agent, { title: `Chat with ${agent.name}`, runId, metadata: { hive_chat_agent_id: String(agentId) } });
       r = setRun(runId, { session_id: session.id, status: 'running' });
     }
-    run('UPDATE runs SET auto_approve = 0 WHERE id = ?', r.id);
+    // Whose message this turn answers: the person tools act for (recurring tasks), never the model's say-so.
+    run('UPDATE runs SET auto_approve = 0, requested_by = ? WHERE id = ?', by, r.id);
     // A chat that answered before is 'waiting': mark it running again, or the follower sees an
     // idle session and stops listening before the reply to this message arrives.
     if (r.status !== 'running') r = setRun(r.id, { status: 'running' });
@@ -605,6 +610,12 @@ async function resolveToolCalls(runId, customIds, builtinPending) {
       results.push({ type: 'user.custom_tool_result', custom_tool_use_id: id, content: [{ type: 'text', text: reply.text }], ...(reply.is_error ? { is_error: true } : {}) });
       continue;
     }
+    if (SCHEDULE_TOOL_NAMES.has(call.name)) {
+      // Answered from the run's own identity: its agent, and the person it is working for.
+      const reply = handleScheduleTool(runId, call.name, call.input ?? {}, { eventId: id });
+      results.push({ type: 'user.custom_tool_result', custom_tool_use_id: id, content: [{ type: 'text', text: reply.text }], ...(reply.is_error ? { is_error: true } : {}) });
+      continue;
+    }
     if (call.name === 'save_lesson') {
       const learned = learnFromRun(r, call.input);
       if (learned.note && r.kind === 'chat') postMessage(r.agent_id, 'system', learned.note, { origin: r.origin ?? 'hive' });
@@ -739,6 +750,8 @@ function summarize(ev) {
       if (ev.name === 'task_complete') return { name: 'task_complete', detail: String(ev.input?.summary ?? '').slice(0, 600), kind: 'custom', input: ev.input ?? {} };
       if (ev.name === 'wafeq_plan') return { name: 'wafeq_plan', detail: `${ev.input?.action ?? ''}${ev.input?.reason ? `: ${ev.input.reason}` : ''}`, kind: 'custom', input: ev.input ?? {} };
       if (ev.name === 'save_lesson') return { name: 'save_lesson', detail: String(ev.input?.lesson ?? '').slice(0, 600), kind: 'custom', input: ev.input ?? {} };
+      if (SCHEDULE_TOOL_NAMES.has(ev.name))
+        return { name: ev.name, detail: String(ev.input?.title ?? (ev.input?.schedule_id != null ? `#${ev.input.schedule_id}` : ev.input?.query ?? '')).slice(0, 300), kind: 'custom', input: ev.input ?? {} };
       if (ev.name === 'message_agent') return { name: 'message_agent', detail: `→ ${ev.input?.agent ?? '?'}: ${String(ev.input?.message ?? '').slice(0, 500)}`, kind: 'custom', input: ev.input ?? {} };
       return { name: ev.name, detail: ev.name === 'odoo' ? describeCall(ev.input || {}) : '', kind: ev.name === 'odoo' ? classify(ev.input?.model, ev.input?.method) : 'custom' };
     case 'user.custom_tool_result':

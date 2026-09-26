@@ -25,7 +25,8 @@ import { markVerified, setHidden, setManualDone, setupChecklist, verified } from
 import { confirmTool, downloadOutput, interruptRun, managedReady, replyToRun, runWithEvents, startTaskRun, syncAgent } from './managed.js';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { finishRun, nextRuns, runWorkflow, schedule, unschedule, validateSchedule } from './scheduler.js';
+import { finishRun } from './scheduler.js';
+import { canViewSchedule, suspendSchedulesFor, cancelSchedule, createSchedule, listSchedules, pauseSchedule, previewSchedule, resumeSchedule, runNow, scheduleDetails, updateSchedule } from './schedules.js';
 import { cleanSchedule } from './taskSchedule.js';
 import {
   PRIORITIES, TASK_STATUSES, addLinks, agentActor, agentView, attention, board, clearBlocker, createTask, getTask, listTasks, needsMe,
@@ -49,11 +50,10 @@ const RUN_STATUSES = ['running', 'success', 'failed'];
 
 const AGENT_FIELDS = ['name', 'title', 'team_id', 'description', 'platform', 'status', 'model', 'system_prompt', 'webhook_url', 'color', 'skills', 'integrations', 'approval', 'reviewer_id', 'budget_cents'];
 const TEAM_FIELDS = ['name', 'description', 'color', 'budget_cents'];
-const WORKFLOW_FIELDS = ['name', 'description', 'agent_id', 'schedule', 'timezone', 'instructions', 'enabled'];
 
 // ---------- serializers ----------
 const publicAgent = ({ api_token, ...a }) => a;
-const withNext = (wf) => ({ ...wf, enabled: Boolean(wf.enabled), next_run_at: wf.enabled ? nextRuns(wf.schedule, wf.timezone)[0] ?? null : null });
+const withNext = (wf) => ({ ...wf, enabled: wf.status === 'active', next_run_at: wf.status === 'active' ? wf.next_run_at : null });
 
 /** Approve or send back a task that is waiting for approval, and tell the agent. */
 async function decideTask(req, approve) {
@@ -108,7 +108,7 @@ function listTemplates() {
 const OWNER_ONLY = [
   ['post', '/teams'], ['patch', '/teams/:id'], ['delete', '/teams/:id'],
   ['post', '/agents'], ['patch', '/agents/:id'], ['delete', '/agents/:id'], ['post', '/agents/:id/photo'], ['delete', '/agents/:id/photo'], ['post', '/agents/:id/rotate-token'], ['post', '/agents/:id/sync'],
-  ['post', '/workflows'], ['patch', '/workflows/:id'], ['delete', '/workflows/:id'],
+  ['delete', '/workflows/:id'],
   ['post', '/entities'], ['put', '/org/layout'],
   ['post', '/close/items'], ['patch', '/close/items/:id'], ['delete', '/close/items/:id'],
   ['put', '/brief/config'], ['post', '/setup'],
@@ -196,9 +196,11 @@ export function dashboardRouter() {
   r.get('/events', subscribe);
   r.get('/meta', (req, res) => res.json({ claude: claudeConfigured(), platforms: PLATFORMS, taskStatuses: TASK_STATUSES, priorities: PRIORITIES }));
 
-  r.get('/overview', wrap(() => {
+  r.get('/overview', wrap((req) => {
     const count = (sql, ...p) => get(sql, ...p).n;
-    const workflows = all('SELECT w.*, a.name AS agent_name, a.color AS agent_color FROM workflows w LEFT JOIN agents a ON a.id = w.agent_id WHERE enabled = 1').map(withNext);
+    const workflows = all("SELECT w.*, a.name AS agent_name, a.color AS agent_color FROM workflows w LEFT JOIN agents a ON a.id = w.agent_id WHERE w.status = 'active'")
+      .filter((w) => canViewSchedule(req.hive, w))
+      .map(withNext);
     return {
       stats: {
         agents: count('SELECT COUNT(*) n FROM agents'),
@@ -419,6 +421,8 @@ export function dashboardRouter() {
   }));
 
   r.delete('/agents/:id', wrap((req) => {
+    const gone = get('SELECT name FROM agents WHERE id = ?', req.params.id);
+    if (gone) suspendSchedulesFor(Number(req.params.id), `${gone.name} was removed`);
     removeAgentPhoto(Number(req.params.id));
     run('DELETE FROM agents WHERE id = ?', req.params.id);
     emit('agent');
@@ -645,7 +649,7 @@ export function dashboardRouter() {
     if (voice && !body) throw bad("Couldn't make out any words in that voice note. Try again a little closer to the mic.");
     if (!body && !files.length) throw bad('Write a message or attach a file');
     const text = body || `Sent ${files.length === 1 ? 'a file' : `${files.length} files`}.`;
-    const meta = { email: req.user?.email ?? null, ...(voice ? { voice: true } : {}) };
+    const meta = { email: req.user?.email ?? null, by: req.hive.email, ...(voice ? { voice: true } : {}) };
     let agentText = voice ? `(Voice note, transcribed automatically)\n${text}` : text;
 
     const lesson = REMEMBER.test(body) ? body.replace(REMEMBER, '').trim() : '';
@@ -1010,68 +1014,46 @@ export function dashboardRouter() {
     return { ok: true };
   }));
 
-  // Workflows
-  r.get('/workflows', wrap(() =>
-    all(
-      `SELECT w.*, a.name AS agent_name, a.color AS agent_color,
-        (SELECT status FROM workflow_runs r WHERE r.workflow_id = w.id ORDER BY id DESC LIMIT 1) AS last_status,
-        (SELECT COUNT(*) FROM workflow_runs r WHERE r.workflow_id = w.id) AS run_count
-       FROM workflows w LEFT JOIN agents a ON a.id = w.agent_id ORDER BY w.name`,
-    ).map(withNext),
+  // Recurring tasks (the Workflows screen, and each agent's Tasks → Recurring). See schedules.js.
+  const scheduleCtx = (req) => ({ actor: { type: 'user', ref: req.hive.email, name: req.hive.name || req.hive.email }, user: req.hive, via: 'ui' });
+  r.get('/workflows', wrap((req) =>
+    listSchedules({ agent_id: req.query.agent_id, assignee: req.query.assignee, created_by: req.query.created_by, project_id: req.query.project_id, status: req.query.status }, req.hive),
   ));
+  r.get('/workflows/:id', wrap((req) => scheduleDetails(req.params.id, req.hive)));
 
   r.post('/workflows', wrap((req) => {
-    const b = req.body;
-    if (!b.name?.trim()) throw bad('name is required');
-    const v = validateSchedule(b.schedule, b.timezone);
-    if (!v.ok) throw bad(`Invalid schedule: ${v.error}`);
-    const { lastInsertRowid } = run(
-      'INSERT INTO workflows (name, description, agent_id, schedule, timezone, instructions, enabled) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      b.name.trim(), b.description ?? '', b.agent_id ?? null, b.schedule, b.timezone || 'UTC', b.instructions ?? '', b.enabled === false ? 0 : 1,
-    );
-    const wf = get('SELECT * FROM workflows WHERE id = ?', lastInsertRowid);
-    schedule(wf);
-    logActivity(wf.agent_id, 'workflow', `Workflow "${wf.name}" created`);
-    emit('workflow');
-    return withNext(wf);
+    const b = req.body ?? {};
+    const { schedule, notes, existing } = createSchedule(b, scheduleCtx(req));
+    // Older callers could create a workflow switched off.
+    if (b.enabled === false && !existing) return { ...pauseSchedule(schedule.id, scheduleCtx(req)), notes };
+    return { ...schedule, notes, existing };
   }));
 
   r.patch('/workflows/:id', wrap((req) => {
-    const current = get('SELECT * FROM workflows WHERE id = ?', req.params.id);
-    if (!current) throw notFound('Workflow');
-    const b = { ...req.body };
-    if (b.enabled !== undefined) b.enabled = b.enabled ? 1 : 0;
-    if (b.schedule !== undefined || b.timezone !== undefined) {
-      const v = validateSchedule(b.schedule ?? current.schedule, b.timezone ?? current.timezone);
-      if (!v.ok) throw bad(`Invalid schedule: ${v.error}`);
-    }
-    update('workflows', req.params.id, b, WORKFLOW_FIELDS);
-    const wf = get('SELECT * FROM workflows WHERE id = ?', req.params.id);
-    schedule(wf);
-    emit('workflow');
-    return withNext(wf);
+    const { enabled, ...b } = req.body ?? {};
+    let out = Object.keys(b).length ? updateSchedule(req.params.id, b, scheduleCtx(req)) : { schedule: scheduleDetails(req.params.id, req.hive), notes: [] };
+    // The old on/off switch: pause or resume.
+    if (enabled === false) out = { schedule: pauseSchedule(req.params.id, scheduleCtx(req)), notes: out.notes };
+    if (enabled === true && out.schedule.status !== 'active') out = { schedule: resumeSchedule(req.params.id, scheduleCtx(req)), notes: out.notes };
+    return { ...out.schedule, notes: out.notes };
   }));
+  r.post('/workflows/:id/pause', wrap((req) => pauseSchedule(req.params.id, scheduleCtx(req))));
+  r.post('/workflows/:id/resume', wrap((req) => resumeSchedule(req.params.id, scheduleCtx(req))));
+  r.post('/workflows/:id/cancel', wrap((req) => cancelSchedule(req.params.id, scheduleCtx(req))));
 
+  // Deleting removes the schedule and its history (owners only); cancelling keeps the history.
   r.delete('/workflows/:id', wrap((req) => {
-    unschedule(Number(req.params.id));
     run('DELETE FROM workflows WHERE id = ?', req.params.id);
     emit('workflow');
     return { ok: true };
   }));
 
-  r.post('/workflows/:id/run', wrap(async (req) => {
-    if (!get('SELECT id FROM workflows WHERE id = ?', req.params.id)) throw notFound('Workflow');
-    const started = runWorkflow(Number(req.params.id), 'manual');
-    started.catch(() => {});
-    return { ok: true };
-  }));
+  // "Run now": an extra occurrence; the regular schedule is unchanged. Safe to retry with the same key.
+  r.post('/workflows/:id/run', wrap(async (req) => runNow(req.params.id, scheduleCtx(req), { key: req.body?.key })));
 
-  r.get('/workflows/:id/runs', wrap((req) => all('SELECT * FROM workflow_runs WHERE workflow_id = ? ORDER BY id DESC LIMIT 50', req.params.id)));
+  r.get('/workflows/:id/runs', wrap((req) => scheduleDetails(req.params.id, req.hive).runs));
 
-  r.post('/schedule/preview', wrap((req) => {
-    const v = validateSchedule(req.body.schedule, req.body.timezone);
-    return v.ok ? { ok: true, next: nextRuns(req.body.schedule, req.body.timezone, 3) } : v;
-  }));
+  r.post('/schedule/preview', wrap((req) => previewSchedule(req.body ?? {})));
 
   return r;
 }

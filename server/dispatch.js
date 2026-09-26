@@ -149,7 +149,7 @@ export async function sendToAgent(agentId, body, meta = null, { files = [], agen
   // Fire and forget: the UI updates over SSE when the reply lands.
   if (agent.platform === 'managed') {
     if (agent.status === 'paused') postMessage(agentId, 'system', `${agent.name} is paused. Resume it to get a reply.`, { origin });
-    else chatWithManagedAgent(agentId, agentText, { origin, files: files.filter((f) => !f.voice) });
+    else chatWithManagedAgent(agentId, agentText, { origin, files: files.filter((f) => !f.voice), by: meta?.by ?? null });
   } else {
     deliver(agent, { event: 'message', message, origin }).catch(() => {});
   }
