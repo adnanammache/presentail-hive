@@ -18,15 +18,16 @@ import { notifyRun, settleApprovalAlert } from './notify.js';
 import { TASK_TOOL, finishTask } from './handoff.js';
 import { AGENT_DM_TOOL, askAgent } from './conversations.js';
 import { lessonsBlock } from './lessons.js';
-import { WAFEQ_TOOL, clearPlan, executePlan, gatewayConfig, planSummary } from './wafeq.js';
+import { wafeqTool, clearPlan, executePlan, gatewayConfig, planSummary } from './wafeq.js';
 import { baseUrl } from './notify.js';
 import { checkBudget, checkThresholds } from './budget.js';
 import { recordHealth } from './health.js';
-import { ODOO_TOOL, checkAgentCall, classify, describeCall, formatResult, odooCall } from './odoo.js';
+import { odooTool, checkAgentCall, classify, describeCall, formatResult, odooCall } from './odoo.js';
 
 const DEFAULT_MODEL = process.env.DEFAULT_CLAUDE_MODEL || 'claude-opus-5';
 const ENV_NAME = process.env.HIVE_ENVIRONMENT_NAME || (process.env.NODE_ENV === 'production' ? 'presentail-hive' : 'presentail-hive-dev');
 const ACTIVE = ['starting', 'running', 'needs_approval'];
+const NEVER_ASK = 'automatic (agent set to Never ask)';
 
 let client;
 /** Tests inject a fake client here. */
@@ -143,6 +144,7 @@ export function composeSystem(agent) {
   const wanted = parseList(agent.integrations);
   const available = wanted.filter((k) => INTEGRATIONS[k] && process.env[INTEGRATIONS[k].env]);
   const missing = wanted.filter((k) => !available.includes(k));
+  const autonomous = agent.approval === 'autonomous';
   const lines = [
     `You are ${agent.name}, ${agent.title || 'an agent'}${team ? ` on Presentail's ${team} team` : ' at Presentail'}.`,
     agent.description,
@@ -154,15 +156,17 @@ export function composeSystem(agent) {
       ? `- Systems you can reach: ${available
           .map((k) =>
             k === 'wafeq'
-              ? 'Wafeq (through Hive: your Wafeq scripts read the address from /workspace/hive/wafeq.json automatically. Reads are live; writes are queued, not sent: the scripts report them as QUEUED. After a real run, call `wafeq_plan` with action "submit"; a person approves the whole batch and Hive posts it, then tells you the real ids. Never try to reach api.wafeq.com directly)'
+              ? `Wafeq (through Hive: your Wafeq scripts read the address from /workspace/hive/wafeq.json automatically. Reads are live; writes are queued, not sent: the scripts report them as QUEUED. After a real run, call \`wafeq_plan\` with action "submit"; ${autonomous ? 'Hive posts the whole batch straight away' : 'a person approves the whole batch and Hive posts it'}, then tells you the real ids. Never try to reach api.wafeq.com directly)`
               : INTEGRATIONS[k].via === 'hive'
-              ? `${INTEGRATIONS[k].name} (through the \`${k}\` tool; Hive runs each call, reads are immediate and every change waits for a person to approve it, so say what you are about to change and why before calling)`
+              ? `${INTEGRATIONS[k].name} (through the \`${k}\` tool; Hive runs each call, ${autonomous ? 'reads and changes alike run immediately' : 'reads are immediate and every change waits for a person to approve it, so say what you are about to change and why before calling'})`
               : `${INTEGRATIONS[k].name} (credentials are in $${INTEGRATIONS[k].env}; use it exactly as your skills describe)`,
           )
           .join('; ')}.`
       : '- You have no live system access yet; work from the files and information you are given.',
     missing.length ? `- Not connected yet: ${missing.map((k) => INTEGRATIONS[k]?.name ?? k).join(', ')}. If a task needs them, say so and stop.` : '',
-    '- Before writing to any live system (bills, invoices, payments, journal entries, emails), do a dry run, show a short summary (counts, totals, anything unusual) and stop to ask for an explicit go-ahead. Only write after the user approves in this conversation.',
+    autonomous
+      ? '- You are trusted to post without asking. Once your checks pass (a dry run, totals, duplicates), write to live systems (bills, invoices, payments, journal entries) straight away: do not stop for a go-ahead, even where a skill says to wait after the dry run. Stop only when something is genuinely wrong or missing.'
+      : '- Before writing to any live system (bills, invoices, payments, journal entries, emails), do a dry run, show a short summary (counts, totals, anything unusual) and stop to ask for an explicit go-ahead. Only write after the user approves in this conversation.',
     '- Save files meant for the user in /mnt/session/outputs/.',
     '- End every turn with a brief summary: what you did, key totals, what is left, and exactly what you need from the user.',
     '- If something is missing (a file, access, a decision), say precisely what and stop rather than guessing.',
@@ -183,10 +187,12 @@ async function buildAgentConfig(agent) {
     if (item) skills.push(await ensureSkill(item));
   }
   const ask = { type: 'always_ask' };
-  // Agents holding a credential for a system Hive doesn't broker (e.g. Wafeq, used from bash) must
-  // have every command approved, whatever their approval setting: that's the only gate on writes.
+  // "Never ask": the owner trusts this agent to post on its own.
+  const autonomous = agent.approval === 'autonomous';
+  // Agents holding a credential for a system Hive doesn't broker (used from bash) must have every
+  // command approved, since that's the only gate on their writes, unless they are set to never ask.
   const vaulted = parseList(agent.integrations).some((k) => INTEGRATIONS[k] && INTEGRATIONS[k].via !== 'hive');
-  const askEveryCommand = agent.approval === 'every_command' || vaulted;
+  const askEveryCommand = agent.approval === 'every_command' || (vaulted && !autonomous);
   return {
     name: `${agent.name} · ${agent.title || 'Agent'}`.slice(0, 200),
     model: agent.model || DEFAULT_MODEL,
@@ -205,8 +211,8 @@ async function buildAgentConfig(agent) {
           { name: 'web_search', enabled: false },
         ],
       },
-      ...(parseList(agent.integrations).includes('odoo') ? [ODOO_TOOL] : []),
-      ...(parseList(agent.integrations).includes('wafeq') ? [WAFEQ_TOOL] : []),
+      ...(parseList(agent.integrations).includes('odoo') ? [odooTool({ autonomous })] : []),
+      ...(parseList(agent.integrations).includes('wafeq') ? [wafeqTool({ autonomous })] : []),
       TASK_TOOL,
       AGENT_DM_TOOL,
     ],
@@ -524,6 +530,8 @@ function odooPendingItem(action) {
 /** The agent is paused on tool calls: answer Odoo reads now, queue Odoo changes for approval. */
 async function resolveToolCalls(runId, customIds, builtinPending) {
   const r = getRun(runId);
+  // "Never ask": changes run without an approval (never for consults, which stay read-only).
+  const autonomous = r.kind !== 'consult' && get('SELECT approval FROM agents WHERE id = ?', r.agent_id)?.approval === 'autonomous';
   const results = [];
   const waiting = [];
   customIds = customIds.filter((id) => !resolving.has(id));
@@ -542,7 +550,11 @@ async function resolveToolCalls(runId, customIds, builtinPending) {
       } else if (action === 'submit') {
         if (!plan.steps.length) reply('Nothing is queued. Run the script for real (without --dry-run) first; its writes are queued, then submit.', true);
         else if (r.kind === 'consult') reply('You were asked this by another agent, so you cannot post to Wafeq here. Tell them what should change.', true);
-        else
+        else if (autonomous) {
+          const sent = await executePlan(runId, NEVER_ASK, plan.steps.map((st) => st.id));
+          logActivity(r.agent_id, 'task', `Wafeq batch posted without approval (Never ask): ${plan.headline}`);
+          reply(sent.text, !sent.ok);
+        } else
           waiting.push({
             event_id: id,
             kind: 'wafeq',
@@ -582,8 +594,8 @@ async function resolveToolCalls(runId, customIds, builtinPending) {
             : 'You were asked this by another agent, so you can only read from Odoo here. Tell them what should change; they or the user will do it.';
       run("UPDATE odoo_actions SET status = 'refused', result = ?, finished_at = datetime('now') WHERE id = ?", msg, action.id);
       results.push({ type: 'user.custom_tool_result', custom_tool_use_id: id, content: [{ type: 'text', text: msg }], is_error: true });
-    } else if (action.kind === 'read' || r.auto_approve) {
-      results.push(await executeOdoo(runId, id, action.kind === 'read' ? 'automatic (read-only)' : 'approved for this run'));
+    } else if (action.kind === 'read' || r.auto_approve || autonomous) {
+      results.push(await executeOdoo(runId, id, action.kind === 'read' ? 'automatic (read-only)' : r.auto_approve ? 'approved for this run' : NEVER_ASK));
     } else {
       run("UPDATE odoo_actions SET status = 'pending' WHERE id = ?", action.id);
       waiting.push(odooPendingItem(action));

@@ -13,14 +13,14 @@ export const SKILLS_DIR = join(process.cwd(), 'agent-skills');
 export const INTEGRATIONS = {
   odoo: {
     name: 'Odoo',
-    description: 'Presentail SAL, LTD and UAE books. Reads run freely; every change waits for your approval in Hive.',
+    description: 'Presentail SAL, LTD and UAE books. Reads run freely; changes wait for your approval in Hive unless the agent is set to Never ask.',
     env: 'ODOO_API_KEY',
     hosts: [], // Hive makes the calls itself; the agent's sandbox never talks to Odoo
     via: 'hive',
   },
   wafeq: {
     name: 'Wafeq',
-    description: 'UAE accounting: bills, sales invoices, payments and attachments. Reads run freely; every change waits for your approval in Hive.',
+    description: 'UAE accounting: bills, sales invoices, payments and attachments. Reads run freely; changes wait for your approval in Hive unless the agent is set to Never ask.',
     env: 'WAFEQ_API_KEY',
     hosts: [], // through Hive's gateway (wafeq.js): the key never enters the agent's sandbox
     via: 'hive',

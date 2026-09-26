@@ -131,15 +131,18 @@ export function wafeqGateway() {
 
 // ---------------------------------------------------------------- the plan
 
-export const WAFEQ_TOOL = {
+/** The wafeq_plan tool. `autonomous`: the agent is set to "Never ask", so a submitted batch posts straight away. */
+export const wafeqTool = ({ autonomous = false } = {}) => ({
   type: 'custom',
   name: 'wafeq_plan',
   description: [
     "Submit, show or clear the Wafeq changes your scripts have queued in this run. Wafeq is reached through Hive:",
     'the address is in /workspace/hive/wafeq.json (the Presentail scripts read it automatically). Reads run immediately;',
-    'every write (bills, invoices, payments, file uploads, status changes) is queued and only sent after a person approves.',
+    autonomous
+      ? 'every write (bills, invoices, payments, file uploads, status changes) is queued and sent when you submit, with no one approving it.'
+      : 'every write (bills, invoices, payments, file uploads, status changes) is queued and only sent after a person approves.',
     'Workflow: run the script with --dry-run, check the numbers, then run it for real (this queues the writes), then call',
-    'wafeq_plan with action "submit" and a one-line reason. After approval Hive posts everything in order and returns the',
+    `wafeq_plan with action "submit" and a one-line reason. ${autonomous ? 'Hive then' : 'After approval Hive'} posts everything in order and returns the`,
     'real ids. Use "show" to review what is queued and "clear" to throw the queue away (e.g. after a mistake).',
     'Queued writes are not in Wafeq yet, so re-running the script queues them again: clear first if you need to re-run.',
   ].join(' '),
@@ -151,7 +154,8 @@ export const WAFEQ_TOOL = {
     },
     required: ['action'],
   },
-};
+});
+export const WAFEQ_TOOL = wafeqTool();
 
 const queued = (runId) => all("SELECT * FROM wafeq_steps WHERE run_id = ? AND status = 'queued' ORDER BY seq", runId);
 

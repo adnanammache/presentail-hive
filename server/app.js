@@ -26,7 +26,7 @@ import { join } from 'node:path';
 import { finishRun, nextRuns, runWorkflow, schedule, unschedule, validateSchedule } from './scheduler.js';
 
 const PLATFORMS = ['managed', 'claude', 'make', 'replit', 'n8n', 'custom', 'human'];
-const APPROVALS = ['agent_asks', 'every_command'];
+const APPROVALS = ['agent_asks', 'every_command', 'autonomous'];
 const AGENT_STATUSES = ['active', 'idle', 'paused', 'error'];
 const TASK_STATUSES = ['backlog', 'todo', 'in_progress', 'review', 'done', 'blocked'];
 const PRIORITIES = ['low', 'medium', 'high', 'urgent'];
