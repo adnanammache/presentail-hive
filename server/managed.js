@@ -18,6 +18,8 @@ import { notifyRun, settleApprovalAlert } from './notify.js';
 import { TASK_TOOL, finishTask } from './handoff.js';
 import { AGENT_DM_TOOL, askAgent } from './conversations.js';
 import { lessonsBlock } from './lessons.js';
+import { WAFEQ_TOOL, clearPlan, executePlan, gatewayConfig, planSummary } from './wafeq.js';
+import { baseUrl } from './notify.js';
 import { checkBudget, checkThresholds } from './budget.js';
 import { recordHealth } from './health.js';
 import { ODOO_TOOL, checkAgentCall, classify, describeCall, formatResult, odooCall } from './odoo.js';
@@ -47,7 +49,14 @@ const configuredIntegrations = () => Object.entries(INTEGRATIONS).filter(([, i])
 
 /** One shared sandbox environment: tools the skills need, and network access only to our integrations. */
 export async function ensureEnvironment() {
-  const hosts = [...new Set(configuredIntegrations().flatMap(([, i]) => i.hosts))].sort();
+  const hosts = [...new Set(configuredIntegrations().flatMap(([, i]) => i.hosts))];
+  // Wafeq goes through Hive's gateway, so the sandbox needs to reach Hive (and only Hive) for it.
+  if (process.env.WAFEQ_API_KEY) {
+    try {
+      hosts.push(new URL(baseUrl()).hostname);
+    } catch {}
+  }
+  hosts.sort();
   const config = {
     type: 'cloud',
     networking: { type: 'limited', allowed_hosts: hosts, allow_package_managers: true, allow_mcp_servers: false },
@@ -79,8 +88,16 @@ export async function ensureEnvironment() {
 export async function ensureVault() {
   // Integrations Hive runs itself (Odoo) never go to the vault.
   const integrations = configuredIntegrations().filter(([, i]) => i.via !== 'hive');
-  if (!integrations.length) return null;
   let vault = meta.get('ma:vault');
+  // Integrations that moved to going through Hive: take their old credential out of the vault.
+  for (const [key, i] of Object.entries(INTEGRATIONS)) {
+    const saved = i.via === 'hive' ? meta.get(`ma:cred:${key}`) : null;
+    if (saved?.id && vault) {
+      await api().beta.vaults.credentials.archive(saved.id, { vault_id: vault.id }).catch(() => {});
+      run('DELETE FROM app_meta WHERE key = ?', `ma:cred:${key}`);
+    }
+  }
+  if (!integrations.length) return null;
   if (!vault) {
     vault = { id: (await api().beta.vaults.create({ display_name: `Presentail Hive (${ENV_NAME})` })).id };
     meta.set('ma:vault', vault);
@@ -136,7 +153,9 @@ export function composeSystem(agent) {
     available.length
       ? `- Systems you can reach: ${available
           .map((k) =>
-            INTEGRATIONS[k].via === 'hive'
+            k === 'wafeq'
+              ? 'Wafeq (through Hive: your Wafeq scripts read the address from /workspace/hive/wafeq.json automatically. Reads are live; writes are queued, not sent: the scripts report them as QUEUED. After a real run, call `wafeq_plan` with action "submit"; a person approves the whole batch and Hive posts it, then tells you the real ids. Never try to reach api.wafeq.com directly)'
+              : INTEGRATIONS[k].via === 'hive'
               ? `${INTEGRATIONS[k].name} (through the \`${k}\` tool; Hive runs each call, reads are immediate and every change waits for a person to approve it, so say what you are about to change and why before calling)`
               : `${INTEGRATIONS[k].name} (credentials are in $${INTEGRATIONS[k].env}; use it exactly as your skills describe)`,
           )
@@ -187,6 +206,7 @@ async function buildAgentConfig(agent) {
         ],
       },
       ...(parseList(agent.integrations).includes('odoo') ? [ODOO_TOOL] : []),
+      ...(parseList(agent.integrations).includes('wafeq') ? [WAFEQ_TOOL] : []),
       TASK_TOOL,
       AGENT_DM_TOOL,
     ],
@@ -270,16 +290,22 @@ async function uploadTaskFiles(taskId) {
   return files;
 }
 
-async function createSession(agent, { title, files = [], metadata }) {
+async function createSession(agent, { title, files = [], metadata, runId }) {
   const synced = await syncAgent(agent.id);
   const environmentId = await ensureEnvironment();
   const vaultId = await ensureVault();
+  const resources = files.map((f) => ({ type: 'file', file_id: f.anthropic_file_id, mount_path: `/workspace/inputs/${f.filename}` }));
+  // Agents with Wafeq get this run's gateway address (reads live, writes queued for approval).
+  if (runId && parseList(agent.integrations).includes('wafeq') && process.env.WAFEQ_API_KEY) {
+    const config = await api().beta.files.upload({ file: await toFile(Buffer.from(JSON.stringify(gatewayConfig(baseUrl(), runId), null, 2)), 'wafeq.json') });
+    resources.push({ type: 'file', file_id: config.id, mount_path: '/workspace/hive/wafeq.json' });
+  }
   return api().beta.sessions.create({
     agent: { type: 'agent', id: synced.ma_agent_id, version: synced.ma_agent_version },
     environment_id: environmentId,
     vault_ids: vaultId ? [vaultId] : [],
     title: title.slice(0, 200),
-    resources: files.map((f) => ({ type: 'file', file_id: f.anthropic_file_id, mount_path: `/workspace/inputs/${f.filename}` })),
+    resources,
     metadata,
   });
 }
@@ -312,7 +338,7 @@ export function startTaskRun(taskId) {
 
   (async () => {
     const files = await uploadTaskFiles(taskId);
-    const session = await createSession(agent, { title: task.title, files, metadata: { hive_task_id: String(taskId), hive_run_id: String(runId) } });
+    const session = await createSession(agent, { title: task.title, files, runId, metadata: { hive_task_id: String(taskId), hive_run_id: String(runId) } });
     setRun(runId, { session_id: session.id, status: 'running' });
     recordHealth('anthropic', true);
     await sendAndFollow(runId, [{ type: 'user.message', content: [{ type: 'text', text: taskPrompt(task, files) }] }]);
@@ -339,7 +365,7 @@ export async function chatWithManagedAgent(agentId, text, { origin = 'hive' } = 
   try {
     if (!r) {
       const runId = Number(run("INSERT INTO runs (kind, agent_id, status, origin) VALUES ('chat', ?, 'starting', ?)", agentId, origin).lastInsertRowid);
-      const session = await createSession(agent, { title: `Chat with ${agent.name}`, metadata: { hive_chat_agent_id: String(agentId) } });
+      const session = await createSession(agent, { title: `Chat with ${agent.name}`, runId, metadata: { hive_chat_agent_id: String(agentId) } });
       r = setRun(runId, { session_id: session.id, status: 'running' });
     }
     run('UPDATE runs SET auto_approve = 0 WHERE id = ?', r.id);
@@ -359,7 +385,7 @@ export async function consultManagedAgent(agentId, text, { timeoutMs = 15 * 60 *
   checkBudget(agentId);
   const runId = Number(run("INSERT INTO runs (kind, agent_id, status) VALUES ('consult', ?, 'starting')", agentId).lastInsertRowid);
   try {
-    const session = await createSession(agent, { title, metadata: { hive_consult_run_id: String(runId) } });
+    const session = await createSession(agent, { title, runId, metadata: { hive_consult_run_id: String(runId) } });
     setRun(runId, { session_id: session.id, status: 'running' });
     await sendAndFollow(runId, [{ type: 'user.message', content: [{ type: 'text', text }] }]);
   } catch (err) {
@@ -431,6 +457,14 @@ async function resolvePending(runId, resolving, allow, denyMessage, by) {
 
   const events = [];
   for (const p of resolving) {
+    if (p.kind === 'wafeq') {
+      const text = allow
+        ? (await executePlan(runId, by, p.steps)).text
+        : (clearPlan(runId), `Rejected by ${by}${denyMessage ? `: ${denyMessage}` : ''}. Nothing was sent to Wafeq and the queue was cleared.`);
+      if (allow) logActivity(r.agent_id, 'task', `Wafeq batch approved by ${by}: ${p.detail}`);
+      events.push({ type: 'user.custom_tool_result', custom_tool_use_id: p.event_id, content: [{ type: 'text', text }], ...(/^Stopped|^Rejected/.test(text) ? { is_error: true } : {}) });
+      continue;
+    }
     if (p.kind === 'odoo') {
       if (allow) events.push(await executeOdoo(runId, p.event_id, by));
       else {
@@ -496,6 +530,32 @@ async function resolveToolCalls(runId, customIds, builtinPending) {
   customIds.forEach((id) => resolving.add(id));
   for (const id of customIds) {
     const call = JSON.parse(get('SELECT data FROM run_events WHERE run_id = ? AND event_id = ?', runId, id)?.data ?? '{}');
+    if (call.name === 'wafeq_plan') {
+      const action = call.input?.action;
+      const reply = (text, isError) => results.push({ type: 'user.custom_tool_result', custom_tool_use_id: id, content: [{ type: 'text', text }], ...(isError ? { is_error: true } : {}) });
+      const plan = planSummary(runId);
+      if (action === 'clear') {
+        clearPlan(runId);
+        reply(`Cleared ${plan.steps.length} queued change${plan.steps.length === 1 ? '' : 's'}. Nothing was sent to Wafeq.`);
+      } else if (action === 'show') {
+        reply(plan.steps.length ? `${plan.headline} queued:\n${plan.full}`.slice(0, 60000) : 'Nothing is queued.');
+      } else if (action === 'submit') {
+        if (!plan.steps.length) reply('Nothing is queued. Run the script for real (without --dry-run) first; its writes are queued, then submit.', true);
+        else if (r.kind === 'consult') reply('You were asked this by another agent, so you cannot post to Wafeq here. Tell them what should change.', true);
+        else
+          waiting.push({
+            event_id: id,
+            kind: 'wafeq',
+            name: 'wafeq',
+            detail: `${plan.headline}${call.input?.reason ? `: ${call.input.reason}` : ''}`,
+            reason: call.input?.reason ?? '',
+            steps: plan.steps.map((st) => st.id),
+            lines: plan.steps.map((st) => `${st.seq}. ${st.method} ${st.path}${st.summary ? `: ${st.summary}` : ''}`).join('\n'),
+            preview: plan.full,
+          });
+      } else reply('action must be "submit", "show" or "clear".', true);
+      continue;
+    }
     if (call.name === 'message_agent') {
       const reply =
         r.kind === 'consult'
@@ -626,6 +686,7 @@ function summarize(ev) {
       return toolSummary(ev);
     case 'agent.custom_tool_use':
       if (ev.name === 'task_complete') return { name: 'task_complete', detail: String(ev.input?.summary ?? '').slice(0, 600), kind: 'custom', input: ev.input ?? {} };
+      if (ev.name === 'wafeq_plan') return { name: 'wafeq_plan', detail: `${ev.input?.action ?? ''}${ev.input?.reason ? `: ${ev.input.reason}` : ''}`, kind: 'custom', input: ev.input ?? {} };
       if (ev.name === 'message_agent') return { name: 'message_agent', detail: `→ ${ev.input?.agent ?? '?'}: ${String(ev.input?.message ?? '').slice(0, 500)}`, kind: 'custom', input: ev.input ?? {} };
       return { name: ev.name, detail: ev.name === 'odoo' ? describeCall(ev.input || {}) : '', kind: ev.name === 'odoo' ? classify(ev.input?.model, ev.input?.method) : 'custom' };
     case 'user.custom_tool_result':

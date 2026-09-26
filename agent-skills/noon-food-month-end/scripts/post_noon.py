@@ -10,7 +10,14 @@ Food Transactions clearing account. Dedups on bill number (Noon Invoice Nr).
 Key: $WAFEQ_API_KEY or ./wafeq_key.txt. ALWAYS --dry-run first.
 """
 import argparse, json, os, re, sys, uuid, subprocess, urllib.request, urllib.error
-B="https://api.wafeq.com/v1"
+# Inside Hive, Wafeq is reached through Hive's gateway (/workspace/hive/wafeq.json): reads are live,
+# writes are QUEUED until a person approves them in Hive. Elsewhere, straight to Wafeq with your own key.
+def _hive_gateway():
+    try: return json.load(open(os.environ.get("HIVE_WAFEQ_CONFIG","/workspace/hive/wafeq.json")))["base"].rstrip("/")
+    except (OSError, ValueError, KeyError): return None
+HIVE=_hive_gateway()
+B=HIVE or "https://api.wafeq.com/v1"
+if HIVE: print("Wafeq via Hive: reads are live; writes are QUEUED (shown with $s ids) until approved in Hive.", file=sys.stderr)
 NOON="co_MaAEikWqckWAKEE2xPbASY"
 ACC_MKT="acc_fooAfBQbtCP9gJcd5PiZZ9"    # Noon Food Marketing Expense
 ACC_COMM="acc_J5exitoi7i68E3d33utHB6"   # Noon Food Commission
@@ -18,6 +25,7 @@ CLR="acc_PM5ufMuhfZ6aYEUE34QpCK"        # Noon Food Transactions
 VAT_PUR="tax_oEzW9XTqZWxJAUMSvaTSP9"    # 5% VAT on Purchases
 
 def load_key():
+    if HIVE: return "hive"  # Hive adds the key; the sandbox never sees it
     k=os.environ.get("WAFEQ_API_KEY")
     if not k and os.path.exists("wafeq_key.txt"): k=open("wafeq_key.txt").read().strip()
     if not k: sys.exit("No Wafeq API key ($WAFEQ_API_KEY or ./wafeq_key.txt)")

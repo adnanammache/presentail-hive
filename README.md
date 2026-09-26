@@ -39,7 +39,7 @@ APP_PASSWORD=choose-one ANTHROPIC_API_KEY=sk-ant-... npm start   # serves UI + A
 |---|---|
 | `ANTHROPIC_API_KEY` | Powers Claude agents: chat-only agents, and Claude Managed Agents that run tasks with skills and tools. |
 | `ODOO_API_KEY` (+ optional `ODOO_URL`, `ODOO_DB`) | Odoo for agents, executed by Hive with approvals. |
-| `WAFEQ_API_KEY` | Wafeq integration for managed agents (kept in an Anthropic vault, never shown to the agent). |
+| `WAFEQ_API_KEY` | Wafeq integration for managed agents. Agents reach Wafeq through Hive: reads are live, writes are queued and approved as one batch. The key never leaves Hive. |
 | `DEFAULT_CLAUDE_MODEL` | Model used when an agent doesn't set one (default `claude-opus-5`). |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Turns on **Continue with Google** sign-in (see DEPLOY.md). |
 | `ALLOWED_EMAIL_DOMAIN` | Google accounts allowed in (default `presentail.com`, comma-separated). |

@@ -238,6 +238,30 @@ CREATE TABLE IF NOT EXISTS users (
   created_at    TEXT NOT NULL DEFAULT (datetime('now')),
   last_seen_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
+-- Wafeq through Hive: each run's gateway address, and the writes queued for approval
+CREATE TABLE IF NOT EXISTS wafeq_tokens (
+  token       TEXT PRIMARY KEY,
+  run_id      INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS wafeq_steps (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id        INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+  seq           INTEGER NOT NULL,                  -- order within the queue; "$s<seq>.id" refers to it
+  method        TEXT NOT NULL,
+  path          TEXT NOT NULL,
+  query         TEXT,
+  body          TEXT,                              -- JSON, or NULL for file uploads
+  file          TEXT,                              -- stored multipart body for uploads
+  content_type  TEXT,
+  summary       TEXT,
+  status        TEXT NOT NULL DEFAULT 'queued',    -- queued | sent | failed | skipped | discarded
+  response      TEXT,
+  approved_by   TEXT,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  sent_at       TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_wafeq_steps_run ON wafeq_steps(run_id, status, seq);
 -- What each agent should remember from people's corrections
 CREATE TABLE IF NOT EXISTS agent_lessons (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,

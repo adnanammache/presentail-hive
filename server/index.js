@@ -7,6 +7,7 @@ import { startScheduler } from './scheduler.js';
 import { resumeRuns } from './managed.js';
 import { seedIfEmpty } from './seed.js';
 import { slackRouter } from './slack.js';
+import { wafeqGateway } from './wafeq.js';
 import { scheduleBrief } from './brief.js';
 import { scheduleBackups } from './backup.js';
 import { scheduleHealthChecks } from './health.js';
@@ -26,6 +27,7 @@ const app = express();
 app.set('trust proxy', 1); // Railway terminates TLS in front of us; needed for secure cookies and redirect URLs
 // Slack signs its button clicks; verified against the raw body, so this comes before the JSON parser.
 app.use(slackRouter());
+app.use(wafeqGateway()); // agents' Wafeq calls; each run has its own secret address (no login)
 app.use(express.json({ limit: '1mb' }));
 
 app.get('/healthz', (req, res) => res.json({ ok: true }));

@@ -6,7 +6,7 @@ import { BackupSettings, BriefSettings, HealthCard, NotificationSettings, People
 const HOW = {
   anthropic: 'Create a key at console.anthropic.com (a workspace with Managed Agents access) and add it in Railway as ANTHROPIC_API_KEY.',
   odoo: 'In Odoo: click your avatar → My Profile → Account Security → New API Key (use a user with accounting rights on all companies). Add it in Railway as ODOO_API_KEY. Optional: ODOO_URL (default https://presentail.odoo.com) and ODOO_DB (default presentail). The key stays in Hive; agents never see it.',
-  wafeq: 'In Wafeq: Settings → API keys → create a key. Add it in Railway as WAFEQ_API_KEY. It is stored in an Anthropic vault; agents never see it.',
+  wafeq: 'In Wafeq: Settings → API keys → create a key. Add it in Railway as WAFEQ_API_KEY. It stays in Hive: agents reach Wafeq through Hive, reads are live and every change waits for one batch approval.',
   slack: 'At api.slack.com/apps: Create app → From scratch → OAuth & Permissions → add the chat:write scope → Install to workspace. Copy the Bot token (xoxb-…) into SLACK_BOT_TOKEN. Put your Slack member ID (Profile → ⋯ → Copy member ID) or a channel ID into SLACK_ALERT_CHANNEL; for a channel, invite the app to it first.',
   google: 'See DEPLOY.md → Continue with Google.',
 };

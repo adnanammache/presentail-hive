@@ -63,24 +63,21 @@ test('a Talabat task runs on Managed Agents: skills, vault, files, approval, res
   const agentConfig = fake.calls.agentsCreate[0];
   assert.deepEqual(agentConfig.skills.map((s) => s.type), ['custom', 'anthropic']);
   assert.match(agentConfig.system, /Ledger, UAE Accountant on Presentail's Accounting team/);
-  assert.match(agentConfig.system, /\$WAFEQ_API_KEY/);
+  assert.match(agentConfig.system, /through Hive[\s\S]*wafeq_plan/);
+  assert.ok(agentConfig.tools.some((t) => t.name === 'wafeq_plan'));
   assert.deepEqual(agentConfig.tools[0].configs.map((c) => [c.name, c.permission_policy?.type ?? (c.enabled === false ? 'off' : '?')]), [
     ['bash', 'always_ask'], ['write', 'always_ask'], ['edit', 'always_ask'], ['web_fetch', 'off'], ['web_search', 'off'],
   ]);
   assert.equal(fake.calls.environments[0].config.networking.allow_mcp_servers, false);
 
-  // Secret goes to the vault (never the prompt), limited to Wafeq's host, header-only.
-  const cred = fake.calls.credentials[0];
-  assert.equal(cred.auth.secret_name, 'WAFEQ_API_KEY');
-  assert.equal(cred.auth.secret_value, 'wafeq-test-key');
-  assert.deepEqual(cred.auth.networking.allowed_hosts, ['api.wafeq.com']);
+  // The Wafeq key never reaches the sandbox: no vault credential, and the only host is Hive's gateway.
+  assert.equal(fake.calls.credentials.length, 0);
   assert.ok(!agentConfig.system.includes('wafeq-test-key'));
-  assert.deepEqual(fake.calls.environments[0].config.networking.allowed_hosts, ['api.wafeq.com']);
+  assert.deepEqual(fake.calls.environments[0].config.networking.allowed_hosts, ['localhost']);
 
   // The task's file is uploaded and mounted; the kickoff message describes the task.
   const session = fake.calls.sessions[0];
-  assert.deepEqual(session.resources, [{ type: 'file', file_id: session.resources[0].file_id, mount_path: '/workspace/inputs/TUAE-123.pdf' }]);
-  assert.equal(session.vault_ids.length, 1);
+  assert.deepEqual(session.resources.map((r) => r.mount_path), ['/workspace/inputs/TUAE-123.pdf', '/workspace/hive/wafeq.json']);
   assert.match(fake.calls.sent[0].events[0].content[0].text, /Talabat month-end — August[\s\S]*TUAE-123\.pdf/);
 
   // Waiting on you: the task shows in review with the pending command.
@@ -136,18 +133,6 @@ test('a Talabat task runs on Managed Agents: skills, vault, files, approval, res
   assert.equal(fake.calls.agentsUpdate.length, 1);
   assert.equal(fake.calls.agentsUpdate[0].version, 1);
   assert.equal(fake.calls.skills.length, 2, 'only the new skill is uploaded');
-});
-
-test('an agent holding a Wafeq credential must ask before every command, whatever its setting', async () => {
-  const fake = fakeAnthropic();
-  managed.setManagedClient(fake);
-  const id = Number(run("INSERT INTO agents (name, title, platform, approval, integrations, api_token) VALUES ('Wafeq bot', 'X', 'managed', 'agent_asks', '[\"wafeq\"]', 'w')").lastInsertRowid);
-  const plain = Number(run("INSERT INTO agents (name, title, platform, approval, api_token) VALUES ('Writer', 'Y', 'managed', 'agent_asks', 'p')").lastInsertRowid);
-  await managed.syncAgent(id);
-  await managed.syncAgent(plain);
-  const asks = (i) => fake.calls.agentsCreate[i].tools[0].configs.filter((c) => c.permission_policy?.type === 'always_ask').map((c) => c.name);
-  assert.deepEqual(asks(0), ['bash', 'write', 'edit']);
-  assert.deepEqual(asks(1), []);
 });
 
 test('runs refuse to start for agents that are not Claude Managed Agents', () => {
