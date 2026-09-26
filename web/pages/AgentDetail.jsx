@@ -73,7 +73,7 @@ function Connect({ agent, onRotate }) {
   );
 }
 
-const SOURCE = { manual: 'Added here', rejection: 'From a rejection', slack: 'From Slack', task: 'From a task' };
+const SOURCE = { manual: 'Added here', rejection: 'From a rejection', slack: 'From Slack', task: 'From a task', chat: 'From chat', agent: 'Saved by the agent' };
 
 /** What this agent has learned from corrections; all of it goes into its instructions. */
 function Lessons({ agent }) {
@@ -107,7 +107,7 @@ function Lessons({ agent }) {
       </form>
       {error && <div className="form-error">{error}</div>}
       <p className="muted small">
-        {agent.name} follows these on every task and chat. Lessons are also saved when you reject something with a reason, or DM {agent.name} in Slack starting with “remember:”
+        {agent.name} follows these on every task and chat. Lessons are also saved when you reject something with a reason, start a chat message with “remember:”, or tell {agent.name} something lasting in a chat: it saves those itself. Ones it saves from people who can't approve its work start switched off.
       </p>
       {data.length === 0 ? (
         <Empty title="Nothing learned yet" />

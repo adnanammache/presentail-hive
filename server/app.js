@@ -606,7 +606,7 @@ export function dashboardRouter() {
     if (voice && !body) throw bad("Couldn't make out any words in that voice note. Try again a little closer to the mic.");
     if (!body && !files.length) throw bad('Write a message or attach a file');
     const text = body || `Sent ${files.length === 1 ? 'a file' : `${files.length} files`}.`;
-    const meta = voice ? { voice: true } : null;
+    const meta = { email: req.user?.email ?? null, ...(voice ? { voice: true } : {}) };
     let agentText = voice ? `(Voice note, transcribed automatically)\n${text}` : text;
 
     const lesson = REMEMBER.test(body) ? body.replace(REMEMBER, '').trim() : '';
