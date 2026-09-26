@@ -108,7 +108,8 @@ function Timeline({ events, agentName }) {
 }
 
 /** Live view of a Claude Managed Agent working on a task: files, activity, approvals, replies, cost. */
-export default function TaskRun({ task, agentName }) {
+/** A managed agent's runs on a task. `hideFiles`: the task panel shows files and the Start button itself. */
+export default function TaskRun({ task, agentName, hideFiles }) {
   const { data: runs } = useApi(`/tasks/${task.id}/runs`, ['run']);
   const [reply, setReply] = useState('');
   const [error, setError] = useState(null);
@@ -149,14 +150,15 @@ export default function TaskRun({ task, agentName }) {
             <Icon name="stop" size={13} /> Stop
           </button>
         )}
-        {!active && (
+        {!active && !hideFiles && (
           <button type="button" className="btn btn-sm btn-primary" onClick={start}>
             <Icon name="play" size={13} /> {current ? 'Start a new run' : `Run with ${agentName}`}
           </button>
         )}
       </header>
 
-      <Files taskId={task.id} locked={active} />
+      {!hideFiles && <Files taskId={task.id} locked={active} />}
+      {hideFiles && !current && <p className="muted small">No runs yet. Start {agentName} when the task is ready.</p>}
 
       {current && (
         <>

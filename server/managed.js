@@ -19,6 +19,7 @@ import { TASK_TOOL, finishTask } from './handoff.js';
 import { AGENT_DM_TOOL, askAgent } from './conversations.js';
 import { lessonsBlock } from './lessons.js';
 import { briefExtras, readyStatus } from './taskSchedule.js';
+import { clearBlocker, setBlocker } from './tasks.js';
 import { formatDay } from './recurrence.js';
 import { wafeqTool, clearPlan, executePlan, gatewayConfig, planSummary } from './wafeq.js';
 import { baseUrl } from './notify.js';
@@ -282,7 +283,8 @@ function failRun(runId, err) {
   // API-level failures (auth, overload, network) say Claude isn't working; others are the task's own.
   if (err?.status || /api key|authentication|overloaded|ECONN|fetch failed|timed out/i.test(err?.message ?? '')) recordHealth('anthropic', false, err.message);
   const r = setRun(runId, { status: 'failed', error: err.message || String(err) });
-  setTask(r.task_id, 'blocked', `Could not run: ${err.message || err}`);
+  // The task keeps its stage; the failure is a blocker you can see and retry.
+  if (r.task_id) setBlocker(r.task_id, { kind: 'failed', reason: `Could not run: ${err.message || err}` });
   logActivity(r.agent_id, 'error', `Run #${runId} failed: ${err.message || err}`);
   notifyRun(runId, 'failed');
 }
@@ -427,6 +429,7 @@ export async function replyToRun(runId, text) {
   run('UPDATE runs SET auto_approve = 0 WHERE id = ?', runId);
   setRun(runId, { status: 'running' });
   setTask(r.task_id, 'in_progress');
+  if (r.task_id) clearBlocker(r.task_id, ['info']);
   sendAndFollow(runId, [{ type: 'user.message', content: [{ type: 'text', text }] }]).catch((err) => failRun(runId, err));
 }
 
@@ -463,6 +466,7 @@ async function resolvePending(runId, resolving, allow, denyMessage, by) {
   setRun(runId, { pending: JSON.stringify(rest), status: rest.length ? 'needs_approval' : 'running' });
   if (!rest.length) {
     setTask(r.task_id, 'in_progress');
+    if (r.task_id) clearBlocker(r.task_id, ['approval'], by);
     settleApprovalAlert(runId, `${allow ? '✅ Approved' : '⛔ Rejected'} by ${by}`);
   }
 
@@ -614,7 +618,8 @@ async function resolveToolCalls(runId, customIds, builtinPending) {
 
 function askForApproval(runId, pending) {
   const r = setRun(runId, { status: 'needs_approval', pending: JSON.stringify(pending) });
-  setTask(r.task_id, 'review');
+  // Still in progress, but blocked until someone approves (shown as "Waiting for approval").
+  if (r.task_id) setBlocker(r.task_id, { kind: 'approval', reason: pending.map((p) => (p.kind === 'odoo' ? `Change Odoo: ${p.detail}` : p.kind === 'wafeq' ? `Post to Wafeq: ${p.detail}` : `Run ${p.name}`)).join('; '), owner: 'An approver' });
   notifyRun(runId, 'approval', { pending });
   if (r.kind === 'chat') {
     for (const p of pending) {
@@ -772,6 +777,7 @@ export function handleEvent(runId, ev) {
         if (finished.done && finished.done > (finished.spoke ?? 0)) break;
         if (r.kind === 'task') notifyRun(runId, 'done');
         setTask(r.task_id, readyStatus(r.task_id), latest.last_message || undefined);
+        if (r.task_id) clearBlocker(r.task_id, ['approval', 'info']);
         if (r.task_id) logActivity(r.agent_id, 'task', `Run #${runId} is waiting for your review`);
       }
       break;

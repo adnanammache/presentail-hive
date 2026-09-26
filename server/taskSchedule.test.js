@@ -49,7 +49,7 @@ const entity = (code) => get('SELECT id FROM entities WHERE code = ?', code).id;
 test('existing-style tasks still work: no schedule fields means start now, no repeat, no approval', async () => {
   const { status, data } = await call('/tasks', { method: 'POST', body: { title: 'Old style', description: 'x' } });
   assert.equal(status, 200);
-  assert.equal(data.status, 'todo');
+  assert.equal(data.status, 'ready');
   assert.equal(data.needs_approval, 0);
   assert.equal(data.series_id, null);
   assert.equal(data.repeat, null);
@@ -70,22 +70,23 @@ test('a task with a start date waits in Scheduled and starts at 8:00 Dubai time 
 
   const { started: now } = tick(dubai('2030-10-10', '08:00'));
   assert.ok(now.includes(t.id));
-  assert.equal(get('SELECT status FROM tasks WHERE id = ?', t.id).status, 'todo');
+  assert.equal(get('SELECT status FROM tasks WHERE id = ?', t.id).status, 'ready');
   await new Promise((r) => setImmediate(r));
   assert.ok(started.includes(t.id), 'handed to the agent');
   tick(dubai('2030-10-10', '08:01'));
   assert.equal(started.filter((id) => id === t.id).length, 1, 'started once');
 
-  // "Create & start now" ignores the start date (but keeps it for the record).
-  const { data: now2 } = await call('/tasks', { method: 'POST', body: { title: 'Right away', start_on: '2030-10-10', start_now: true, due_date: '2030-10-28' } });
-  assert.equal(now2.status, 'todo');
+  // "Create & start" ignores the start date (but keeps it for the record).
+  const { data: now2 } = await call('/tasks', { method: 'POST', body: { title: 'Right away', agent_id: agentId, start_on: '2030-10-10', start: true, due_date: '2030-10-28' } });
+  assert.equal(now2.start.ok, true);
+  assert.equal(now2.status, 'in_progress');
   assert.equal(now2.start_on, '2030-10-10');
 
   // Moving a scheduled task's start date to "now" makes it ready.
   const { data: later } = await call('/tasks', { method: 'POST', body: { title: 'Later', start_on: '2030-11-01' } });
   assert.equal(later.status, 'scheduled');
   const { data: moved } = await call(`/tasks/${later.id}`, { method: 'PATCH', body: { start_on: null } });
-  assert.equal(moved.status, 'todo');
+  assert.equal(moved.status, 'ready');
 });
 
 test('a monthly task: the next one is created when this one is done or overdue, with the same start offset, files and settings', async () => {
@@ -125,7 +126,7 @@ test('a monthly task: the next one is created when this one is done or overdue, 
   tick(dubai('2030-03-01', '09:01'));
   const rows = all('SELECT series_index, due_date, start_on, status FROM tasks WHERE series_id = ? ORDER BY series_index', t1.series_id);
   assert.deepEqual(rows.map((r) => [r.series_index, r.due_date, r.start_on]), [[1, '2030-01-31', '2030-01-13'], [2, '2030-02-28', '2030-02-10'], [3, '2030-03-31', '2030-03-13']]);
-  assert.equal(rows[1].status, 'todo', '#2 started when its start date passed');
+  assert.equal(rows[1].status, 'ready', '#2 was handed to its agent when its start date passed');
   assert.equal(rows[2].status, 'scheduled');
 
   // "Ends on" 15 Apr: the one due 30 Apr is never created.
@@ -195,6 +196,7 @@ test('reminders go out once, on the right day, and show in the Inbox list', asyn
 
 test('approval: the agent stops in "Waiting for approval"; Approve lets it submit, Send back needs a note', async () => {
   const { data: t } = await call('/tasks', { method: 'POST', body: { title: 'UAE VAT return', agent_id: agentId, needs_approval: true, entity_id: entity('uae'), done_definition: 'Return drafted in Wafeq' } });
+  await call(`/tasks/${t.id}/start`, { method: 'POST', body: { key: 'approval-test' } });
   const brief = get("SELECT body FROM messages WHERE agent_id = ? AND body LIKE ? ORDER BY id DESC", agentId, `New task #${t.id}:%`);
   assert.match(brief.body, /Entity: Presentail Flowers Trading LLC – UAE/);
   assert.match(brief.body, /Definition of done: Return drafted in Wafeq/);

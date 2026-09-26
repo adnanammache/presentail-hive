@@ -11,7 +11,8 @@ import { all, get, run } from './db.js';
 import { emit } from './events.js';
 import { logActivity } from './activity.js';
 import { chatWithManagedAgent, startTaskRun } from './managed.js';
-import { briefExtras, setDispatcher } from './taskSchedule.js';
+import { briefExtras, readyStatus, setDispatcher } from './taskSchedule.js';
+import { agentView, setBlocker } from './tasks.js';
 
 const DEFAULT_MODEL = process.env.DEFAULT_CLAUDE_MODEL || 'claude-opus-5';
 // Models that accept server-side refusal fallbacks (fallbacks: "default").
@@ -139,26 +140,40 @@ export async function sendToAgent(agentId, body, meta = null) {
   return message;
 }
 
-/** Assign a task to its agent: note it in the thread and push it out. */
+/**
+ * Start a task's agent: a managed run, or the task sent to the agent's thread / webhook. Throws if
+ * it couldn't start; the task keeps its stage and gets an "Execution failed" blocker.
+ */
 export async function dispatchTask(taskId, { runId } = {}) {
   const task = get('SELECT * FROM tasks WHERE id = ?', taskId);
   const agent = task?.agent_id && get('SELECT * FROM agents WHERE id = ?', task.agent_id);
   if (!agent) return null;
+  const failed = (err) => {
+    setBlocker(task.id, { kind: 'failed', reason: `Could not start: ${err.message}` });
+    return err;
+  };
   if (agent.platform === 'managed') {
     try {
       startTaskRun(task.id); // progress streams into the task's run panel
     } catch (err) {
-      run("UPDATE tasks SET status = 'blocked', result = ?, updated_at = datetime('now') WHERE id = ?", `Could not start: ${err.message}`, task.id);
-      emit('task', { task_id: task.id });
-      throw err;
+      throw failed(err);
     }
     return null;
   }
+  if (!['in_progress', 'done'].includes(task.status)) {
+    run("UPDATE tasks SET status = 'in_progress', updated_at = datetime('now') WHERE id = ?", task.id);
+    emit('task', { task_id: task.id });
+  }
   const extras = briefExtras(task);
   postMessage(agent.id, 'system', `New task #${task.id}: ${task.title}${task.description ? `\n\n${task.description}` : ''}${extras.length ? `\n\n${extras.join('\n')}` : ''}`);
-  const reply = await deliver(agent, { event: runId ? 'workflow.run' : 'task.assigned', task, run_id: runId ?? null });
+  let reply;
+  try {
+    reply = await deliver(agent, { event: runId ? 'workflow.run' : 'task.assigned', task: agentView(task), run_id: runId ?? null });
+  } catch (err) {
+    throw failed(err);
+  }
   if (reply) {
-    run("UPDATE tasks SET result = ?, status = 'review', updated_at = datetime('now') WHERE id = ?", reply, task.id);
+    run("UPDATE tasks SET result = ?, status = ?, updated_at = datetime('now') WHERE id = ?", reply, readyStatus(task.id), task.id);
     emit('task', { task_id: task.id });
   }
   return reply;

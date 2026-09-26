@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { ago, api, photoUrl, useApi } from '../api.js';
 import { Badge, Icon, Loading, PLATFORM_LABELS, agentTone } from '../components/ui.jsx';
 import BotAvatar, { BotFace } from '../components/BotAvatar.jsx';
-import { TaskForm } from '../components/forms.jsx';
+import { useTaskUI } from '../components/work.jsx';
 import { money } from '../components/Spend.jsx';
 
 // ---- geometry: flat-topped hexagons on an axial grid ----
@@ -283,7 +283,8 @@ export default function HiveMap() {
   const [selected, setSelected] = useState(null);
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState('all');
-  const [assigning, setAssigning] = useState(null);
+  const { openComposer } = useTaskUI();
+  const setAssigning = (agent) => openComposer({ assignee: `agent:${agent.id}` });
   const [teamSel, setTeamSel] = useState(null); // team id whose panel is open
   const [moving, setMoving] = useState(null); // { agent, x, y } while an agent is being moved
   const [toast, setToast] = useState(null);
@@ -588,7 +589,6 @@ export default function HiveMap() {
           </div>
         )}
       </div>
-      {assigning && <TaskForm defaults={{ agent_id: assigning.id }} onClose={() => setAssigning(null)} />}
     </div>
   );
 }

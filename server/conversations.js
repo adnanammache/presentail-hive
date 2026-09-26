@@ -203,7 +203,7 @@ export async function handleSlackMessage(event) {
   if (files.length) {
     const firstLine = (rest.split('\n')[0] || `Files from ${person.name}`).slice(0, 120);
     const taskId = Number(
-      run("INSERT INTO tasks (title, description, status, priority, agent_id) VALUES (?, ?, 'todo', 'medium', ?)", firstLine, `${rest}\n\n(Sent by ${person.name} in Slack.)`.trim(), agent.id).lastInsertRowid,
+      run("INSERT INTO tasks (title, description, status, priority, agent_id) VALUES (?, ?, 'ready', 'medium', ?)", firstLine, `${rest}\n\n(Sent by ${person.name} in Slack.)`.trim(), agent.id).lastInsertRowid,
     );
     const names = [];
     for (const f of files) {

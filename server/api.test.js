@@ -77,9 +77,15 @@ test('agent lifecycle, chat via webhook, and the Agent API', async () => {
 
   // Agent API: bad token is rejected, good token sees its tasks.
   assert.equal((await call('/agent/tasks', { token: 'nope' })).status, 401);
+  // Assigning doesn't start the agent; starting is its own step.
+  const calls = hookCalls.length;
   const { body: task } = await call('/tasks', { method: 'POST', body: { title: 'Reconcile', agent_id: agent.id } });
   await wait(100);
+  assert.equal(hookCalls.length, calls, 'saving an assigned task sends nothing');
+  const started = await call(`/tasks/${task.id}/start`, { method: 'POST', body: { key: 'k1' } });
+  assert.equal(started.body.start.ok, true);
   assert.equal(hookCalls.at(-1).event, 'task.assigned');
+  assert.equal(hookCalls.at(-1).task.status, 'todo', 'webhooks keep the original vocabulary');
   const { body: mine } = await call('/agent/tasks?status=todo,review', { token: agent.api_token });
   assert.ok(mine.some((t) => t.id === task.id));
 

@@ -68,7 +68,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   title        TEXT NOT NULL,
   description  TEXT NOT NULL DEFAULT '',
-  status       TEXT NOT NULL DEFAULT 'todo',      -- backlog | todo | in_progress | review | done | blocked
+  status       TEXT NOT NULL DEFAULT 'ready',     -- backlog | ready | scheduled | in_progress | review | waiting_approval | done (see below)
   priority     TEXT NOT NULL DEFAULT 'medium',    -- low | medium | high | urgent
   agent_id     INTEGER REFERENCES agents(id) ON DELETE SET NULL,
   workflow_id  INTEGER REFERENCES workflows(id) ON DELETE SET NULL,
@@ -480,3 +480,146 @@ if (!db.prepare("SELECT 1 FROM app_meta WHERE key = 'starter_templates'").get())
   for (const t of templates) ins.run(t.name, t.title, t.description, t.done, t.entity ? entity(t.entity) : null, t.rule ? JSON.stringify(t.rule) : null, t.offset);
   db.prepare("INSERT INTO app_meta (key, value) VALUES ('starter_templates', '1')").run();
 }
+
+// ---------------------------------------------------------------- projects, shared ownership, drafts
+// Workspace → Project → Task. A task has one accountable assignee: a person (assignee_email, a
+// row in users) or an AI agent (agent_id), never both. Stage (status) and blocking are separate.
+db.exec(`
+CREATE TABLE IF NOT EXISTS projects (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  name         TEXT NOT NULL,
+  description  TEXT NOT NULL DEFAULT '',
+  owner_email  TEXT,                                -- the accountable person (users.email)
+  due_date     TEXT,
+  health       TEXT,                                -- NULL (not set) | on_track | at_risk | off_track, set by a person
+  status       TEXT NOT NULL DEFAULT 'active',      -- active | archived
+  color        TEXT NOT NULL DEFAULT '#f59e0b',
+  created_by   TEXT,
+  created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  archived_at  TEXT
+);
+-- People (member_ref = email) and agents (member_ref = agent id) on a project. Being a member
+-- grants no tool access to an agent and never starts it.
+CREATE TABLE IF NOT EXISTS project_members (
+  project_id   INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  member_type  TEXT NOT NULL,                       -- user | agent
+  member_ref   TEXT NOT NULL,
+  added_at     TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (project_id, member_type, member_ref)
+);
+CREATE TABLE IF NOT EXISTS project_favorites (
+  user_email   TEXT NOT NULL,
+  project_id   INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (user_email, project_id)
+);
+-- Reference files and links for a project ("Project resources").
+CREATE TABLE IF NOT EXISTS project_resources (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id   INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  kind         TEXT NOT NULL,                       -- file | link
+  label        TEXT NOT NULL,
+  url          TEXT,
+  path         TEXT,
+  size         INTEGER,
+  created_by   TEXT,
+  created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+-- The New task composer's draft: one per person, never a task until submitted.
+CREATE TABLE IF NOT EXISTS task_drafts (
+  user_email   TEXT PRIMARY KEY,
+  data         TEXT NOT NULL,
+  updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS draft_files (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_email   TEXT NOT NULL,
+  filename     TEXT NOT NULL,
+  path         TEXT NOT NULL,
+  size         INTEGER NOT NULL,
+  created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+-- Links on a task: references given with it, and deliverables it produced.
+CREATE TABLE IF NOT EXISTS task_links (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id      INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  kind         TEXT NOT NULL DEFAULT 'reference',   -- reference | deliverable
+  url          TEXT NOT NULL,
+  label        TEXT NOT NULL DEFAULT '',
+  created_by   TEXT,
+  created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS task_comments (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id      INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  author_type  TEXT NOT NULL,                       -- user | agent
+  author_ref   TEXT NOT NULL,
+  author_name  TEXT NOT NULL,
+  body         TEXT NOT NULL,
+  created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+-- A task's history: created, assigned, moved, blocked, started, failed, approved…
+CREATE TABLE IF NOT EXISTS task_events (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id      INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  actor        TEXT NOT NULL,
+  kind         TEXT NOT NULL,
+  text         TEXT NOT NULL,
+  created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_task_events_task ON task_events(task_id, id);
+CREATE INDEX IF NOT EXISTS idx_task_comments_task ON task_comments(task_id, id);
+`);
+addColumn('tasks', 'project_id', 'INTEGER REFERENCES projects(id) ON DELETE SET NULL');
+addColumn('tasks', 'assignee_email', 'TEXT'); // a person; agent_id is the agent. At most one is set.
+addColumn('tasks', 'reviewer_email', 'TEXT'); // a person who reviews it (handoff_agent_id is an agent reviewer)
+addColumn('tasks', 'created_by', 'TEXT');
+addColumn('tasks', 'blocked_kind', 'TEXT'); // NULL | info | approval | failed — separate from the stage
+addColumn('tasks', 'blocked_reason', 'TEXT');
+addColumn('tasks', 'blocked_owner', 'TEXT'); // who needs to resolve it, in words
+addColumn('tasks', 'blocked_at', 'TEXT');
+addColumn('tasks', 'client_key', 'TEXT'); // the composer's submission key: the same submission never makes two tasks
+addColumn('tasks', 'start_key', 'TEXT'); // the last successful "start" request: retries never start twice
+addColumn('tasks', 'progress_done', 'INTEGER'); // measurable progress, only when an agent reports it
+addColumn('tasks', 'progress_total', 'INTEGER');
+addColumn('tasks', 'progress_label', 'TEXT');
+addColumn('reminders', 'user_email', 'TEXT'); // NULL = for everyone (due-date reminders); else that person's notice
+db.exec(`
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_client_key ON tasks(client_key) WHERE client_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_assignee ON tasks(assignee_email);
+`);
+
+// Stages are Backlog → Ready → In progress → Needs review → Done; blocking is recorded apart.
+// One-time migration (documented in DEPLOY.md):
+//   "todo" → "ready".
+//   "blocked" → the blocker is kept (reason = the task's last result; "failed" when it says it could
+//   not start or run, else "waiting for information"); the stage becomes "in_progress" if the task
+//   ever had a run or a workflow run, else "ready". No history is invented.
+export function migrateStages() {
+  if (db.prepare("SELECT 1 FROM app_meta WHERE key = 'stages_v2'").get()) return;
+  db.exec('BEGIN');
+  db.exec("UPDATE tasks SET status = 'ready' WHERE status = 'todo'");
+  db.exec(`
+    UPDATE tasks SET
+      blocked_kind = CASE WHEN result LIKE 'Could not start%' OR result LIKE 'Could not run%' THEN 'failed' ELSE 'info' END,
+      blocked_reason = NULLIF(result, ''),
+      blocked_at = updated_at,
+      status = CASE WHEN EXISTS (SELECT 1 FROM runs r WHERE r.task_id = tasks.id)
+                     OR EXISTS (SELECT 1 FROM workflow_runs w WHERE w.task_id = tasks.id) THEN 'in_progress' ELSE 'ready' END
+    WHERE status = 'blocked'`);
+  db.prepare("INSERT INTO app_meta (key, value) VALUES ('stages_v2', '1')").run();
+  db.exec('COMMIT');
+}
+migrateStages();
+
+// Older rows and callers may still say "todo" (the column's old default on existing databases).
+db.exec(`CREATE TRIGGER IF NOT EXISTS tasks_todo_is_ready AFTER INSERT ON tasks WHEN NEW.status = 'todo'
+  BEGIN UPDATE tasks SET status = 'ready' WHERE id = NEW.id; END;`);
+// Repeating tasks carry the new ownership fields to each instance.
+addColumn('task_series', 'project_id', 'INTEGER REFERENCES projects(id) ON DELETE SET NULL');
+addColumn('task_series', 'assignee_email', 'TEXT');
+addColumn('task_series', 'reviewer_email', 'TEXT');
+addColumn('task_series', 'created_by', 'TEXT');
+addColumn('task_series', 'auto_start', 'INTEGER NOT NULL DEFAULT 1'); // 0: the task was saved without starting, so repeats don't start either

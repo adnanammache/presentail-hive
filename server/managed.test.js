@@ -81,7 +81,11 @@ test('a Talabat task runs on Managed Agents: skills, vault, files, approval, res
   assert.match(fake.calls.sent[0].events[0].content[0].text, /Talabat month-end — August[\s\S]*TUAE-123\.pdf/);
 
   // Waiting on you: the task shows in review with the pending command.
-  assert.equal(get('SELECT status FROM tasks WHERE id = ?', taskId).status, 'review');
+  // Still in progress, blocked until someone approves.
+  const blocked = get('SELECT status, blocked_kind, blocked_reason FROM tasks WHERE id = ?', taskId);
+  assert.equal(blocked.status, 'in_progress');
+  assert.equal(blocked.blocked_kind, 'approval');
+  assert.match(blocked.blocked_reason, /bash/);
   const pending = JSON.parse(waiting.pending);
   assert.equal(pending[0].event_id, 'sevt_post');
   assert.match(pending[0].detail, /post_talabat\.py/);

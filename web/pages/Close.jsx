@@ -1,10 +1,10 @@
 import { useState } from 'react';
 import { api, useApi } from '../api.js';
 import { Avatar, Badge, Empty, Field, Icon, Loading, Modal, PageHeader, statusLabel } from '../components/ui.jsx';
-import { TaskForm } from '../components/forms.jsx';
+import { useTaskUI } from '../components/work.jsx';
 
-const TONE = { before: 'neutral', not_started: 'neutral', backlog: 'neutral', todo: 'neutral', in_progress: 'blue', review: 'amber', blocked: 'red', done: 'green' };
-const label = (s) => (s === 'not_started' ? 'Not started' : s === 'before' ? 'Before Hive' : statusLabel(s));
+const TONE = { before: 'neutral', not_started: 'neutral', backlog: 'neutral', ready: 'neutral', scheduled: 'neutral', in_progress: 'blue', review: 'amber', waiting_approval: 'amber', blocked: 'red', done: 'green' };
+const label = (s) => (s === 'not_started' ? 'Not started' : s === 'before' ? 'Before Hive' : s === 'blocked' ? 'Blocked' : statusLabel(s));
 const shortMonth = (p) => new Date(`${p}-01T00:00:00Z`).toLocaleDateString('en-GB', { month: 'short', timeZone: 'UTC' });
 const fmtDue = (d) => new Date(`${d}T00:00:00Z`).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });
 
@@ -77,8 +77,7 @@ export default function Close() {
   const { data: agents } = useApi('/agents', ['agent']);
   const { data: tasks } = useApi('/tasks', ['task']);
   const [period, setPeriod] = useState(null);
-  const [starting, setStarting] = useState(null);
-  const [opening, setOpening] = useState(null);
+  const { openComposer, openTask } = useTaskUI();
   const [editing, setEditing] = useState(null); // item, or {} for new
   const [editMode, setEditMode] = useState(false);
 
@@ -88,8 +87,11 @@ export default function Close() {
   const pct = prog.total ? Math.round((prog.done / prog.total) * 100) : 0;
   const entities = [...new Set(data.items.map((i) => i.entity))];
 
-  const start = async (item) => setStarting(await api(`/close/items/${item.id}/draft/${p}`));
-  const open = (taskId) => setOpening(tasks?.find((t) => t.id === taskId) ?? null);
+  const start = async (item) => {
+    const d = await api(`/close/items/${item.id}/draft/${p}`);
+    openComposer({ ...d, assignee: d.agent_id ? `agent:${d.agent_id}` : null });
+  };
+  const open = (taskId) => openTask(taskId);
 
   return (
     <>
@@ -201,8 +203,6 @@ export default function Close() {
           <option key={e} value={e} />
         ))}
       </datalist>
-      {starting && <TaskForm defaults={starting} onClose={() => setStarting(null)} />}
-      {opening && <TaskForm task={opening} onClose={() => setOpening(null)} />}
       {editing && <ItemForm item={editing.id ? editing : null} agents={agents} onClose={() => setEditing(null)} />}
     </>
   );

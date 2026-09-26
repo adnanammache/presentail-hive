@@ -101,7 +101,24 @@ Agents set to **Claude Managed Agent** run on Anthropic's hosted agent service. 
 4. Click **Make it a Managed Agent** / **Save & sync**.
 
 ### Running a task
-Create a task for the agent, attach the source files (statement PDFs, spreadsheets) and click **Create & start**. The task window shows the live run: files, what the agent is doing, approval requests (**Approve / Reject**), its answers, a reply box, and the cost so far. When the agent finishes a turn, the task moves to **Needs review** with its summary as the result.
+Click **New task** (bottom-right composer), assign the agent, attach the source files (statement PDFs, spreadsheets) and click **Create & start**. **Save task** saves it without starting; start it later from the task. The task panel shows the live run: what the agent is doing, approval requests (**Approve / Reject**), its answers, a reply box, and the cost so far. When the agent finishes a turn, the task moves to **Needs review** with its summary as the result.
+
+## Tasks, people and projects
+
+Work is shared by people and AI agents: **My tasks**, **All tasks** and **Projects** show the same tasks.
+
+- **One accountable assignee**: a person (anyone who has signed in) or an AI agent, or nobody. Assigning a person notifies them (their Inbox and their phone, if they turned notifications on). Assigning an agent does **not** start it: starting is always an explicit **Create & start** / **Start** click, and a retry never starts a second run.
+- **Stages**: Backlog → Ready → In progress → Needs review → Done. Moving a card never starts, stops or runs anything.
+- **Blocked is separate from the stage**: *waiting for information*, *waiting for approval* or *execution failed*, with a reason and who needs to act. A failed start or run keeps the task where it was, marked *Execution failed*, with a **Retry**.
+- **Review ownership**: "awaiting your review" counts a task in Needs review only for its reviewer, or the person who created it if no reviewer is set. Tasks from before this change (no creator recorded) go to workspace owners. Agent command approvals count for approvers.
+- **Projects** are optional. Anyone signed in can see every project; its owner (or a workspace owner) edits, archives, deletes and manages members; members add tasks and reference files. Adding an agent to a project gives it no new system access and doesn't start it. Archiving keeps the tasks and their history; deleting a project keeps its tasks (without a project). Health ("On track") is only shown when the owner sets it.
+- **Drafts**: the composer saves your draft on the server as you type (only you see it); it's never a task until you submit.
+
+### What the update migrates (automatically, once)
+- Stage "To do" becomes **Ready**.
+- "Blocked" tasks keep their reason as a blocker (*execution failed* if it said it couldn't start or run, otherwise *waiting for information*). Their stage becomes **In progress** if the task ever had a run, else **Ready**: the earlier stage wasn't recorded, so nothing else is guessed.
+- Task ids, descriptions, assignments, due dates, files and run history are unchanged. Tasks created before this have no recorded creator.
+- The Agent API keeps its original words for existing automations: a Ready task is reported as `todo`, a blocked one as `blocked` (with `stage` and `blocker` alongside). Agents can still set `blocked` (kept as *waiting for information*), and can report measurable progress with `progress: {done, total, label}`.
 
 ### Adding or changing skills
 Skills are folders in `agent-skills/<name>/` with a `SKILL.md` (plus `scripts/` and `references/`). Commit a change and redeploy. The next time an agent using that skill is synced, Hive uploads the new version automatically.

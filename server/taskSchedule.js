@@ -87,17 +87,17 @@ export function startSeries(taskId, rule, { ends_on = null, now = new Date() } =
   const id = Number(
     run(
       `INSERT INTO task_series (rule, anchor_due, anchor_index, ends_on, start_offset_days, last_index, title, description, done_definition, priority,
-         agent_id, handoff_agent_id, entity_id, remind_days, needs_approval)
-       VALUES (?, ?, 1, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         agent_id, handoff_agent_id, entity_id, remind_days, needs_approval, project_id, assignee_email, reviewer_email, created_by)
+       VALUES (?, ?, 1, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       JSON.stringify(rule), t.due_date, ends_on, offsetFor(t.start_on, t.due_date, now), t.title, t.description, t.done_definition, t.priority,
-      t.agent_id, t.handoff_agent_id, t.entity_id, t.remind_days, t.needs_approval,
+      t.agent_id, t.handoff_agent_id, t.entity_id, t.remind_days, t.needs_approval, t.project_id, t.assignee_email, t.reviewer_email, t.created_by,
     ).lastInsertRowid,
   );
   run('UPDATE tasks SET series_id = ?, series_index = 1 WHERE id = ?', id, taskId);
   return id;
 }
 
-const SERIES_FIELDS = ['title', 'description', 'done_definition', 'priority', 'agent_id', 'handoff_agent_id', 'entity_id', 'remind_days', 'needs_approval'];
+const SERIES_FIELDS = ['title', 'description', 'done_definition', 'priority', 'agent_id', 'handoff_agent_id', 'entity_id', 'remind_days', 'needs_approval', 'project_id', 'assignee_email', 'reviewer_email'];
 
 /**
  * "This and future ones": copy the edited task's fields to its series and to instances not started
@@ -121,7 +121,7 @@ export function applyToFuture(taskId, { repeat, ends_on } = {}, now = new Date()
       t.due_date, t.series_index, offsetFor(t.start_on, t.due_date, now), JSON.stringify(repeat ?? parseRule(s.rule)), ends_on === undefined ? s.ends_on : ends_on, s.id,
     );
   }
-  const later = all("SELECT id, series_index FROM tasks WHERE series_id = ? AND series_index > ? AND status IN ('scheduled', 'backlog', 'todo')", s.id, t.series_index);
+  const later = all("SELECT id, series_index FROM tasks WHERE series_id = ? AND series_index > ? AND status IN ('scheduled', 'backlog', 'ready')", s.id, t.series_index);
   const fresh = get('SELECT * FROM task_series WHERE id = ?', s.id);
   for (const l of later) {
     const due = dueOf(fresh, l.series_index);
@@ -174,21 +174,22 @@ export function spawnNext(seriesId, now = new Date()) {
   // Claim the index first, so two callers can't both create it.
   if (!run('UPDATE task_series SET last_index = ? WHERE id = ? AND last_index = ?', index, s.id, s.last_index).changes) return null;
 
-  const startOn = s.start_offset_days != null ? addDays(due, -s.start_offset_days) : null;
-  const status = startReached(startOn, now) ? 'todo' : 'scheduled';
+  // Repeats of a task that was saved without starting are created Ready and wait for someone to start them.
+  const startOn = s.auto_start && s.start_offset_days != null ? addDays(due, -s.start_offset_days) : null;
+  const status = startReached(startOn, now) ? 'ready' : 'scheduled';
   const id = Number(
     run(
       `INSERT INTO tasks (title, description, done_definition, status, priority, agent_id, handoff_agent_id, entity_id, due_date, start_on,
-         remind_days, needs_approval, series_id, series_index)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         remind_days, needs_approval, series_id, series_index, project_id, assignee_email, reviewer_email, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       s.title, s.description, s.done_definition, status, s.priority, s.agent_id, s.handoff_agent_id, s.entity_id, due, startOn,
-      s.remind_days, s.needs_approval, s.id, index,
+      s.remind_days, s.needs_approval, s.id, index, s.project_id, s.assignee_email, s.reviewer_email, s.created_by,
     ).lastInsertRowid,
   );
   if (latest) copyFiles(latest.id, id);
   logActivity(s.agent_id, 'task', `Next "${s.title}" created, due ${formatDay(due)}${status === 'scheduled' ? `, starts ${formatDay(startOn)}` : ''}`);
   emit('task', { task_id: id });
-  if (status === 'todo' && s.agent_id) startTask(id);
+  if (status === 'ready' && s.agent_id && s.auto_start) startTask(id);
   return id;
 }
 
@@ -196,7 +197,7 @@ export function spawnNext(seriesId, now = new Date()) {
 
 function startTask(taskId) {
   const t = get('SELECT t.id, a.status AS agent_status FROM tasks t LEFT JOIN agents a ON a.id = t.agent_id WHERE t.id = ?', taskId);
-  if (!t || t.agent_status == null || t.agent_status === 'paused') return; // stays in To do
+  if (!t || t.agent_status == null || t.agent_status === 'paused') return; // stays in Ready
   Promise.resolve()
     .then(() => dispatcher(taskId))
     .catch((err) => console.error(`[schedule] task ${taskId} could not start:`, err.message));
@@ -210,7 +211,7 @@ function startDue(now) {
     date, date, hour, START_HOUR,
   );
   for (const { id } of due) {
-    if (!run("UPDATE tasks SET status = 'todo', updated_at = datetime('now') WHERE id = ? AND status = 'scheduled'", id).changes) continue;
+    if (!run("UPDATE tasks SET status = 'ready', updated_at = datetime('now') WHERE id = ? AND status = 'scheduled'", id).changes) continue;
     emit('task', { task_id: id });
     startTask(id);
   }

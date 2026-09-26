@@ -5,7 +5,7 @@ Presentail's hive of AI agents: see every agent, what it's working on, what's sc
 - **Dashboard**: what needs you (tasks waiting for review or blocked), upcoming scheduled runs, agent status and recent activity.
 - **Agents that do real work**: agents can run as Claude Managed Agents with Presentail's skills (`agent-skills/`), a private sandbox and approved integrations (Wafeq first). Tasks show the live run, approvals and cost. See DEPLOY.md.
 - **Agents**: one place for all your agents: Claude agents, Make scenarios, Replit apps, n8n flows, your own scripts, even people.
-- **Tasks**: a Kanban board (Backlog → To do → In progress → Needs review → Blocked → Done). Assigning a task to an agent sends it to that agent.
+- **Tasks for people and agents**: My tasks, All tasks and Projects share one Board/List (Backlog → Ready → In progress → Needs review → Done), with blockers kept separate from the stage. A task has one assignee, a person or an AI agent; assigning never starts an agent (Create & start does). New tasks are written in a bottom-right composer that keeps your draft.
 - **Recurring workflows**: cron schedules with timezones (e.g. "Talabat month-end, 2nd of every month 09:00 Dubai"). Each run creates a task for the agent, sends it the instructions and records the run history.
 - **Inbox / chat**: a conversation thread with every agent. Claude agents reply live. Webhook agents can reply synchronously or later through the API.
 - **Odoo, safely**: agents read Odoo freely. Every create/write/post/reconcile waits for Approve in Hive (or *Approve all for this run*), configuration is off-limits, and every change is logged with who approved it. Hive holds the key (`ODOO_API_KEY`).
@@ -100,6 +100,6 @@ server/            Express API + scheduler (plain ESM JavaScript)
   seed.js          sample data
   api.test.js      API tests: npm test
 web/               React UI (Vite)
-  pages/           Dashboard, Agents, AgentDetail, Tasks, Workflows, Inbox
+  pages/           Dashboard, AllTasks (All / My tasks), Projects, Project, Agents (Team & agents), AgentDetail, Workflows, Inbox
   components/      forms, chat, UI primitives
 ```
