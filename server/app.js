@@ -15,8 +15,11 @@ import { backupNow, backupPath, listBackups } from './backup.js';
 import { healthReport, runChecks } from './health.js';
 import { listModels } from './models.js';
 import { canApproveFor, isOwner, listUsers, setUserRole, userFor } from './roles.js';
-import { REMEMBER, addLesson, deleteLesson, listLessons, updateLesson } from './lessons.js';
-import { saveChatFile, unsentFiles } from './chatFiles.js';
+import { addLesson, deleteLesson, listLessons, updateLesson } from './lessons.js';
+import { saveChatFile } from './chatFiles.js';
+import { chatActivity, chatMessages, createChat, listChats, publicChat, sendChatMessage, updateChat } from './chats.js';
+import { canManageChat, canSeeChat, ensureChat, getChat, visibleChatParams, visibleChatSql } from './chatStore.js';
+import { workspace } from './workspace.js';
 import { closeBoard, dueDate, itemInstructions, monthLabel, saveCloseItem } from './close.js';
 import { briefConfig, latestBrief, nextBriefAt, sendBrief, setBriefConfig } from './brief.js';
 import { pushToAll, removeSubscription, saveSubscription, subscriptionCount, vapidKeys } from './push.js';
@@ -26,7 +29,9 @@ import { markVerified, setHidden, setManualDone, setupChecklist, verified } from
 import { confirmTool, downloadOutput, interruptRun, managedReady, replyToRun, runWithEvents, startTaskRun, syncAgent } from './managed.js';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { finishRun, nextRuns, runWorkflow, schedule, unschedule, validateSchedule } from './scheduler.js';
+import { finishRun } from './scheduler.js';
+import { SCHEDULE_TOOLS, SCHEDULE_TOOL_NAMES, chatContext, handleScheduleTool, taskContext } from './scheduleTools.js';
+import { canViewSchedule, suspendSchedulesFor, suspendSchedulesForPerson, cancelSchedule, createSchedule, listSchedules, pauseSchedule, previewSchedule, resumeSchedule, runNow, scheduleDetails, updateSchedule } from './schedules.js';
 import { cleanSchedule } from './taskSchedule.js';
 import {
   PRIORITIES, TASK_STATUSES, addLinks, agentActor, agentView, attention, board, clearBlocker, createTask, getTask, listTasks, needsMe,
@@ -50,11 +55,10 @@ const RUN_STATUSES = ['running', 'success', 'failed'];
 
 const AGENT_FIELDS = ['name', 'title', 'team_id', 'description', 'platform', 'status', 'model', 'system_prompt', 'webhook_url', 'color', 'skills', 'integrations', 'approval', 'reviewer_id', 'budget_cents'];
 const TEAM_FIELDS = ['name', 'description', 'color', 'budget_cents'];
-const WORKFLOW_FIELDS = ['name', 'description', 'agent_id', 'schedule', 'timezone', 'instructions', 'enabled'];
 
 // ---------- serializers ----------
 const publicAgent = ({ api_token, ...a }) => ({ ...a, slack_url: a.slack_url ?? slackBots.slackLink(slackBots.appFor(a.id)) });
-const withNext = (wf) => ({ ...wf, enabled: Boolean(wf.enabled), next_run_at: wf.enabled ? nextRuns(wf.schedule, wf.timezone)[0] ?? null : null });
+const withNext = (wf) => ({ ...wf, enabled: wf.status === 'active', next_run_at: wf.status === 'active' ? wf.next_run_at : null });
 
 /** Approve or send back a task that is waiting for approval, and tell the agent. */
 async function decideTask(req, approve) {
@@ -109,7 +113,7 @@ function listTemplates() {
 const OWNER_ONLY = [
   ['post', '/teams'], ['patch', '/teams/:id'], ['delete', '/teams/:id'],
   ['post', '/agents'], ['patch', '/agents/:id'], ['delete', '/agents/:id'], ['post', '/agents/:id/photo'], ['delete', '/agents/:id/photo'], ['post', '/agents/:id/rotate-token'], ['post', '/agents/:id/sync'],
-  ['post', '/workflows'], ['patch', '/workflows/:id'], ['delete', '/workflows/:id'],
+  ['delete', '/workflows/:id'],
   ['post', '/entities'], ['put', '/org/layout'],
   ['post', '/close/items'], ['patch', '/close/items/:id'], ['delete', '/close/items/:id'],
   ['put', '/brief/config'], ['post', '/setup'],
@@ -173,7 +177,12 @@ export function dashboardRouter() {
   r.delete('/people/:email/photo', wrap((req) => removePhoto(req.params.email, req.hive)));
   r.post('/people/:email/photo/account', wrap((req) => useAccountPhoto(req.params.email, req.hive)));
   r.patch('/people/:email/membership', wrap((req) => setMembership(req.params.email, req.body ?? {}, req.hive)));
-  r.post('/people/:email/deactivate', wrap((req) => deactivate(req.params.email, req.hive)));
+  r.post('/people/:email/deactivate', wrap((req) => {
+    const out = deactivate(req.params.email, req.hive);
+    // Their recurring tasks (for them, or authorized by them) stop now, with the reason; nothing is reassigned.
+    suspendSchedulesForPerson(req.params.email);
+    return out;
+  }));
   r.post('/people/:email/reactivate', wrap((req) => reactivate(req.params.email, req.hive)));
 
   // Team & agents: teams with their people and agents; membership changes.
@@ -199,9 +208,11 @@ export function dashboardRouter() {
   r.get('/events', subscribe);
   r.get('/meta', (req, res) => res.json({ claude: claudeConfigured(), platforms: PLATFORMS, taskStatuses: TASK_STATUSES, priorities: PRIORITIES }));
 
-  r.get('/overview', wrap(() => {
+  r.get('/overview', wrap((req) => {
     const count = (sql, ...p) => get(sql, ...p).n;
-    const workflows = all('SELECT w.*, a.name AS agent_name, a.color AS agent_color FROM workflows w LEFT JOIN agents a ON a.id = w.agent_id WHERE enabled = 1').map(withNext);
+    const workflows = all("SELECT w.*, COALESCE(a.name, u.name, w.assignee_email) AS agent_name, a.color AS agent_color FROM workflows w LEFT JOIN agents a ON a.id = w.agent_id LEFT JOIN users u ON u.email = w.assignee_email WHERE w.status = 'active'")
+      .filter((w) => canViewSchedule(req.hive, w))
+      .map(withNext);
     return {
       stats: {
         agents: count('SELECT COUNT(*) n FROM agents'),
@@ -323,17 +334,18 @@ export function dashboardRouter() {
     if (teamId !== undefined && teamId !== null && !get('SELECT id FROM teams WHERE id = ?', teamId)) throw bad('Unknown team');
   };
 
-  r.get('/agents', wrap(() =>
+  r.get('/agents', wrap((req) =>
     all(
       `SELECT a.*, tm.name AS team_name, tm.color AS team_color,
         (SELECT COUNT(*) FROM tasks t WHERE t.agent_id = a.id AND t.status != 'done') AS open_tasks,
         (SELECT COUNT(*) FROM workflows w WHERE w.agent_id = a.id AND w.enabled = 1) AS workflows,
-        (SELECT body FROM messages m WHERE m.agent_id = a.id ORDER BY created_at DESC, id DESC LIMIT 1) AS last_message,
-        (SELECT created_at FROM messages m WHERE m.agent_id = a.id ORDER BY created_at DESC, id DESC LIMIT 1) AS last_message_at,
+        (SELECT m.body FROM messages m LEFT JOIN chats c ON c.id = m.chat_id WHERE m.agent_id = a.id AND (c.id IS NULL OR ${visibleChatSql('c')}) ORDER BY m.created_at DESC, m.id DESC LIMIT 1) AS last_message,
+        (SELECT m.created_at FROM messages m LEFT JOIN chats c ON c.id = m.chat_id WHERE m.agent_id = a.id AND (c.id IS NULL OR ${visibleChatSql('c')}) ORDER BY m.created_at DESC, m.id DESC LIMIT 1) AS last_message_at,
         (SELECT COALESCE(SUM(cost_cents), 0) FROM runs r WHERE r.agent_id = a.id AND r.created_at >= date('now', 'start of month')) AS month_cents,
         (SELECT COUNT(*) FROM runs r WHERE r.agent_id = a.id AND r.status = 'needs_approval') AS pending_approvals,
         (SELECT COUNT(*) FROM runs r WHERE r.agent_id = a.id AND r.status IN ('starting', 'running')) AS running_runs
        FROM agents a LEFT JOIN teams tm ON tm.id = a.team_id ORDER BY a.name`,
+      ...visibleChatParams(req.hive), ...visibleChatParams(req.hive),
     ).map(publicAgent),
   ));
 
@@ -432,6 +444,8 @@ export function dashboardRouter() {
     } catch (err) {
       throw bad(`Couldn't remove this agent's Slack bot: ${err.message}. Try again, or remove the bot in Settings → Slack bots first.`);
     }
+    const gone = get('SELECT name FROM agents WHERE id = ?', req.params.id);
+    if (gone) suspendSchedulesFor(Number(req.params.id), `${gone.name} was removed`);
     removeAgentPhoto(Number(req.params.id));
     run('DELETE FROM agents WHERE id = ?', req.params.id);
     emit('agent');
@@ -678,7 +692,17 @@ export function dashboardRouter() {
   r.post('/agents/:id/lessons', wrap((req) => {
     if (!canApproveFor(req.hive, Number(req.params.id))) throw forbidden('Only approvers and owners can teach this agent.');
     try {
-      return addLesson(Number(req.params.id), req.body?.text, { source: req.body?.task_id ? 'task' : 'manual', taskId: req.body?.task_id ?? null, by: req.user?.name || null });
+      const b = req.body ?? {};
+      let chatId = null;
+      let messageId = null;
+      if (b.message_id) {
+        const m = get('SELECT id, chat_id, agent_id FROM messages WHERE id = ?', Number(b.message_id));
+        if (!m || !canSeeChat(req.hive, getChat(m.chat_id))) throw notFound('Message');
+        (chatId = m.chat_id), (messageId = m.id);
+      }
+      return addLesson(Number(req.params.id), b.text, {
+        source: messageId ? 'chat' : b.task_id ? 'task' : 'manual', taskId: b.task_id ?? null, by: req.user?.name || req.hive.name || null, title: b.title ?? '', chatId, messageId,
+      });
     } catch (err) {
       throw bad(err.message);
     }
@@ -707,45 +731,88 @@ export function dashboardRouter() {
     ),
   ));
 
-  // Chat
-  r.get('/agents/:id/messages', wrap((req) =>
-    // In the order things were said (a reply picked up late keeps its place, see postMessage).
-    all('SELECT * FROM (SELECT * FROM messages WHERE agent_id = ? ORDER BY created_at DESC, id DESC LIMIT 200) ORDER BY created_at, id', req.params.id),
-  ));
-  // Whether the agent is still working on its Hive chat turn (managed agents), for the typing indicator.
-  r.get('/agents/:id/chat-run', wrap((req) =>
-    get("SELECT id, status FROM runs WHERE kind = 'chat' AND agent_id = ? AND COALESCE(origin, 'hive') = 'hive' ORDER BY id DESC LIMIT 1", req.params.id) ?? { id: null, status: null },
-  ));
-  // Send a message, with files uploaded beforehand (file_ids). voice: the text is a voice note's
-  // transcript and one of the files is its recording. "remember: …" also saves a lesson.
-  r.post('/agents/:id/messages', wrap(async (req) => {
-    const agentId = Number(req.params.id);
-    const agent = get('SELECT id, name FROM agents WHERE id = ?', agentId);
-    if (!agent) throw notFound('Agent');
-    const body = String(req.body.body ?? '').trim();
-    let files;
+  // Conversations. Each is private to whoever started it (plus workspace owners) unless shared;
+  // every read and write checks that here, on the server.
+  const agentOr404 = (id) => {
+    const a = get('SELECT id, name FROM agents WHERE id = ?', Number(id));
+    if (!a) throw notFound('Agent');
+    return a;
+  };
+  const visibleChat = (req, id = req.params.id) => {
+    const chat = getChat(id);
+    if (!chat || !canSeeChat(req.hive, chat)) throw notFound('Conversation');
+    return chat;
+  };
+  const sendIn = async (chat, req) => {
     try {
-      files = unsentFiles(agentId, req.body.file_ids);
+      return await sendChatMessage(chat, req.hive, req.body ?? {});
+    } catch (err) {
+      if (err.status === 403) throw forbidden(err.message);
+      if (err instanceof HttpError) throw err;
+      throw bad(err.message);
+    }
+  };
+  r.get('/agents/:id/chats', wrap((req) => (agentOr404(req.params.id), listChats(Number(req.params.id), req.hive))));
+  r.post('/agents/:id/chats', wrap((req) => (agentOr404(req.params.id), createChat(Number(req.params.id), req.hive, { title: req.body?.title }))));
+  r.get('/chats/:id', wrap((req) => publicChat(visibleChat(req), req.hive)));
+  r.patch('/chats/:id', wrap((req) => {
+    const chat = visibleChat(req);
+    if (!canManageChat(req.hive, chat)) throw forbidden('Only the person who started this conversation (or an owner) can rename or share it.');
+    try {
+      return updateChat(chat, req.hive, { title: req.body?.title, visibility: req.body?.visibility });
     } catch (err) {
       throw bad(err.message);
     }
-    const voice = Boolean(req.body.voice) && files.some((f) => f.voice);
-    if (voice && !body) throw bad("Couldn't make out any words in that voice note. Try again a little closer to the mic.");
-    if (!body && !files.length) throw bad('Write a message or attach a file');
-    const text = body || `Sent ${files.length === 1 ? 'a file' : `${files.length} files`}.`;
-    const meta = { email: req.user?.email ?? null, ...(voice ? { voice: true } : {}) };
-    let agentText = voice ? `(Voice note, transcribed automatically)\n${text}` : text;
+  }));
+  r.get('/chats/:id/messages', wrap((req) => chatMessages(visibleChat(req).id, req.query)));
+  r.post('/chats/:id/messages', wrap((req) => sendIn(visibleChat(req), req)));
+  // The agent workspace: status, and the Work overview for a conversation (chat_id, optional).
+  r.get('/agents/:id/workspace', wrap((req) => {
+    const agent = get('SELECT * FROM agents WHERE id = ?', Number(req.params.id));
+    if (!agent) throw notFound('Agent');
+    return workspace(agent, req.hive, req.query.chat_id ? Number(req.query.chat_id) : null);
+  }));
+  // Where the agent has been busy: its runs (task runs, and chats this person may see) and log.
+  r.get('/agents/:id/history', wrap((req) => {
+    const agentId = Number(req.params.id);
+    agentOr404(agentId);
+    const runs = all(
+      `SELECT r.id, r.kind, r.status, r.error, r.cost_cents, r.created_at, r.updated_at, r.task_id, t.title AS task_title, c.id AS chat_id, c.title AS chat_title
+       FROM runs r LEFT JOIN tasks t ON t.id = r.task_id
+       LEFT JOIN chats c ON r.kind = 'chat' AND c.agent_id = r.agent_id AND c.origin = COALESCE(r.origin, 'hive')
+       WHERE r.agent_id = ? AND (r.kind != 'chat' OR (c.id IS NOT NULL AND ${visibleChatSql('c')}))
+       ORDER BY r.id DESC LIMIT 50`,
+      agentId, ...visibleChatParams(req.hive),
+    );
+    const log = all('SELECT id, kind, text, created_at FROM activity WHERE agent_id = ? ORDER BY id DESC LIMIT 60', agentId);
+    const usage = get(
+      `SELECT COALESCE(SUM(CASE WHEN created_at >= date('now', 'start of month') THEN cost_cents END), 0) AS month_cents,
+              COALESCE(SUM(CASE WHEN created_at >= date('now', 'start of month', '-1 month') AND created_at < date('now', 'start of month') THEN cost_cents END), 0) AS last_month_cents,
+              COUNT(CASE WHEN created_at >= date('now', 'start of month') THEN 1 END) AS month_runs
+       FROM runs WHERE agent_id = ?`,
+      agentId,
+    );
+    return { runs, log, usage };
+  }));
+  r.get('/chats/:id/activity', wrap((req) => chatActivity(visibleChat(req))));
 
-    const lesson = REMEMBER.test(body) ? body.replace(REMEMBER, '').trim() : '';
-    if (lesson) {
-      if (!canApproveFor(req.hive, agentId)) throw forbidden(`Only approvers and owners can teach ${agent.name}. Send it without "remember", or ask one of them.`);
-      addLesson(agentId, lesson, { source: 'chat', by: req.user?.name || req.user?.email || null });
-      // The running chat was set up before this lesson, so tell the agent now as well.
-      agentText = `${voice ? '(Voice note, transcribed automatically) ' : ''}Remember this from now on. It is saved in your lessons, so it applies to every future chat and task too: ${lesson}`;
-    }
-    const message = await sendToAgent(agentId, text, meta, { files, agentText });
-    if (lesson) postMessage(agentId, 'system', `🧠 Saved as a lesson. ${agent.name} will follow it in every chat and task from now on. Edit it in the Lessons tab.`);
-    return message;
+  // Whether the agent is still working on its old shared Hive chat (managed agents).
+  r.get('/agents/:id/chat-run', wrap((req) =>
+    get("SELECT id, status FROM runs WHERE kind = 'chat' AND agent_id = ? AND COALESCE(origin, 'hive') = 'hive' ORDER BY id DESC LIMIT 1", req.params.id) ?? { id: null, status: null },
+  ));
+  // Before conversations: one thread per agent. Reads return the messages of the conversations this
+  // person may see; writes go to the shared thread (or chat_id).
+  r.get('/agents/:id/messages', wrap((req) =>
+    all(
+      `SELECT * FROM (SELECT m.* FROM messages m LEFT JOIN chats c ON c.id = m.chat_id WHERE m.agent_id = ? AND (c.id IS NULL OR ${visibleChatSql('c')}) ORDER BY m.created_at DESC, m.id DESC LIMIT 200) ORDER BY created_at, id`,
+      Number(req.params.id), ...visibleChatParams(req.hive),
+    ),
+  ));
+  r.post('/agents/:id/messages', wrap(async (req) => {
+    agentOr404(req.params.id);
+    const chat = req.body?.chat_id ? visibleChat(req, req.body.chat_id) : ensureChat(Number(req.params.id), 'hive');
+    if (chat.agent_id !== Number(req.params.id)) throw notFound('Conversation');
+    return sendIn(chat, req);
   }));
   r.post('/agents/:id/chat-files', express.raw({ type: () => true, limit: '50mb' }), wrap((req) => {
     if (!get('SELECT id FROM agents WHERE id = ?', req.params.id)) throw notFound('Agent');
@@ -756,14 +823,16 @@ export function dashboardRouter() {
       throw bad('Please give the file a normal name');
     }
     try {
-      return saveChatFile(Number(req.params.id), name, req.body, { mime: req.get('content-type') || null, voice: req.get('x-voice') === '1', by: req.user?.email ?? null });
+      return saveChatFile(Number(req.params.id), name, req.body, { mime: req.get('content-type') || null, voice: req.get('x-voice') === '1', by: req.hive.email });
     } catch (err) {
       throw bad(err.message);
     }
   }));
   r.get('/chat-files/:id', (req, res, next) => {
     const f = get('SELECT * FROM chat_files WHERE id = ?', Number(req.params.id));
-    if (!f) return next(notFound('File'));
+    // Sent: whoever may see its conversation. Not sent yet: only whoever uploaded it.
+    const chat = f?.message_id ? getChat(get('SELECT chat_id FROM messages WHERE id = ?', f.message_id)?.chat_id) : null;
+    if (!f || (f.message_id ? !canSeeChat(req.hive, chat) : f.created_by !== req.hive.email)) return next(notFound('File'));
     // Voice notes play in the page; everything else downloads.
     if (f.voice) return res.type(f.mime?.split(';')[0] || 'audio/webm').sendFile(f.path, (err) => err && next(notFound('File')));
     res.download(f.path, f.filename, (err) => err && !res.headersSent && next(notFound('File')));
@@ -795,7 +864,18 @@ export function dashboardRouter() {
   r.post('/tasks', wrap(async (req) => {
     const body = req.body ?? {};
     if (body.start && !(body.assignee?.type === 'agent' || String(body.assignee ?? '').startsWith('agent:') || body.agent_id)) throw bad('Choose an AI agent to start');
-    const { id } = createTask(body, me(req));
+    // Created from a message in a conversation: remember where, if this person may see it.
+    const source = body.source_message_id
+      ? get('SELECT id, chat_id FROM messages WHERE id = ?', Number(body.source_message_id))
+      : body.source_chat_id
+        ? { id: null, chat_id: getChat(body.source_chat_id)?.id }
+        : null;
+    if ((body.source_message_id || body.source_chat_id) && (!source?.chat_id || !canSeeChat(req.hive, getChat(source.chat_id)))) throw bad('That conversation is not available');
+    const { id, existing } = createTask(body, me(req));
+    if (source && !existing) {
+      run('UPDATE tasks SET source_chat_id = ?, source_message_id = ? WHERE id = ?', source.chat_id, source.id, id);
+      emit('task', { task_id: id });
+    }
     if (body.from_draft) discardDraft(req.hive.email);
     const start = body.start ? await startExecution(id, { key: body.client_key || `create-${id}`, actor: me(req) }) : undefined;
     return { ...getTask(id), ...(start ? { start } : {}) };
@@ -1040,6 +1120,11 @@ export function dashboardRouter() {
     return get('SELECT id, task_id, filename, size, created_at FROM task_files WHERE id = ?', lastInsertRowid);
   }));
 
+  r.get('/tasks/:id/files/:fileId/download', (req, res, next) => {
+    const f = get('SELECT * FROM task_files WHERE id = ? AND task_id = ?', Number(req.params.fileId), Number(req.params.id));
+    if (!f) return next(notFound('File'));
+    res.download(f.path, f.filename, (err) => err && !res.headersSent && next(notFound('File')));
+  });
   r.delete('/tasks/:id/files/:fileId', wrap((req) => {
     editable(req);
     const f = get('SELECT * FROM task_files WHERE id = ? AND task_id = ?', req.params.fileId, req.params.id);
@@ -1062,7 +1147,15 @@ export function dashboardRouter() {
     const last = get("SELECT id FROM runs WHERE task_id = ? ORDER BY id DESC LIMIT 1", Number(req.params.id));
     return last ? runWithEvents(last.id) : { ok: true };
   }));
+  // A chat run belongs to a conversation: only people who may see it can reply to, stop or download from it.
+  const runGuard = (req) => {
+    const r = get('SELECT id, kind, agent_id, origin FROM runs WHERE id = ?', Number(req.params.id));
+    if (!r) throw notFound('Run');
+    if (r.kind === 'chat' && !canSeeChat(req.hive, get('SELECT * FROM chats WHERE agent_id = ? AND origin = ?', r.agent_id, r.origin ?? 'hive'))) throw notFound('Run');
+    return r;
+  };
   r.post('/runs/:id/reply', wrap(async (req) => {
+    runGuard(req);
     if (!req.body.text?.trim()) throw bad('text is required');
     await replyToRun(Number(req.params.id), req.body.text.trim());
     return { ok: true };
@@ -1084,6 +1177,7 @@ export function dashboardRouter() {
   }));
   r.get('/runs/:id/outputs/:outputId', async (req, res, next) => {
     try {
+      runGuard(req);
       const file = await downloadOutput(Number(req.params.id), Number(req.params.outputId));
       if (!file) return res.status(404).json({ error: 'File not found' });
       res.set('Content-Type', file.mime_type);
@@ -1093,73 +1187,53 @@ export function dashboardRouter() {
       next(err);
     }
   });
+  // Stop one run (the agent stays enabled; its other runs carry on).
   r.post('/runs/:id/interrupt', wrap(async (req) => {
+    runGuard(req);
     await interruptRun(Number(req.params.id));
     return { ok: true };
   }));
 
-  // Workflows
-  r.get('/workflows', wrap(() =>
-    all(
-      `SELECT w.*, a.name AS agent_name, a.color AS agent_color,
-        (SELECT status FROM workflow_runs r WHERE r.workflow_id = w.id ORDER BY id DESC LIMIT 1) AS last_status,
-        (SELECT COUNT(*) FROM workflow_runs r WHERE r.workflow_id = w.id) AS run_count
-       FROM workflows w LEFT JOIN agents a ON a.id = w.agent_id ORDER BY w.name`,
-    ).map(withNext),
+  // Recurring tasks (the Workflows screen, and each agent's Tasks → Recurring). See schedules.js.
+  const scheduleCtx = (req) => ({ actor: { type: 'user', ref: req.hive.email, name: req.hive.name || req.hive.email }, user: req.hive, via: 'ui' });
+  r.get('/workflows', wrap((req) =>
+    listSchedules({ agent_id: req.query.agent_id, assignee: req.query.assignee, created_by: req.query.created_by, project_id: req.query.project_id, status: req.query.status }, req.hive),
   ));
+  r.get('/workflows/:id', wrap((req) => scheduleDetails(req.params.id, req.hive)));
 
   r.post('/workflows', wrap((req) => {
-    const b = req.body;
-    if (!b.name?.trim()) throw bad('name is required');
-    const v = validateSchedule(b.schedule, b.timezone);
-    if (!v.ok) throw bad(`Invalid schedule: ${v.error}`);
-    const { lastInsertRowid } = run(
-      'INSERT INTO workflows (name, description, agent_id, schedule, timezone, instructions, enabled) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      b.name.trim(), b.description ?? '', b.agent_id ?? null, b.schedule, b.timezone || 'UTC', b.instructions ?? '', b.enabled === false ? 0 : 1,
-    );
-    const wf = get('SELECT * FROM workflows WHERE id = ?', lastInsertRowid);
-    schedule(wf);
-    logActivity(wf.agent_id, 'workflow', `Workflow "${wf.name}" created`);
-    emit('workflow');
-    return withNext(wf);
+    const b = req.body ?? {};
+    const { schedule, notes, existing } = createSchedule(b, scheduleCtx(req));
+    // Older callers could create a workflow switched off.
+    if (b.enabled === false && !existing) return { ...pauseSchedule(schedule.id, scheduleCtx(req)), notes };
+    return { ...schedule, notes, existing };
   }));
 
   r.patch('/workflows/:id', wrap((req) => {
-    const current = get('SELECT * FROM workflows WHERE id = ?', req.params.id);
-    if (!current) throw notFound('Workflow');
-    const b = { ...req.body };
-    if (b.enabled !== undefined) b.enabled = b.enabled ? 1 : 0;
-    if (b.schedule !== undefined || b.timezone !== undefined) {
-      const v = validateSchedule(b.schedule ?? current.schedule, b.timezone ?? current.timezone);
-      if (!v.ok) throw bad(`Invalid schedule: ${v.error}`);
-    }
-    update('workflows', req.params.id, b, WORKFLOW_FIELDS);
-    const wf = get('SELECT * FROM workflows WHERE id = ?', req.params.id);
-    schedule(wf);
-    emit('workflow');
-    return withNext(wf);
+    const { enabled, ...b } = req.body ?? {};
+    let out = Object.keys(b).length ? updateSchedule(req.params.id, b, scheduleCtx(req)) : { schedule: scheduleDetails(req.params.id, req.hive), notes: [] };
+    // The old on/off switch: pause or resume.
+    if (enabled === false) out = { schedule: pauseSchedule(req.params.id, scheduleCtx(req)), notes: out.notes };
+    if (enabled === true && out.schedule.status !== 'active') out = { schedule: resumeSchedule(req.params.id, scheduleCtx(req)), notes: out.notes };
+    return { ...out.schedule, notes: out.notes };
   }));
+  r.post('/workflows/:id/pause', wrap((req) => pauseSchedule(req.params.id, scheduleCtx(req))));
+  r.post('/workflows/:id/resume', wrap((req) => resumeSchedule(req.params.id, scheduleCtx(req))));
+  r.post('/workflows/:id/cancel', wrap((req) => cancelSchedule(req.params.id, scheduleCtx(req))));
 
+  // Deleting removes the schedule and its history (owners only); cancelling keeps the history.
   r.delete('/workflows/:id', wrap((req) => {
-    unschedule(Number(req.params.id));
     run('DELETE FROM workflows WHERE id = ?', req.params.id);
     emit('workflow');
     return { ok: true };
   }));
 
-  r.post('/workflows/:id/run', wrap(async (req) => {
-    if (!get('SELECT id FROM workflows WHERE id = ?', req.params.id)) throw notFound('Workflow');
-    const started = runWorkflow(Number(req.params.id), 'manual');
-    started.catch(() => {});
-    return { ok: true };
-  }));
+  // "Run now": an extra occurrence; the regular schedule is unchanged. Safe to retry with the same key.
+  r.post('/workflows/:id/run', wrap(async (req) => runNow(req.params.id, scheduleCtx(req), { key: req.body?.key })));
 
-  r.get('/workflows/:id/runs', wrap((req) => all('SELECT * FROM workflow_runs WHERE workflow_id = ? ORDER BY id DESC LIMIT 50', req.params.id)));
+  r.get('/workflows/:id/runs', wrap((req) => scheduleDetails(req.params.id, req.hive).runs));
 
-  r.post('/schedule/preview', wrap((req) => {
-    const v = validateSchedule(req.body.schedule, req.body.timezone);
-    return v.ok ? { ok: true, next: nextRuns(req.body.schedule, req.body.timezone, 3) } : v;
-  }));
+  r.post('/schedule/preview', wrap((req) => previewSchedule(req.body ?? {})));
 
   return r;
 }
@@ -1224,10 +1298,47 @@ export function agentRouter() {
     all('SELECT * FROM messages WHERE agent_id = ? AND id > ? ORDER BY id LIMIT 200', req.agent.id, Number(req.query.since_id) || 0),
   ));
 
+  // chat_id: which conversation to answer in (each message you read has one). Without it, the
+  // conversation where someone last wrote to you.
   r.post('/messages', wrap((req) => {
     if (!req.body.body?.trim()) throw bad('body is required');
-    return postMessage(req.agent.id, 'agent', req.body.body.trim());
+    const chat = req.body.chat_id
+      ? get('SELECT * FROM chats WHERE id = ? AND agent_id = ?', Number(req.body.chat_id), req.agent.id)
+      : get("SELECT c.* FROM messages m JOIN chats c ON c.id = m.chat_id WHERE m.agent_id = ? AND m.sender = 'user' ORDER BY m.id DESC LIMIT 1", req.agent.id);
+    if (req.body.chat_id && !chat) throw notFound('Conversation');
+    return postMessage(req.agent.id, 'agent', req.body.body.trim(), { origin: chat?.origin ?? 'hive' });
   }));
+
+  // Recurring tasks, for agents that run outside Hive: the same tools managed agents get, answered by
+  // Hive. To create or change one, pass the Hive message (message_id) or task (task_id) you're acting
+  // on; who is asking is taken from there, and user_request must quote that person's own words.
+  r.get('/recurring/tools', (req, res) => res.json(SCHEDULE_TOOLS.map(({ type, ...t }) => t)));
+  r.get('/recurring', wrap((req) => agentTool(req, 'list_recurring_tasks', { assigned_to: 'you', ...req.query })));
+  r.post('/recurring/:tool', wrap((req) => {
+    if (!SCHEDULE_TOOL_NAMES.has(req.params.tool)) throw notFound('Tool');
+    const { message_id, task_id, key, ...input } = req.body ?? {};
+    return agentTool(req, req.params.tool, input, { message_id, task_id, key });
+  }));
+  function agentTool(req, name, input, { message_id, task_id, key } = {}) {
+    const agent = req.agent;
+    let ctx;
+    if (task_id != null) {
+      const task = get('SELECT * FROM tasks WHERE id = ? AND agent_id = ?', Number(task_id), agent.id);
+      if (!task) throw notFound('Task');
+      ctx = taskContext(agent, task);
+    } else if (message_id != null) {
+      const m = get("SELECT * FROM messages WHERE id = ? AND agent_id = ? AND sender = 'user'", Number(message_id), agent.id);
+      if (!m) throw notFound('Message');
+      const meta = m.meta ? JSON.parse(m.meta) : {};
+      ctx = chatContext(agent, { origin: meta.origin ?? 'hive', readerEmail: meta.by ?? meta.email ?? null });
+    } else {
+      ctx = { agent, actor: { type: 'agent', ref: String(agent.id), name: agent.name }, readOnly: 'Pass message_id (the Hive message you are answering) or task_id to create or change recurring tasks.' };
+    }
+    const out = handleScheduleTool(ctx, name, input, { eventId: key ? `api:${agent.id}:${String(key).slice(0, 80)}` : undefined });
+    const body = JSON.parse(out.text);
+    if (out.is_error) throw bad(body.error);
+    return body;
+  }
 
   r.patch('/runs/:id', wrap((req) => {
     const wfRun = get(

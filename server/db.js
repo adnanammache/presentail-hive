@@ -12,7 +12,8 @@ if (process.env.RAILWAY_ENVIRONMENT && !volume && !process.env.DB_PATH) {
 if (DB_PATH !== ':memory:') mkdirSync(dirname(DB_PATH), { recursive: true });
 
 export const db = new DatabaseSync(DB_PATH);
-db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
+// Several processes may share this file (e.g. scheduler workers): wait for a lock rather than fail.
+db.exec('PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS teams (
@@ -207,6 +208,7 @@ CREATE INDEX IF NOT EXISTS idx_run_events_run ON run_events(run_id, id);
 addColumn('runs', 'auto_approve', 'INTEGER NOT NULL DEFAULT 0'); // "approve the rest of this run"
 addColumn('runs', 'slack_ts', 'TEXT'); // the approval alert in Slack, updated once someone decides
 addColumn('runs', 'origin', 'TEXT'); // chats: where the conversation lives ('hive', or 'slack:<channel>:<thread_ts>')
+addColumn('runs', 'agent_version', 'INTEGER'); // the agent version its session runs on (chats move to a new one when it changes)
 addColumn('agents', 'reviewer_id', 'INTEGER REFERENCES agents(id) ON DELETE SET NULL'); // default reviewer of this agent's work
 addColumn('tasks', 'handoff_agent_id', 'INTEGER REFERENCES agents(id) ON DELETE SET NULL'); // this task's reviewer, overriding the default
 addColumn('tasks', 'parent_task_id', 'INTEGER REFERENCES tasks(id) ON DELETE SET NULL'); // set on "Review: …" tasks
@@ -685,6 +687,150 @@ CREATE TABLE IF NOT EXISTS invitations (
   accepted_at   TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_invitations_email ON invitations(email, status);
+`);
+
+// ---------------------------------------------------------------- conversations with agents
+// A conversation (chat) is one thread with one agent. Its origin is where replies go: "chat:<id>" for
+// conversations started in Hive, "slack:<channel>:<ts>" for a Slack thread, "hive" for the single
+// thread every agent had before conversations existed. Each managed chat run is keyed by origin, so
+// every conversation has its own Claude session.
+//   visibility: private (whoever started it, plus workspace owners) | shared (everyone who can see
+//   the agent). Threads from before conversations existed were visible to everyone, so they stay shared.
+db.exec(`
+CREATE TABLE IF NOT EXISTS chats (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  agent_id        INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  origin          TEXT NOT NULL,
+  title           TEXT NOT NULL DEFAULT '',
+  visibility      TEXT NOT NULL DEFAULT 'private',
+  created_by      TEXT,
+  created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  last_message_at TEXT,
+  UNIQUE (agent_id, origin)
+);
+`);
+addColumn('messages', 'chat_id', 'INTEGER REFERENCES chats(id) ON DELETE CASCADE');
+addColumn('tasks', 'source_chat_id', 'INTEGER REFERENCES chats(id) ON DELETE SET NULL'); // the conversation a task was created from
+addColumn('tasks', 'source_message_id', 'INTEGER REFERENCES messages(id) ON DELETE SET NULL');
+addColumn('agent_lessons', 'title', "TEXT NOT NULL DEFAULT ''");
+addColumn('agent_lessons', 'chat_id', 'INTEGER REFERENCES chats(id) ON DELETE SET NULL');
+addColumn('agent_lessons', 'message_id', 'INTEGER REFERENCES messages(id) ON DELETE SET NULL');
+db.exec(`
+CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_id, id);
+CREATE INDEX IF NOT EXISTS idx_tasks_source_chat ON tasks(source_chat_id);
+`);
+
+/** Give every message from before conversations a conversation (idempotent: only rows without one). */
+export function migrateChats() {
+  const groups = db
+    .prepare(`SELECT agent_id, COALESCE(json_extract(meta, '$.origin'), 'hive') AS origin, MIN(id) AS first_id, MAX(created_at) AS last_at
+              FROM messages WHERE chat_id IS NULL GROUP BY agent_id, origin`)
+    .all();
+  if (!groups.length) return;
+  db.exec('BEGIN');
+  for (const g of groups) {
+    const firstUser = db
+      .prepare(`SELECT body, meta FROM messages WHERE agent_id = ? AND sender = 'user' AND COALESCE(json_extract(meta, '$.origin'), 'hive') = ? ORDER BY id LIMIT 1`)
+      .get(g.agent_id, g.origin);
+    const firstLine = String(firstUser?.body ?? '').split('\n')[0].trim();
+    const title = (firstLine ? (firstLine.length > 60 ? `${firstLine.slice(0, 57)}…` : firstLine) : 'Earlier conversation').replace(/^/, g.origin.startsWith('slack:') ? 'Slack: ' : '');
+    let createdBy = null;
+    try {
+      createdBy = firstUser?.meta ? JSON.parse(firstUser.meta).email ?? null : null;
+    } catch {
+      /* old rows */
+    }
+    db.prepare(
+      `INSERT INTO chats (agent_id, origin, title, visibility, created_by, created_at, last_message_at) VALUES (?, ?, ?, 'shared', ?, (SELECT created_at FROM messages WHERE id = ?), ?)
+       ON CONFLICT(agent_id, origin) DO UPDATE SET last_message_at = MAX(COALESCE(chats.last_message_at, ''), excluded.last_message_at)`,
+    ).run(g.agent_id, g.origin, title, createdBy, g.first_id, g.last_at);
+    const chat = db.prepare('SELECT id FROM chats WHERE agent_id = ? AND origin = ?').get(g.agent_id, g.origin);
+    db.prepare(`UPDATE messages SET chat_id = ? WHERE agent_id = ? AND chat_id IS NULL AND COALESCE(json_extract(meta, '$.origin'), 'hive') = ?`).run(chat.id, g.agent_id, g.origin);
+  }
+  db.exec('COMMIT');
+}
+migrateChats();
+
+// ---------------------------------------------------------------- recurring schedules (see schedules.js)
+// A workflow is a recurring schedule: who gets the work (an agent or a person), when (a structured
+// rule in its own time zone), what each task says, and the policies for missed and overlapping runs.
+// Each occurrence is a workflow_runs row, unique per schedule and time, linked to the task it made.
+addColumn('workflows', 'rule', 'TEXT'); // canonical JSON rule (recurring.js); NULL on old rows until migrated
+addColumn('workflows', 'expected_result', "TEXT NOT NULL DEFAULT ''");
+addColumn('workflows', 'project_id', 'INTEGER REFERENCES projects(id) ON DELETE SET NULL');
+addColumn('workflows', 'assignee_email', 'TEXT'); // a person; agent_id is an agent. Exactly one is set.
+addColumn('workflows', 'mode', "TEXT NOT NULL DEFAULT 'create_and_start'"); // create_and_start | create_only
+addColumn('workflows', 'starts_on', 'TEXT'); // local date (schedule's time zone), inclusive
+addColumn('workflows', 'ends_on', 'TEXT'); // local date, inclusive; NULL = no end
+addColumn('workflows', 'max_occurrences', 'INTEGER'); // NULL = no limit
+addColumn('workflows', 'occurrence_count', 'INTEGER NOT NULL DEFAULT 0'); // scheduled occurrences so far (created or skipped)
+addColumn('workflows', 'deadline_rule', 'TEXT'); // JSON, see recurring.js
+addColumn('workflows', 'period_rule', 'TEXT'); // JSON reporting-period rule
+addColumn('workflows', 'missed_policy', "TEXT NOT NULL DEFAULT 'run_latest'"); // run_latest | skip_all
+addColumn('workflows', 'overlap_policy', 'TEXT'); // skip_if_running | skip_if_open | always_create
+addColumn('workflows', 'status', 'TEXT'); // active | paused | ended | error
+addColumn('workflows', 'status_reason', 'TEXT');
+addColumn('workflows', 'version', 'INTEGER NOT NULL DEFAULT 1');
+addColumn('workflows', 'next_run_at', 'TEXT'); // ISO instant of the next scheduled occurrence
+addColumn('workflows', 'priority', "TEXT NOT NULL DEFAULT 'medium'");
+addColumn('workflows', 'needs_approval', 'INTEGER NOT NULL DEFAULT 0');
+addColumn('workflows', 'remind_days', 'INTEGER');
+addColumn('workflows', 'created_by_type', 'TEXT'); // user | agent
+addColumn('workflows', 'created_by_ref', 'TEXT'); // email or agent id
+addColumn('workflows', 'created_by_name', 'TEXT');
+addColumn('workflows', 'authorized_by', 'TEXT'); // the person whose instruction permits this schedule
+addColumn('workflows', 'authorization', 'TEXT'); // JSON provenance: how and where it was asked for
+addColumn('workflows', 'client_key', 'TEXT'); // idempotency key of the request that created it
+addColumn('workflows', 'updated_at', 'TEXT');
+addColumn('workflows', 'ended_at', 'TEXT');
+addColumn('workflow_runs', 'scheduled_for', 'TEXT'); // the occurrence's instant (ISO)
+addColumn('workflow_runs', 'occurrence_key', 'TEXT'); // "<schedule>:<instant>" or "<schedule>:manual:<key>"
+addColumn('workflow_runs', 'state', 'TEXT'); // pending | created | skipped | failed (the occurrence itself)
+addColumn('workflow_runs', 'dispatch_status', 'TEXT'); // none | pending | retrying | dispatched | failed
+addColumn('workflow_runs', 'attempts', 'INTEGER NOT NULL DEFAULT 0');
+addColumn('workflow_runs', 'next_attempt_at', 'TEXT');
+addColumn('workflow_runs', 'last_error', 'TEXT');
+addColumn('workflow_runs', 'skip_reason', 'TEXT');
+addColumn('workflow_runs', 'period_start', 'TEXT');
+addColumn('workflow_runs', 'period_end', 'TEXT');
+addColumn('workflow_runs', 'due_date', 'TEXT');
+addColumn('workflow_runs', 'schedule_version', 'INTEGER');
+addColumn('workflow_runs', 'snapshot', 'TEXT'); // the schedule's task template when this occurrence was due
+addColumn('workflow_runs', 'lease_until', 'TEXT'); // a worker is delivering it until then
+addColumn('workflow_runs', 'requested_by', 'TEXT'); // manual runs: who asked
+addColumn('tasks', 'occurrence_id', 'INTEGER'); // the workflow_runs row that made this task
+addColumn('tasks', 'scheduled_for', 'TEXT');
+addColumn('tasks', 'period_start', 'TEXT'); // the reporting period this task covers
+addColumn('tasks', 'period_end', 'TEXT');
+addColumn('runs', 'requested_by', 'TEXT'); // chats: the person whose message the agent is answering now
+db.exec(`
+CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_occurrence ON workflow_runs(occurrence_key) WHERE occurrence_key IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_workflows_client_key ON workflows(client_key) WHERE client_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_workflows_due ON workflows(status, next_run_at);
+CREATE INDEX IF NOT EXISTS idx_runs_delivery ON workflow_runs(state, dispatch_status);
+`);
+// Older workflows (and rows older code still inserts, e.g. the seed): their cron expression becomes a
+// "cron" rule and enabled becomes the status. They were created by owners before authorization was
+// recorded, so until an owner edits, runs or resumes one, they count as authorized by the owners.
+export function normalizeLegacyWorkflows() {
+  db.exec(`UPDATE workflows SET rule = json_object('freq', 'cron', 'expr', schedule) WHERE rule IS NULL`);
+  db.exec(`UPDATE workflows SET status = CASE WHEN enabled = 1 THEN 'active' ELSE 'paused' END WHERE status IS NULL`);
+  db.exec(`UPDATE workflows SET overlap_policy = CASE WHEN assignee_email IS NOT NULL THEN 'always_create' ELSE 'skip_if_running' END WHERE overlap_policy IS NULL`);
+  db.exec(`UPDATE workflow_runs SET state = 'created' WHERE state IS NULL`);
+}
+normalizeLegacyWorkflows();
+db.exec(`
+-- What happened to a schedule and who did it: created, edited, paused, suspended, failed dispatches…
+CREATE TABLE IF NOT EXISTS schedule_events (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  workflow_id  INTEGER NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+  actor        TEXT NOT NULL,
+  kind         TEXT NOT NULL,
+  text         TEXT NOT NULL,
+  data         TEXT,
+  created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_schedule_events ON schedule_events(workflow_id, id);
 `);
 
 db.exec(`

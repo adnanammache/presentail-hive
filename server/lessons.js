@@ -16,20 +16,25 @@ export const listLessons = (agentId) =>
     agentId,
   );
 
-export function addLesson(agentId, text, { source = 'manual', taskId = null, by = null } = {}) {
+export function addLesson(agentId, text, { source = 'manual', taskId = null, by = null, title = '', chatId = null, messageId = null } = {}) {
   const body = String(text ?? '').trim().slice(0, 1000);
   if (!body) throw new Error('The lesson is empty');
   const agent = get('SELECT id, name FROM agents WHERE id = ?', agentId);
   if (!agent) throw new Error('Unknown agent');
   const dup = get('SELECT id FROM agent_lessons WHERE agent_id = ? AND lower(text) = lower(?) AND active = 1', agentId, body);
   if (dup) return get('SELECT * FROM agent_lessons WHERE id = ?', dup.id);
-  const id = Number(run('INSERT INTO agent_lessons (agent_id, text, source, task_id, created_by) VALUES (?, ?, ?, ?, ?)', agentId, body, source, taskId, by).lastInsertRowid);
+  const id = Number(
+    run(
+      'INSERT INTO agent_lessons (agent_id, text, source, task_id, created_by, title, chat_id, message_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      agentId, body, source, taskId, by, String(title ?? '').trim().slice(0, 120), chatId, messageId,
+    ).lastInsertRowid,
+  );
   logActivity(agentId, 'agent', `${agent.name} learned: ${body.slice(0, 140)}${by ? ` (from ${by})` : ''}`);
   emit('lesson', { agent_id: agentId });
   return get('SELECT * FROM agent_lessons WHERE id = ?', id);
 }
 
-export function updateLesson(id, { text, active }) {
+export function updateLesson(id, { text, active, title }) {
   const l = get('SELECT * FROM agent_lessons WHERE id = ?', id);
   if (!l) throw new Error('Lesson not found');
   if (text !== undefined) {
@@ -37,6 +42,7 @@ export function updateLesson(id, { text, active }) {
     run('UPDATE agent_lessons SET text = ? WHERE id = ?', String(text).trim().slice(0, 1000), id);
   }
   if (active !== undefined) run('UPDATE agent_lessons SET active = ? WHERE id = ?', active ? 1 : 0, id);
+  if (title !== undefined) run('UPDATE agent_lessons SET title = ? WHERE id = ?', String(title ?? '').trim().slice(0, 120), id);
   emit('lesson', { agent_id: l.agent_id });
   return get('SELECT * FROM agent_lessons WHERE id = ?', id);
 }
@@ -49,12 +55,12 @@ export function deleteLesson(id) {
 
 /** The block added to the agent's instructions (empty when it has no lessons). */
 export function lessonsBlock(agentId) {
-  const rows = all('SELECT text FROM agent_lessons WHERE agent_id = ? AND active = 1 ORDER BY id DESC LIMIT ?', agentId, MAX_IN_PROMPT).reverse();
+  const rows = all('SELECT title, text FROM agent_lessons WHERE agent_id = ? AND active = 1 ORDER BY id DESC LIMIT ?', agentId, MAX_IN_PROMPT).reverse();
   if (!rows.length) return '';
   return [
     '## Lessons from past corrections',
     'Presentail taught you these after earlier work. Always follow them; they override your skills where they differ.',
-    ...rows.map((r) => `- ${r.text.replace(/\n+/g, ' ')}`),
+    ...rows.map((r) => `- ${r.title ? `${r.title.replace(/\n+/g, ' ')}: ` : ''}${r.text.replace(/\n+/g, ' ')}`),
   ].join('\n');
 }
 
@@ -105,7 +111,8 @@ export function learnFromRun(r, input) {
   if (get('SELECT id FROM agent_lessons WHERE agent_id = ? AND lower(text) = lower(?) AND active = 1', r.agent_id, text)) return { text: 'That is already one of your lessons.' };
   const { user, name } = teacherOf(r);
   const trusted = canApproveFor(user, r.agent_id);
-  const lesson = addLesson(r.agent_id, text, { source: 'agent', taskId: r.task_id ?? null, by: name });
+  const chatId = r.kind === 'chat' ? get('SELECT id FROM chats WHERE agent_id = ? AND origin = ?', r.agent_id, r.origin ?? 'hive')?.id ?? null : null;
+  const lesson = addLesson(r.agent_id, text, { source: 'agent', taskId: r.task_id ?? null, by: name, chatId });
   if (!trusted) updateLesson(lesson.id, { active: false });
   return trusted
     ? { text: 'Saved. It is now one of your lessons, so it applies to every future chat and task.', note: `🧠 Saved as a lesson: “${text}”. Edit or remove it in the Lessons tab.` }

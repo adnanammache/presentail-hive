@@ -66,7 +66,13 @@ export default function Composer({ request, onClosed, onCreated }) {
       const d = request.defaults ?? {};
       if (hasContent(draft.data, draft.files)) {
         setValues({ ...BLANK, ...draft.data });
-        setNote(draft.data.project_id && d.project_id && String(draft.data.project_id) !== String(d.project_id) ? 'Restored your unsent draft. Discard it to start a new task here.' : 'Restored your unsent draft.');
+        setNote(
+          d.source_message_id
+            ? 'Restored your unsent draft. Discard it, then use “Create task” on the message again to start from it.'
+            : draft.data.project_id && d.project_id && String(draft.data.project_id) !== String(d.project_id)
+              ? 'Restored your unsent draft. Discard it to start a new task here.'
+              : 'Restored your unsent draft.',
+        );
         setSave({ state: 'saved' });
       } else {
         const preset = {
@@ -78,6 +84,10 @@ export default function Composer({ request, onClosed, onCreated }) {
           ...(d.title ? { title: d.title } : {}),
           ...(d.description ? { description: d.description } : {}),
           ...(d.due_date ? { due_date: d.due_date } : {}),
+          // From a chat message: where it came from (kept on the task) and a link back.
+          ...(d.source_message_id ? { source_message_id: d.source_message_id } : {}),
+          ...(d.source_chat_id ? { source_chat_id: d.source_chat_id } : {}),
+          ...(d.links?.length ? { links: d.links } : {}),
           ...(d.close_item_id ? { close_item_id: d.close_item_id, period: d.period, files_hint: d.files_hint } : {}),
         };
         setValues(preset);
@@ -195,6 +205,8 @@ export default function Composer({ request, onClosed, onCreated }) {
       start: Boolean(start),
       ...scheduleBody(v),
       ...(v.close_item_id ? { close_item_id: v.close_item_id, period: v.period } : {}),
+      ...(v.source_message_id ? { source_message_id: v.source_message_id } : {}),
+      ...(v.source_chat_id ? { source_chat_id: v.source_chat_id } : {}),
     };
     try {
       const task = await api('/tasks', { method: 'POST', body });
