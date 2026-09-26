@@ -46,6 +46,8 @@ test('the brief covers each department, what waits on you, failures, today and s
 
   // Posted by the Chief of Staff in their inbox thread…
   const msg = get('SELECT * FROM messages WHERE agent_id = ? ORDER BY id DESC', cos);
+  assert.ok(msg.chat_id, 'in a conversation, so the chat shows it without waiting for a restart');
+  assert.equal(get('SELECT origin FROM chats WHERE id = ?', msg.chat_id).origin, 'hive');
   assert.match(msg.body, /^2 things waiting on you/);
   assert.match(msg.body, /Accounting: Careem July \(Ledger\)/);
   assert.equal(JSON.parse(msg.meta).brief_id, sent.id);
