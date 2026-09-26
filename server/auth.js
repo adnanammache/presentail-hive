@@ -7,9 +7,11 @@
 // Sessions are a signed cookie (HMAC-SHA256); no session store is needed.
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import express from 'express';
+import { acceptInvite, hasAccessRecord, inviteForToken, isDeactivated } from './people.js';
 
 const COOKIE = 'hive_session';
 const STATE_COOKIE = 'hive_oauth_state';
+const INVITE_COOKIE = 'hive_invite';
 const SESSION_DAYS = 30;
 
 const env = () => ({
@@ -62,12 +64,15 @@ function setCookie(req, res, name, value, maxAgeSec) {
 /** Exposed for tests. */
 export const createSessionToken = (user, days = SESSION_DAYS) => sign({ ...user, exp: Date.now() + days * 864e5 });
 
+/** Who may use Hive: the company domain, named emails, and invited people. Never a deactivated account. */
 export function isAllowed(email) {
   const { domains, emails } = env();
   const e = String(email || '').toLowerCase();
+  if (isDeactivated(e)) return false;
   if (emails.includes(e)) return true;
-  return domains.some((d) => e.endsWith('@' + d));
+  return domains.some((d) => e.endsWith('@' + d)) || hasAccessRecord(e);
 }
+const inDomain = (e) => env().domains.some((d) => e.endsWith('@' + d));
 
 const baseUrl = (req) => process.env.PUBLIC_URL?.replace(/\/$/, '') || `${req.protocol}://${req.get('host')}`;
 
@@ -79,6 +84,22 @@ export function authRouter() {
     if (authMode() !== 'google') return res.redirect('/');
     if (verify(readCookie(req, COOKIE))) return res.redirect('/');
     res.type('html').send(loginPage(req.query.error));
+  });
+
+  // An invitation link: remember it through Google sign-in, which proves the email.
+  r.get('/invite/:token', (req, res) => {
+    const invite = inviteForToken(req.params.token);
+    const problem = !invite
+      ? 'This invitation link is not valid. Ask for a new one.'
+      : invite.status === 'revoked'
+        ? 'This invitation was withdrawn. Ask for a new one.'
+        : invite.status === 'expired'
+          ? 'This invitation has expired. Ask for a new one.'
+          : null;
+    if (problem) return res.redirect(`/login?error=${encodeURIComponent(problem)}`);
+    if (invite.status === 'accepted' || authMode() !== 'google') return res.redirect('/');
+    setCookie(req, res, INVITE_COOKIE, req.params.token, 86400);
+    res.redirect(`/auth/google?login_hint=${encodeURIComponent(invite.email)}`);
   });
 
   r.get('/auth/google', (req, res) => {
@@ -93,6 +114,7 @@ export function authRouter() {
       state,
       prompt: 'select_account',
     });
+    if (req.query.login_hint) params.set('login_hint', String(req.query.login_hint).slice(0, 200));
     // `hd` pre-selects the Workspace domain in Google's account chooser (a hint only; enforced below).
     if (env().domains.length === 1) params.set('hd', env().domains[0]);
     res.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params}`);
@@ -128,13 +150,23 @@ export function authRouter() {
       const user = await infoRes.json();
 
       if (!user.email_verified) return fail('Your Google email is not verified.');
-      if (!isAllowed(user.email)) return fail(`${user.email} is not allowed to access Presentail Hive.`);
+      const email = user.email.toLowerCase();
       // Domain sign-ins must come from the company's Google Workspace (the hd claim), not a personal
       // Google account that happens to be registered with a company address.
       const { emails, domains } = env();
-      if (!emails.includes(user.email.toLowerCase()) && !domains.includes(String(user.hd || '').toLowerCase())) {
+      if (inDomain(email) && !emails.includes(email) && !domains.includes(String(user.hd || '').toLowerCase())) {
         return fail('Please sign in with your Presentail Google Workspace account.');
       }
+      if (isDeactivated(email)) return fail('Your access to Presentail Hive has been turned off. Ask an owner.');
+      // Accept an invitation: the link's (which must be for this email), or any pending one for it.
+      const token = readCookie(req, INVITE_COOKIE);
+      setCookie(req, res, INVITE_COOKIE, '', 0);
+      try {
+        acceptInvite({ email, token: token || null, name: user.name });
+      } catch (err) {
+        return fail(err.message);
+      }
+      if (!isAllowed(email)) return fail(`${user.email} is not allowed to access Presentail Hive.`);
 
       const session = { email: user.email, name: user.name || user.email, picture: user.picture || '', exp: Date.now() + SESSION_DAYS * 864e5 };
       setCookie(req, res, COOKIE, sign(session), SESSION_DAYS * 86400);

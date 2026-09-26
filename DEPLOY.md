@@ -114,6 +114,21 @@ Work is shared by people and AI agents: **My tasks**, **All tasks** and **Projec
 - **Projects** are optional. Anyone signed in can see every project; its owner (or a workspace owner) edits, archives, deletes and manages members; members add tasks and reference files. Adding an agent to a project gives it no new system access and doesn't start it. Archiving keeps the tasks and their history; deleting a project keeps its tasks (without a project). Health ("On track") is only shown when the owner sets it.
 - **Drafts**: the composer saves your draft on the server as you type (only you see it); it's never a task until you submit.
 
+## People, teams and invitations
+
+- **Your profile**: click your name at the bottom left → **My profile**: photo (upload and crop, remove, or use your Google photo), display name, job title, about and timezone. Your email comes from Google and can't be changed. Nobody edits someone else's profile.
+- **Photos**: an uploaded photo wins; otherwise your Google photo; otherwise initials. Removing your photo keeps initials; signing in again never brings the Google photo back or replaces an upload. The same picture shows in the sidebar, Team & agents, pickers, tasks, comments, activity and projects.
+- **Teams hold people and AI agents.** People can be on several teams; an agent keeps its one team (moving it is an owner action, as before). A **team lead** can add and remove people on their own team, and nothing else: no workspace permissions, no roles, no invitations. Job titles grant nothing. Joining a team never starts an agent, assigns work or grants system or project access.
+- **Workspace roles** stay Owner / Approver / Member (Settings → People). Owners manage teams, leads, managers, roles, invitations and access. Hive always keeps at least one owner.
+- **Invitations** (owners): Team & agents → **Invite people**. The person joins when they sign in with Google using the invited email (outside addresses work only when invited). Links expire after 7 days; **Resend** makes a new link, **Revoke** cancels. Pending invitations aren't members and can't be given tasks.
+- **Turning off access** (Settings → People) keeps everyone's tasks, comments and history; the person can't sign in or be given new work, and Hive lists their open tasks to reassign.
+
+### Railway variables for invitation emails (optional)
+| Variable | What it does |
+|---|---|
+| `RESEND_API_KEY` | Sends invitation emails through [Resend](https://resend.com). Without it, Hive doesn't claim to send anything: it gives you the invitation link to share yourself. |
+| `MAIL_FROM` | The sender, e.g. `Presentail Hive <hive@presentail.com>` (the domain must be verified in Resend). |
+
 ### What the update migrates (automatically, once)
 - Stage "To do" becomes **Ready**.
 - "Blocked" tasks keep their reason as a blocker (*execution failed* if it said it couldn't start or run, otherwise *waiting for information*). Their stage becomes **In progress** if the task ever had a run, else **Ready**: the earlier stage wasn't recorded, so nothing else is guessed.

@@ -5,6 +5,7 @@ Presentail's hive of AI agents: see every agent, what it's working on, what's sc
 - **Dashboard**: what needs you (tasks waiting for review or blocked), upcoming scheduled runs, agent status and recent activity.
 - **Agents that do real work**: agents can run as Claude Managed Agents with Presentail's skills (`agent-skills/`), a private sandbox and approved integrations (Wafeq first). Tasks show the live run, approvals and cost. See DEPLOY.md.
 - **Agents**: one place for all your agents: Claude agents, Make scenarios, Replit apps, n8n flows, your own scripts, even people.
+- **People and teams**: profiles with photos, a Team & agents directory where teams hold people and AI agents together (with team leads), invitations, and access you can turn off without losing history.
 - **Tasks for people and agents**: My tasks, All tasks and Projects share one Board/List (Backlog → Ready → In progress → Needs review → Done), with blockers kept separate from the stage. A task has one assignee, a person or an AI agent; assigning never starts an agent (Create & start does). New tasks are written in a bottom-right composer that keeps your draft.
 - **Recurring workflows**: cron schedules with timezones (e.g. "Talabat month-end, 2nd of every month 09:00 Dubai"). Each run creates a task for the agent, sends it the instructions and records the run history.
 - **Inbox / chat**: a conversation thread with every agent. Claude agents reply live. Webhook agents can reply synchronously or later through the API.
@@ -39,6 +40,7 @@ APP_PASSWORD=choose-one ANTHROPIC_API_KEY=sk-ant-... npm start   # serves UI + A
 |---|---|
 | `ANTHROPIC_API_KEY` | Powers Claude agents: chat-only agents, and Claude Managed Agents that run tasks with skills and tools. |
 | `ODOO_API_KEY` (+ optional `ODOO_URL`, `ODOO_DB`) | Odoo for agents, executed by Hive with approvals. |
+| `RESEND_API_KEY`, `MAIL_FROM` | Optional: email invitations to new people (otherwise Hive gives you the link to share). |
 | `WAFEQ_API_KEY` | Wafeq integration for managed agents. Agents reach Wafeq through Hive: reads are live, writes are queued and approved as one batch. The key never leaves Hive. |
 | `DEFAULT_CLAUDE_MODEL` | Model used when an agent doesn't set one (default `claude-opus-5`). |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Turns on **Continue with Google** sign-in (see DEPLOY.md). |

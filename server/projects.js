@@ -11,6 +11,7 @@ import { DATA_DIR, all, get, run } from './db.js';
 import { emit } from './events.js';
 import { bad, cleanUrl, forbidden, notFound } from './http.js';
 import { canContribute, taskEvent } from './tasks.js';
+import { avatarUrl } from './people.js';
 
 const HEALTH = ['on_track', 'at_risk', 'off_track'];
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
@@ -28,13 +29,18 @@ function members(projectId) {
     `SELECT m.member_type AS type, m.member_ref AS ref,
        CASE m.member_type WHEN 'user' THEN COALESCE(u.name, m.member_ref) ELSE a.name END AS name,
        CASE m.member_type WHEN 'agent' THEN a.title ELSE u.role END AS detail,
-       a.color AS color, a.id AS agent_id
+       a.color AS color, a.id AS agent_id, u.email AS u_email, u.photo_source, u.photo_version AS u_photo_version, u.provider_photo
      FROM project_members m
      LEFT JOIN users u ON m.member_type = 'user' AND u.email = m.member_ref
      LEFT JOIN agents a ON m.member_type = 'agent' AND a.id = CAST(m.member_ref AS INTEGER)
      WHERE m.project_id = ? ORDER BY m.member_type DESC, name`,
     projectId,
-  ).filter((m) => m.name);
+  )
+    .filter((m) => m.name)
+    .map(({ u_email, photo_source, u_photo_version, provider_photo, ...m }) => ({
+      ...m,
+      avatar_url: m.type === 'user' ? avatarUrl({ email: u_email, photo_source, photo_version: u_photo_version, provider_photo }) : null,
+    }));
 }
 
 /** A project with what the directory and workspace show. Counts come from its tasks. */
@@ -82,7 +88,9 @@ function cleanMembers(list) {
   for (const m of list) {
     if (m?.type === 'user') {
       const email = String(m.ref ?? m.email ?? '').toLowerCase();
-      if (!get('SELECT 1 FROM users WHERE email = ?', email)) throw bad('A member is not in this workspace');
+      const u = get('SELECT status FROM users WHERE email = ?', email);
+      if (!u) throw bad('A member is not in this workspace');
+      if (u.status !== 'active') throw bad(`${email}'s access is turned off`);
       out.push(['user', email]);
     } else if (m?.type === 'agent') {
       const id = Number(m.ref ?? m.id);
@@ -112,7 +120,7 @@ function cleanFields(b, partial) {
   }
   if (b.owner_email !== undefined) {
     const email = String(b.owner_email ?? '').toLowerCase();
-    if (!get('SELECT 1 FROM users WHERE email = ?', email)) throw bad('The owner must be a person in this workspace');
+    if (!get("SELECT 1 FROM users WHERE email = ? AND status = 'active'", email)) throw bad('The owner must be an active person in this workspace');
     out.owner_email = email;
   }
   if (b.health !== undefined) {

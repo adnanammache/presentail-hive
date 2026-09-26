@@ -122,6 +122,21 @@ addColumn('messages', 'meta', 'TEXT');
 db.exec(`
 CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 
+-- Files and voice notes sent in an agent's chat. message_id is set once the message is sent.
+CREATE TABLE IF NOT EXISTS chat_files (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  agent_id    INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  message_id  INTEGER REFERENCES messages(id) ON DELETE SET NULL,
+  filename    TEXT NOT NULL,
+  path        TEXT NOT NULL,
+  size        INTEGER NOT NULL,
+  mime        TEXT,
+  voice       INTEGER NOT NULL DEFAULT 0,
+  anthropic_file_id TEXT,
+  created_by  TEXT,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS task_files (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   task_id     INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
@@ -623,3 +638,50 @@ addColumn('task_series', 'assignee_email', 'TEXT');
 addColumn('task_series', 'reviewer_email', 'TEXT');
 addColumn('task_series', 'created_by', 'TEXT');
 addColumn('task_series', 'auto_start', 'INTEGER NOT NULL DEFAULT 1'); // 0: the task was saved without starting, so repeats don't start either
+
+// ---------------------------------------------------------------- people: profiles, teams, invitations
+// A person's profile lives on their users row (one workspace). Workspace role (users.role), team
+// membership (team_members), team role (lead/member), job title and manager are separate things:
+// none of them grants another.
+addColumn('users', 'title', "TEXT NOT NULL DEFAULT ''"); // job title: descriptive only, grants nothing
+addColumn('users', 'bio', "TEXT NOT NULL DEFAULT ''");
+addColumn('users', 'timezone', 'TEXT');
+addColumn('users', 'photo_source', 'TEXT'); // NULL (account photo if any) | upload | provider | none (removed: initials)
+addColumn('users', 'photo_type', 'TEXT');
+addColumn('users', 'photo_version', 'INTEGER');
+addColumn('users', 'provider_photo', 'TEXT'); // the sign-in provider's picture, refreshed at sign-in
+addColumn('users', 'status', "TEXT NOT NULL DEFAULT 'active'"); // active | deactivated
+addColumn('users', 'deactivated_at', 'TEXT');
+addColumn('users', 'manager_email', 'TEXT'); // who they report to (optional)
+addColumn('users', 'profile_updated_at', 'TEXT');
+addColumn('task_events', 'actor_ref', 'TEXT'); // "user:<email>" or "agent:<id>", for avatars in history
+db.exec(`
+-- People on teams (many-to-many). Agents keep their one team in agents.team_id.
+CREATE TABLE IF NOT EXISTS team_members (
+  team_id     INTEGER NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  user_email  TEXT NOT NULL,
+  role        TEXT NOT NULL DEFAULT 'member',   -- lead | member (a lead manages their team's people, nothing else)
+  added_by    TEXT,
+  added_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (team_id, user_email)
+);
+CREATE INDEX IF NOT EXISTS idx_team_members_user ON team_members(user_email);
+-- Invitations to join the workspace. The token is only stored hashed.
+CREATE TABLE IF NOT EXISTS invitations (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  email         TEXT NOT NULL,
+  role          TEXT NOT NULL DEFAULT 'member',
+  teams         TEXT NOT NULL DEFAULT '[]',     -- team ids to join on acceptance
+  title         TEXT NOT NULL DEFAULT '',
+  manager_email TEXT,
+  token_hash    TEXT NOT NULL,
+  status        TEXT NOT NULL DEFAULT 'pending', -- pending | accepted | revoked
+  invited_by    TEXT,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  expires_at    TEXT NOT NULL,
+  sent_at       TEXT,
+  send_error    TEXT,
+  accepted_at   TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_invitations_email ON invitations(email, status);
+`);

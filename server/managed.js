@@ -17,7 +17,8 @@ import { postMessage } from './dispatch.js';
 import { notifyRun, settleApprovalAlert } from './notify.js';
 import { TASK_TOOL, finishTask } from './handoff.js';
 import { AGENT_DM_TOOL, askAgent } from './conversations.js';
-import { lessonsBlock } from './lessons.js';
+import { LESSON_TOOL, learnFromRun, lessonsBlock } from './lessons.js';
+import { CHAT_DIR } from './chatFiles.js';
 import { briefExtras, readyStatus } from './taskSchedule.js';
 import { clearBlocker, setBlocker } from './tasks.js';
 import { formatDay } from './recurrence.js';
@@ -154,7 +155,8 @@ export function composeSystem(agent) {
     agent.system_prompt,
     '',
     '## How you work (Presentail Hive)',
-    '- Your work arrives as tasks from Presentail Hive. Files attached to a task are in /workspace/inputs/.',
+    '- Your work arrives as tasks from Presentail Hive. Files attached to a task are in /workspace/inputs/; files sent to you in a chat are in /workspace/inputs/chat/.',
+    '- A chat message that starts "(Voice note" was spoken and transcribed automatically: read past small transcription slips, and ask if a figure or name is unclear.',
     available.length
       ? `- Systems you can reach: ${available
           .map((k) =>
@@ -170,6 +172,7 @@ export function composeSystem(agent) {
     autonomous
       ? '- You are trusted to post without asking. Once your checks pass (a dry run, totals, duplicates), write to live systems (bills, invoices, payments, journal entries) straight away: do not stop for a go-ahead, even where a skill says to wait after the dry run. The one exception is a task that itself says it needs approval: then stop and ask as it describes. Otherwise stop only when something is genuinely wrong or missing.'
       : '- Before writing to any live system (bills, invoices, payments, journal entries, emails), do a dry run, show a short summary (counts, totals, anything unusual) and stop to ask for an explicit go-ahead. Only write after the user approves in this conversation.',
+    '- When the user tells you something lasting about your work (a deadline, a rule, which account to use, how they want things done), save it with `save_lesson` so you remember it next time, and say that you did.',
     '- Save files meant for the user in /mnt/session/outputs/.',
     '- End every turn with a brief summary: what you did, key totals, what is left, and exactly what you need from the user.',
     '- If something is missing (a file, access, a decision), say precisely what and stop rather than guessing.',
@@ -218,6 +221,7 @@ async function buildAgentConfig(agent) {
       ...(parseList(agent.integrations).includes('wafeq') ? [wafeqTool({ autonomous })] : []),
       TASK_TOOL,
       AGENT_DM_TOOL,
+      LESSON_TOOL,
     ],
     metadata: { hive_agent_id: String(agent.id) },
   };
@@ -364,7 +368,7 @@ export function startTaskRun(taskId, { note } = {}) {
  * Chat with a managed agent. Each conversation has its own session: Hive's chat is one, and every
  * Slack thread is another, so people never see each other's conversations or get each other's answers.
  */
-export async function chatWithManagedAgent(agentId, text, { origin = 'hive' } = {}) {
+export async function chatWithManagedAgent(agentId, text, { origin = 'hive', files = [] } = {}) {
   const agent = get('SELECT * FROM agents WHERE id = ?', agentId);
   const say = (msg) => postMessage(agentId, 'system', msg, { origin });
   let r = get("SELECT * FROM runs WHERE kind = 'chat' AND agent_id = ? AND COALESCE(origin, 'hive') = ? AND status NOT IN ('failed', 'ended') ORDER BY id DESC LIMIT 1", agentId, origin);
@@ -381,15 +385,28 @@ export async function chatWithManagedAgent(agentId, text, { origin = 'hive' } = 
       r = setRun(runId, { session_id: session.id, status: 'running' });
     }
     run('UPDATE runs SET auto_approve = 0 WHERE id = ?', r.id);
-    // Mark the run active before following: after an earlier turn it is "waiting", and follow()
-    // stops as soon as its history replay sees an inactive run, which would drop this reply until
-    // the next message replays it.
-    setRun(r.id, { status: 'running' });
+    // A chat that answered before is 'waiting': mark it running again, or the follower sees an
+    // idle session and stops listening before the reply to this message arrives.
+    if (r.status !== 'running') r = setRun(r.id, { status: 'running' });
+    if (files.length) text = `${text}\n\n${await mountChatFiles(r.session_id, files)}`.trim();
     await sendAndFollow(r.id, [{ type: 'user.message', content: [{ type: 'text', text }] }]);
   } catch (err) {
     if (r) setRun(r.id, { status: 'failed', error: err.message });
     say(`Could not reach ${agent.name}: ${err.message}`);
   }
+}
+
+/** Put files sent in the chat into the agent's running session. Returns the line telling it where they are. */
+async function mountChatFiles(sessionId, files) {
+  for (const f of files) {
+    if (!f.anthropic_file_id) {
+      const uploaded = await api().beta.files.upload({ file: await toFile(await readFile(f.path), f.filename) });
+      run('UPDATE chat_files SET anthropic_file_id = ? WHERE id = ?', uploaded.id, f.id);
+      f.anthropic_file_id = uploaded.id;
+    }
+    await api().beta.sessions.resources.add(sessionId, { type: 'file', file_id: f.anthropic_file_id, mount_path: `/workspace/${CHAT_DIR}/${f.filename}` });
+  }
+  return `Attached file${files.length === 1 ? '' : 's'} (in /workspace/${CHAT_DIR}/):\n${files.map((f) => `- ${f.filename}`).join('\n')}`;
 }
 
 /**
@@ -588,6 +605,13 @@ async function resolveToolCalls(runId, customIds, builtinPending) {
       results.push({ type: 'user.custom_tool_result', custom_tool_use_id: id, content: [{ type: 'text', text: reply.text }], ...(reply.is_error ? { is_error: true } : {}) });
       continue;
     }
+    if (call.name === 'save_lesson') {
+      const learned = learnFromRun(r, call.input);
+      if (learned.note && r.kind === 'chat') postMessage(r.agent_id, 'system', learned.note, { origin: r.origin ?? 'hive' });
+      if (learned.note && r.task_id) logActivity(r.agent_id, 'task', learned.note);
+      results.push({ type: 'user.custom_tool_result', custom_tool_use_id: id, content: [{ type: 'text', text: learned.text }], ...(learned.isError ? { is_error: true } : {}) });
+      continue;
+    }
     if (call.name === 'task_complete') {
       const reply = r.task_id ? await finishTask(r.task_id, call.input ?? {}) : 'There is no task in a chat. Just reply to the user.';
       results.push({ type: 'user.custom_tool_result', custom_tool_use_id: id, content: [{ type: 'text', text: reply }] });
@@ -714,6 +738,7 @@ function summarize(ev) {
     case 'agent.custom_tool_use':
       if (ev.name === 'task_complete') return { name: 'task_complete', detail: String(ev.input?.summary ?? '').slice(0, 600), kind: 'custom', input: ev.input ?? {} };
       if (ev.name === 'wafeq_plan') return { name: 'wafeq_plan', detail: `${ev.input?.action ?? ''}${ev.input?.reason ? `: ${ev.input.reason}` : ''}`, kind: 'custom', input: ev.input ?? {} };
+      if (ev.name === 'save_lesson') return { name: 'save_lesson', detail: String(ev.input?.lesson ?? '').slice(0, 600), kind: 'custom', input: ev.input ?? {} };
       if (ev.name === 'message_agent') return { name: 'message_agent', detail: `→ ${ev.input?.agent ?? '?'}: ${String(ev.input?.message ?? '').slice(0, 500)}`, kind: 'custom', input: ev.input ?? {} };
       return { name: ev.name, detail: ev.name === 'odoo' ? describeCall(ev.input || {}) : '', kind: ev.name === 'odoo' ? classify(ev.input?.model, ev.input?.method) : 'custom' };
     case 'user.custom_tool_result':

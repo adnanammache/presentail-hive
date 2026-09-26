@@ -1,5 +1,8 @@
 import { useEffect, useState } from 'react';
-import { ago, api, useApi } from '../api.js';
+import { ago, api, fmtDateTime, useApi } from '../api.js';
+import { PersonAvatar, usePeopleUI } from './work.jsx';
+import { InviteDialog } from '../pages/Agents.jsx';
+import { Icon } from './ui.jsx';
 
 const b64ToBytes = (s) => {
   const pad = '='.repeat((4 - (s.length % 4)) % 4);
@@ -252,52 +255,165 @@ const ROLE_HELP = {
 };
 
 /** Settings (owners): who uses Hive and what they may do. */
+/** Settings → People (owners): pending invitations, workspace roles, and turning access off or on. */
 export function PeopleSettings({ me }) {
-  const { data, reload } = useApi(me?.role === 'owner' ? '/users' : null, ['user']);
+  const isOwner = me?.role === 'owner';
+  const { data: people, reload } = useApi(isOwner ? '/people?all=1' : null, ['user']);
+  const { data: inv, reload: reloadInv } = useApi(isOwner ? '/invitations' : null, ['invite', 'user']);
   const { data: teams } = useApi('/teams', ['agent']);
+  const { data: users } = useApi(isOwner ? '/users' : null, ['user']);
   const [err, setErr] = useState('');
-  if (me?.role !== 'owner' || !data) return null;
-  const save = async (u, patch) => {
+  const [note, setNote] = useState(null); // { text, link?, tasks? }
+  const [inviting, setInviting] = useState(false);
+  const { openPerson } = usePeopleUI();
+  if (!isOwner || !people) return null;
+  const act = async (fn) => {
     setErr('');
     try {
-      await api(`/users/${encodeURIComponent(u.email)}`, { method: 'PATCH', body: patch });
+      const r = await fn();
       reload();
+      reloadInv();
+      return r;
     } catch (e) {
       setErr(e.message);
     }
   };
-  const toggleTeam = (u, id) => save(u, { teams: u.teams.includes(id) ? u.teams.filter((t) => t !== id) : [...u.teams, id] });
+  const approverTeams = (email) => users?.find((u) => u.email === email)?.teams ?? [];
+  const toggleTeam = (p, id) => {
+    const cur = approverTeams(p.email);
+    return act(() => api(`/users/${encodeURIComponent(p.email)}`, { method: 'PATCH', body: { teams: cur.includes(id) ? cur.filter((t) => t !== id) : [...cur, id] } }));
+  };
+  const pending = (inv?.invitations ?? []).filter((i) => ['pending', 'expired'].includes(i.status));
   return (
-    <section className="card settings-note">
-      <h2>People</h2>
-      <p className="muted">Everyone who has signed in to Hive. New people start as members.</p>
+    <section className="card settings-note people-admin">
+      <div className="settings-head">
+        <div>
+          <h2>People</h2>
+          <p className="muted small">Everyone with access to Hive. Teams are organised on Team &amp; agents.</p>
+        </div>
+        <button type="button" className="btn btn-primary" onClick={() => setInviting(true)}>
+          <Icon name="plus" size={15} /> Invite people
+        </button>
+      </div>
+      {inv && !inv.email_configured && (
+        <div className="small note-box">
+          <span>
+            Invitation emails are off: set <code>RESEND_API_KEY</code> and <code>MAIL_FROM</code> in Railway to send them. Until then Hive gives you the link to share yourself.
+          </span>
+        </div>
+      )}
+      {note && (
+        <div className="note-box small" role="status">
+          {note.text}
+          {note.link && (
+            <div className="field-pair">
+              <input readOnly value={note.link} aria-label="Invitation link" onFocus={(e) => e.target.select()} />
+              <button type="button" className="btn btn-sm" onClick={() => navigator.clipboard?.writeText(note.link)}>
+                Copy link
+              </button>
+            </div>
+          )}
+          {note.tasks?.length > 0 && (
+            <ul>
+              {note.tasks.map((t) => (
+                <li key={t.id}>
+                  <a href={`#/tasks/${t.id}`}>{t.title}</a>
+                </li>
+              ))}
+            </ul>
+          )}
+          <button type="button" className="link-btn" onClick={() => setNote(null)}>
+            Dismiss
+          </button>
+        </div>
+      )}
+      {pending.length > 0 && (
+        <>
+          <h3 className="sub-head">Pending invitations</h3>
+          <ul className="people">
+            {pending.map((i) => (
+              <li key={i.id}>
+                <div className="grow">
+                  <div className="row-title">
+                    {i.email} <span className={`type-tag ${i.status === 'expired' ? 'off' : 'person'}`}>{i.status === 'expired' ? 'Expired' : 'Pending'}</span>
+                  </div>
+                  <div className="row-sub">
+                    {i.role} · invited by {i.invited_by} {ago(i.created_at)} · {i.sent_at ? 'emailed' : i.send_error ? 'not emailed' : 'not emailed yet'}
+                    {i.status === 'pending' ? ` · expires ${fmtDateTime(i.expires_at)}` : ''}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={() =>
+                    act(() => api(`/invitations/${i.id}/resend`, { method: 'POST' })).then(
+                      (r) => r && setNote({ text: r.delivery.sent ? `Sent a new invitation to ${i.email}. The old link no longer works.` : `New link for ${i.email} (not emailed: ${r.delivery.error}). The old link no longer works.`, link: r.delivery.link }),
+                    )
+                  }
+                >
+                  Resend
+                </button>
+                <button type="button" className="btn btn-sm btn-danger-ghost" onClick={() => confirm(`Revoke the invitation for ${i.email}?`) && act(() => api(`/invitations/${i.id}`, { method: 'DELETE' }))}>
+                  Revoke
+                </button>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+      <h3 className="sub-head">Members</h3>
       <ul className="people">
-        {data.map((u) => (
-          <li key={u.email}>
+        {people.map((u) => (
+          <li key={u.email} className={u.status !== 'active' ? 'inactive' : ''}>
+            <PersonAvatar name={u.name} photo={u.avatar_url} size={32} />
             <div className="grow">
               <div className="row-title">
-                {u.name || u.email} {u.email === me.email && <span className="muted small">(you)</span>}
+                <button type="button" className="link-btn" onClick={(e) => openPerson(u.email, e.currentTarget)}>
+                  {u.name}
+                </button>{' '}
+                {u.email === me.email && <span className="muted small">(you)</span>}
+                {u.status !== 'active' && <span className="type-tag off">Access off</span>}
               </div>
               <div className="row-sub">
-                {u.email} · last seen {ago(u.last_seen_at)}
+                {u.email === 'admin@local' ? 'Local admin' : u.email} · last seen {ago(u.last_seen_at)}
+                {u.open_tasks > 0 ? ` · ${u.open_tasks} open task${u.open_tasks === 1 ? '' : 's'}` : ''}
               </div>
               {u.role === 'approver' && (
                 <div className="people-teams">
                   <span className="muted small">Approves for:</span>
                   {teams?.map((t) => (
-                    <button key={t.id} type="button" className={`chip ${u.teams.includes(t.id) ? 'on' : ''}`} onClick={() => toggleTeam(u, t.id)}>
+                    <button key={t.id} type="button" className={`chip ${approverTeams(u.email).includes(t.id) ? 'on' : ''}`} onClick={() => toggleTeam(u, t.id)}>
                       {t.name}
                     </button>
                   ))}
-                  {!u.teams.length && <span className="muted small">all departments</span>}
+                  {!approverTeams(u.email).length && <span className="muted small">all departments</span>}
                 </div>
               )}
             </div>
-            <select value={u.role} onChange={(e) => save(u, { role: e.target.value })} aria-label={`Role for ${u.name || u.email}`} title={ROLE_HELP[u.role]}>
+            <select value={u.role} disabled={u.status !== 'active'} onChange={(e) => act(() => api(`/users/${encodeURIComponent(u.email)}`, { method: 'PATCH', body: { role: e.target.value } }))} aria-label={`Role for ${u.name}`} title={ROLE_HELP[u.role]}>
               <option value="owner">Owner</option>
               <option value="approver">Approver</option>
               <option value="member">Member</option>
             </select>
+            {u.email !== me.email &&
+              (u.status === 'active' ? (
+                <button
+                  type="button"
+                  className="btn btn-sm btn-danger-ghost"
+                  onClick={() =>
+                    confirm(`Turn off ${u.name}'s access? They can't sign in or be given new work. Their tasks, comments and history stay.`) &&
+                    act(() => api(`/people/${encodeURIComponent(u.email)}/deactivate`, { method: 'POST' })).then(
+                      (r) => r && setNote({ text: r.needs_reassigning.length ? `${u.name}'s access is off. These open tasks are still assigned to them. Reassign them:` : `${u.name}'s access is off.`, tasks: r.needs_reassigning }),
+                    )
+                  }
+                >
+                  Turn off access
+                </button>
+              ) : (
+                <button type="button" className="btn btn-sm" onClick={() => act(() => api(`/people/${encodeURIComponent(u.email)}/reactivate`, { method: 'POST' }))}>
+                  Turn access on
+                </button>
+              ))}
           </li>
         ))}
       </ul>
@@ -309,6 +425,7 @@ export function PeopleSettings({ me }) {
           </li>
         ))}
       </ul>
+      {inviting && <InviteDialog onClose={() => (setInviting(false), reloadInv())} />}
     </section>
   );
 }
