@@ -160,7 +160,7 @@ function Favorites({ section, id }) {
 }
 
 function Shell() {
-  const [section = '', id, sub] = useHashRoute();
+  const [section = '', id, sub, param] = useHashRoute();
   const { data: meta } = useApi('/meta');
   const { data: me } = useApi('/me', ['user']);
   const { data: overview } = useApi('/overview', ['task']);
@@ -169,7 +169,7 @@ function Shell() {
   useEffect(() => setNavOpen(false), [section, id]);
 
   let page;
-  if (section === 'agents' && id) page = <AgentDetail key={id} id={id} meta={meta} />;
+  if (section === 'agents' && id) page = <AgentDetail key={id} id={id} meta={meta} tab={sub} param={param} />;
   else if (section === 'agents') page = <Agents />;
   else if (section === 'org') page = <OrgChart me={me} />;
   else if (section === 'map') page = <HiveMap />;
