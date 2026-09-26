@@ -6,6 +6,7 @@ import SpendCard from '../components/Spend.jsx';
 import SetupCard from '../components/SetupCard.jsx';
 import BriefCard from '../components/Brief.jsx';
 import { HealthBanner } from '../components/Notifications.jsx';
+import { MarkdownText } from '../components/Markdown.jsx';
 
 function Stat({ label, value, sub, tone, href }) {
   return (
@@ -108,7 +109,7 @@ export default function Dashboard() {
                   <Avatar name={a.name} color={a.color} size={32} status={a.status} />
                   <div className="grow">
                     <div className="row-title">{a.name}</div>
-                    <div className="row-sub clamp">{a.last_message ?? a.title}</div>
+                    <div className="row-sub clamp">{a.last_message ? <MarkdownText text={a.last_message} /> : a.title}</div>
                   </div>
                   <div className="right">
                     <Badge tone={agentTone[a.status]}>{a.status}</Badge>

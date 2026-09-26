@@ -27,15 +27,25 @@ function claude() {
 }
 export const claudeConfigured = () => Boolean(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN);
 
+// SQLite's "YYYY-MM-DD HH:MM:SS" (UTC) for a timestamp, or null if it isn't one.
+const sqlTime = (at) => {
+  const d = at ? new Date(at) : null;
+  return d && !Number.isNaN(d.getTime()) ? d.toISOString().replace('T', ' ').slice(0, 19) : null;
+};
+
 /**
  * Store a message in its conversation (meta.origin; the old shared thread when there's none). Open
  * dashboards are told only ids: the conversation may be private, so they fetch it if they may.
+ * `at`: when it was actually said (e.g. an agent reply picked up late), if not now.
  */
-export function postMessage(agentId, sender, body, meta = null) {
+export function postMessage(agentId, sender, body, meta = null, { at } = {}) {
   const chat = ensureChat(agentId, meta?.origin ?? 'hive', { createdBy: sender === 'user' ? meta?.email ?? null : null, title: sender === 'user' ? titleFrom(body) : '' });
-  const { lastInsertRowid } = run('INSERT INTO messages (agent_id, sender, body, meta, chat_id) VALUES (?, ?, ?, ?, ?)', agentId, sender, body, meta ? JSON.stringify(meta) : null, chat.id);
+  const { lastInsertRowid } = run(
+    "INSERT INTO messages (agent_id, sender, body, meta, chat_id, created_at) VALUES (?, ?, ?, ?, ?, COALESCE(?, datetime('now')))",
+    agentId, sender, body, meta ? JSON.stringify(meta) : null, chat.id, sqlTime(at),
+  );
   const message = get('SELECT * FROM messages WHERE id = ?', lastInsertRowid);
-  run('UPDATE chats SET last_message_at = ? WHERE id = ?', message.created_at, chat.id);
+  run("UPDATE chats SET last_message_at = MAX(COALESCE(last_message_at, ''), ?) WHERE id = ?", message.created_at, chat.id);
   if (sender === 'user' && !chat.title) run('UPDATE chats SET title = ? WHERE id = ?', titleFrom(body), chat.id);
   if (sender === 'agent') run("UPDATE agents SET last_seen_at = datetime('now') WHERE id = ?", agentId);
   broadcast('message', { agent_id: agentId, chat_id: chat.id, message_id: message.id, sender });

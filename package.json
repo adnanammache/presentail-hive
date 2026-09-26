@@ -12,7 +12,7 @@
     "build": "vite build",
     "start": "NODE_ENV=production node --disable-warning=ExperimentalWarning server/index.js",
     "seed": "node --disable-warning=ExperimentalWarning server/seed.js --force",
-    "test": "node --disable-warning=ExperimentalWarning --test server/*.test.js"
+    "test": "node --disable-warning=ExperimentalWarning --test server/*.test.js web/*.test.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.128.0",
@@ -27,6 +27,7 @@
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "react-markdown": "^10.1.0",
+    "remark-breaks": "^4.0.0",
     "remark-gfm": "^4.0.1",
     "vite": "^8.3.1"
   }

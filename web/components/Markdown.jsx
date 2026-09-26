@@ -1,32 +1,69 @@
-// Markdown for agent messages. Safe by construction: raw HTML is dropped (never rendered), and link
-// and image URLs go through react-markdown's default filter, which blocks javascript:, data: and other
-// unsafe protocols. Images show as links (no third-party requests from a message). Incomplete
-// Markdown while a message is still arriving just renders as text until it's complete.
+// Renders message text (agents' and people's) as GitHub-flavoured Markdown, at display time.
+// The stored text is never changed. Safe by construction: raw HTML is shown as text, links only
+// go to http(s)/mailto/tel or Hive's own pages, images are never loaded (shown as links), and
+// code blocks are only ever displayed.
 import { memo, useState } from 'react';
-import ReactMarkdown from 'react-markdown';
+import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
+import remarkBreaks from 'remark-breaks';
 import remarkGfm from 'remark-gfm';
-import { Icon } from './ui.jsx';
 
-function CodeBlock({ children, className }) {
+/** Only links a person can safely follow: web, email, phone and relative (Hive) links. */
+export function safeUrl(url) {
+  const u = defaultUrlTransform(String(url ?? '').trim()); // '' for javascript:, data:, vbscript: …
+  if (!u) return '';
+  if (/^[a-z][a-z\d+.-]*:/i.test(u) && !/^(https?|mailto|tel):/i.test(u)) return '';
+  return u;
+}
+
+const external = (href) => /^(https?:)?\/\//i.test(href);
+
+function Link({ href, children }) {
+  if (!href) return <span className="md-dead-link">{children}</span>;
+  return external(href) ? (
+    <a href={href} target="_blank" rel="noopener noreferrer nofollow">
+      {children}
+    </a>
+  ) : (
+    <a href={href}>{children}</a>
+  );
+}
+
+// Images in messages are never fetched (they could track readers or be anything): a link instead.
+function Image({ src, alt }) {
+  const label = `🖼 ${alt || 'image'}`;
+  return src ? <Link href={src}>{label}</Link> : <span>{label}</span>;
+}
+
+const textOf = (node) => (node?.type === 'text' ? node.value : (node?.children ?? []).map(textOf).join(''));
+
+function CopyButton({ text }) {
   const [copied, setCopied] = useState(false);
-  const text = String(children ?? '').replace(/\n$/, '');
-  const lang = /language-([\w+-]+)/.exec(className ?? '')?.[1];
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(text);
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch {
-      /* clipboard blocked: nothing to do */
+      setCopied(false);
     }
   };
   return (
+    <button type="button" className="md-copy" onClick={copy} aria-label="Copy code">
+      {copied ? 'Copied' : 'Copy'}
+    </button>
+  );
+}
+
+/** A fenced code block: its language, a copy button, and the code as plain text. */
+function CodeBlock({ node }) {
+  const code = node?.children?.find((c) => c.tagName === 'code');
+  const lang = (code?.properties?.className ?? []).find((c) => String(c).startsWith('language-'))?.slice(9);
+  const text = textOf(code ?? node).replace(/\n$/, '');
+  return (
     <div className="md-code">
-      <div className="md-code-bar">
-        <span>{lang ?? 'code'}</span>
-        <button type="button" className="md-copy" onClick={copy} aria-label="Copy code">
-          <Icon name={copied ? 'check' : 'copy'} size={13} /> {copied ? 'Copied' : 'Copy'}
-        </button>
+      <div className="md-code-head">
+        <span>{lang || 'code'}</span>
+        <CopyButton text={text} />
       </div>
       <pre>
         <code>{text}</code>
@@ -35,49 +72,48 @@ function CodeBlock({ children, className }) {
   );
 }
 
-const components = {
-  // Chat-sized headings.
-  h1: ({ children }) => <h3 className="md-h md-h1">{children}</h3>,
-  h2: ({ children }) => <h4 className="md-h md-h2">{children}</h4>,
-  h3: ({ children }) => <h5 className="md-h md-h3">{children}</h5>,
-  h4: ({ children }) => <h6 className="md-h md-h4">{children}</h6>,
-  h5: ({ children }) => <h6 className="md-h md-h4">{children}</h6>,
-  h6: ({ children }) => <h6 className="md-h md-h4">{children}</h6>,
-  a: ({ href, children }) =>
-    href ? (
-      <a href={href} target="_blank" rel="noopener noreferrer nofollow">
-        {children}
-      </a>
-    ) : (
-      <>{children}</>
-    ),
-  img: ({ src, alt }) =>
-    src ? (
-      <a href={src} target="_blank" rel="noopener noreferrer nofollow">
-        {alt || 'image'}
-      </a>
-    ) : null,
-  // Wide tables and code scroll inside the message, never the page.
-  table: ({ children }) => (
-    <div className="md-table">
-      <table>{children}</table>
-    </div>
-  ),
-  pre: ({ children }) => {
-    const code = children?.props;
-    return <CodeBlock className={code?.className}>{code?.children}</CodeBlock>;
-  },
-  code: ({ children, className }) => <code className={className ? `${className} md-inline` : 'md-inline'}>{children}</code>,
-  input: ({ checked, type }) => (type === 'checkbox' ? <input type="checkbox" checked={Boolean(checked)} readOnly disabled /> : null),
-};
+const Table = ({ node, ...props }) => (
+  <div className="md-table">
+    <table {...props} />
+  </div>
+);
 
-/** Render a message's Markdown. The stored text is never changed. */
-export default memo(function Markdown({ text }) {
+const COMPONENTS = { a: Link, img: Image, pre: CodeBlock, table: Table };
+
+// Raw HTML (e.g. "<b>", "<script>") is shown as the literal text the sender typed.
+const htmlAsText = () => (tree) => {
+  const walk = (node) => {
+    for (const child of node.children ?? []) {
+      if (child.type === 'html') Object.assign(child, { type: 'text' });
+      else walk(child);
+    }
+  };
+  walk(tree);
+};
+// remark-breaks: a single newline is a line break, as people expect in chat.
+const PLUGINS = [remarkGfm, remarkBreaks, htmlAsText];
+
+function Markdown({ text, className = '' }) {
   return (
-    <div className="md">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml components={components}>
+    <div className={className ? `md ${className}` : 'md'}>
+      <ReactMarkdown remarkPlugins={PLUGINS} components={COMPONENTS} urlTransform={safeUrl}>
         {String(text ?? '')}
       </ReactMarkdown>
     </div>
+  );
+}
+
+// Re-renders only when its own text changes, so a new message doesn't re-parse the whole thread.
+export default memo(Markdown);
+
+/**
+ * A message as plain text, for one-line previews (inbox, dashboard): the words without the
+ * Markdown marks, parsed the same way (so `a*b` and code keep their asterisks).
+ */
+export const MarkdownText = memo(function MarkdownText({ text }) {
+  return (
+    <ReactMarkdown remarkPlugins={[remarkGfm, htmlAsText]} allowedElements={[]} unwrapDisallowed>
+      {String(text ?? '')}
+    </ReactMarkdown>
   );
 });

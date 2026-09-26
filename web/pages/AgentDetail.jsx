@@ -15,6 +15,7 @@ import Capabilities from '../components/Capabilities.jsx';
 import WorkOverview from '../components/WorkOverview.jsx';
 import { TaskCard } from '../components/TaskViews.jsx';
 import { WorkflowList } from './Workflows.jsx';
+import Markdown from '../components/Markdown.jsx';
 
 const TABS = [
   ['chat', 'Chat'],
@@ -359,11 +360,11 @@ function Colleagues({ agent }) {
           <div className="dm-q">
             <b>{d.from_name}</b> → <b>{d.to_name}</b>
             <span className="muted small"> · {ago(d.created_at)}</span>
-            <p>{d.message}</p>
+            <Markdown text={d.message} />
           </div>
           <div className={`dm-a ${d.status}`}>
             <b>{d.to_name}</b>
-            {d.status === 'asked' ? <p className="muted">Thinking…</p> : <p>{d.reply}</p>}
+            {d.status === 'asked' ? <p className="muted">Thinking…</p> : <Markdown text={d.reply} className={d.status === 'failed' ? 'text-red' : ''} />}
           </div>
         </li>
       ))}
@@ -476,9 +477,8 @@ export default function AgentDetail({ id, meta, tab: routeTab, param }) {
   const [panelPref, setPanelPref] = usePref('workPanel', 'open');
   const [drawer, setDrawer] = useState(false);
 
-  useEffect(() => {
-    if (routeTab === 'colleagues') setAbout(true);
-  }, [routeTab]);
+  // The old Colleagues link opens About; going to another section closes it.
+  useEffect(() => setAbout(routeTab === 'colleagues'), [routeTab, param]);
   const tab = ALIASES[routeTab] ?? (TABS.some(([k]) => k === routeTab) ? routeTab : 'chat');
   const chatParam = tab === 'chat' && routeTab === 'chat' ? param : undefined;
   const selectedChat = chatParam === 'new' ? 'new' : chatParam ? Number(chatParam) : undefined;

@@ -699,6 +699,10 @@ export function dashboardRouter() {
   }));
   r.get('/chats/:id/activity', wrap((req) => chatActivity(visibleChat(req))));
 
+  // Whether the agent is still working on its old shared Hive chat (managed agents).
+  r.get('/agents/:id/chat-run', wrap((req) =>
+    get("SELECT id, status FROM runs WHERE kind = 'chat' AND agent_id = ? AND COALESCE(origin, 'hive') = 'hive' ORDER BY id DESC LIMIT 1", req.params.id) ?? { id: null, status: null },
+  ));
   // Before conversations: one thread per agent. Reads return the messages of the conversations this
   // person may see; writes go to the shared thread (or chat_id).
   r.get('/agents/:id/messages', wrap((req) =>

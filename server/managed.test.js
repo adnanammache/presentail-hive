@@ -144,3 +144,55 @@ test('runs refuse to start for agents that are not Claude Managed Agents', () =>
   const taskId = Number(run("INSERT INTO tasks (title, agent_id) VALUES ('x', ?)", agentId).lastInsertRowid);
   assert.throws(() => managed.startTaskRun(taskId), /not assigned to a Claude Managed Agent/);
 });
+
+test('a second chat message gets its reply live, not only when the next message is sent', async () => {
+  const fake = fakeAnthropic();
+  managed.setManagedClient(fake);
+  const agentId = Number(
+    run("INSERT INTO agents (name, title, platform, status, approval, api_token) VALUES ('Ziad', 'Tax Specialist', 'managed', 'idle', 'every_command', 'agt_chat')").lastInsertRowid,
+  );
+  const reply = (text) => () => [
+    { type: 'session.status_running' },
+    { type: 'agent.message', content: [{ type: 'text', text }] },
+    { type: 'session.status_idle', stop_reason: { type: 'end_turn' } },
+  ];
+  const agentSaid = (text) => get("SELECT id FROM messages WHERE agent_id = ? AND sender = 'agent' AND body = ?", agentId, text);
+
+  fake.script.push(reply('Hello!'));
+  await managed.chatWithManagedAgent(agentId, 'Hi');
+  await waitFor(() => agentSaid('Hello!'), 'first reply');
+  await waitFor(() => get("SELECT status FROM runs WHERE kind = 'chat' AND agent_id = ?", agentId)?.status === 'waiting', 'turn over');
+
+  // The chat's run is now "waiting". The next message must still be followed to its reply.
+  fake.script.push(reply('Recurring task created.'));
+  await managed.chatWithManagedAgent(agentId, 'Please make it recurring');
+  await waitFor(() => agentSaid('Recurring task created.'), 'second reply');
+});
+
+test('late-picked-up replies keep their time, and Stop re-attaches to a chat Hive lost track of', async () => {
+  const fake = fakeAnthropic();
+  managed.setManagedClient(fake);
+  const agentId = Number(
+    run("INSERT INTO agents (name, title, platform, status, approval, api_token) VALUES ('Nour', 'Auditor', 'managed', 'idle', 'every_command', 'agt_stop')").lastInsertRowid,
+  );
+  fake.script.push(() => [
+    { type: 'session.status_running' },
+    { type: 'agent.message', content: [{ type: 'text', text: 'Written earlier' }], processed_at: '2026-09-26T12:47:05.123Z' },
+    { type: 'session.status_idle', stop_reason: { type: 'end_turn' } },
+  ]);
+  await managed.chatWithManagedAgent(agentId, 'Hi');
+  const m = await waitFor(() => get("SELECT * FROM messages WHERE agent_id = ? AND sender = 'agent'", agentId), 'reply');
+  assert.equal(m.created_at, '2026-09-26 12:47:05');
+
+  // The stream was lost mid-turn: the run says "running" but nobody is listening.
+  const r = get("SELECT * FROM runs WHERE kind = 'chat' AND agent_id = ?", agentId);
+  run("UPDATE runs SET status = 'running' WHERE id = ?", r.id);
+  fake.script.push(() => [
+    { type: 'agent.message', content: [{ type: 'text', text: 'Stopped as asked.' }] },
+    { type: 'session.status_idle', stop_reason: { type: 'end_turn' } },
+  ]);
+  await managed.interruptRun(r.id);
+  assert.equal(fake.calls.sent.at(-1).events[0].type, 'user.interrupt');
+  await waitFor(() => get("SELECT id FROM messages WHERE agent_id = ? AND body = 'Stopped as asked.'", agentId), 'reply after stop');
+  await waitFor(() => get('SELECT status FROM runs WHERE id = ?', r.id).status === 'waiting', 'run settles');
+});

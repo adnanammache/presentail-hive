@@ -163,3 +163,12 @@ test('org chart layout: put someone at the top of a team, or move them to anothe
   assert.equal((await call('/org/layout', { method: 'PUT', body: { teams: [{ team_id: acc.id, ids: [karim.id, karim.id] }] } })).status, 400);
   assert.equal((await call('/org/layout', { method: 'PUT', body: { teams: [{ team_id: 99999, ids: [karim.id] }] } })).status, 400);
 });
+
+test("chat-run reports the agent's Hive chat run, ignoring Slack threads", async () => {
+  const { run } = await import('./db.js');
+  const { body: agent } = await newAgent({ name: 'Typist', platform: 'make' });
+  assert.deepEqual((await call(`/agents/${agent.id}/chat-run`)).body, { id: null, status: null });
+  const id = Number(run("INSERT INTO runs (kind, agent_id, status, origin) VALUES ('chat', ?, 'running', 'hive')", agent.id).lastInsertRowid);
+  run("INSERT INTO runs (kind, agent_id, status, origin) VALUES ('chat', ?, 'waiting', 'slack:C1:1.2')", agent.id);
+  assert.deepEqual((await call(`/agents/${agent.id}/chat-run`)).body, { id, status: 'running' });
+});
