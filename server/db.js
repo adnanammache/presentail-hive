@@ -208,6 +208,7 @@ CREATE INDEX IF NOT EXISTS idx_run_events_run ON run_events(run_id, id);
 addColumn('runs', 'auto_approve', 'INTEGER NOT NULL DEFAULT 0'); // "approve the rest of this run"
 addColumn('runs', 'slack_ts', 'TEXT'); // the approval alert in Slack, updated once someone decides
 addColumn('runs', 'origin', 'TEXT'); // chats: where the conversation lives ('hive', or 'slack:<channel>:<thread_ts>')
+addColumn('runs', 'agent_version', 'INTEGER'); // the agent version its session runs on (chats move to a new one when it changes)
 addColumn('agents', 'reviewer_id', 'INTEGER REFERENCES agents(id) ON DELETE SET NULL'); // default reviewer of this agent's work
 addColumn('tasks', 'handoff_agent_id', 'INTEGER REFERENCES agents(id) ON DELETE SET NULL'); // this task's reviewer, overriding the default
 addColumn('tasks', 'parent_task_id', 'INTEGER REFERENCES tasks(id) ON DELETE SET NULL'); // set on "Review: …" tasks
@@ -708,6 +709,81 @@ CREATE TABLE IF NOT EXISTS invitations (
 CREATE INDEX IF NOT EXISTS idx_invitations_email ON invitations(email, status);
 `);
 
+// ---------------------------------------------------------------- conversations with agents
+// A conversation (chat) is one thread with one agent. Its origin is where replies go: "chat:<id>" for
+// conversations started in Hive, "slack:<channel>:<ts>" for a Slack thread, "hive" for the single
+// thread every agent had before conversations existed. Each managed chat run is keyed by origin, so
+// every conversation has its own Claude session.
+//   visibility: private (whoever started it, plus workspace owners) | shared (everyone who can see
+//   the agent). Threads from before conversations existed were visible to everyone, so they stay shared.
+db.exec(`
+CREATE TABLE IF NOT EXISTS chats (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  agent_id        INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  origin          TEXT NOT NULL,
+  title           TEXT NOT NULL DEFAULT '',
+  visibility      TEXT NOT NULL DEFAULT 'private',
+  created_by      TEXT,
+  created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  last_message_at TEXT,
+  UNIQUE (agent_id, origin)
+);
+`);
+addColumn('messages', 'chat_id', 'INTEGER REFERENCES chats(id) ON DELETE CASCADE');
+addColumn('tasks', 'source_chat_id', 'INTEGER REFERENCES chats(id) ON DELETE SET NULL'); // the conversation a task was created from
+addColumn('tasks', 'source_message_id', 'INTEGER REFERENCES messages(id) ON DELETE SET NULL');
+addColumn('agent_lessons', 'title', "TEXT NOT NULL DEFAULT ''");
+addColumn('agent_lessons', 'chat_id', 'INTEGER REFERENCES chats(id) ON DELETE SET NULL');
+addColumn('agent_lessons', 'message_id', 'INTEGER REFERENCES messages(id) ON DELETE SET NULL');
+db.exec(`
+CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_id, id);
+CREATE INDEX IF NOT EXISTS idx_tasks_source_chat ON tasks(source_chat_id);
+`);
+
+/** Give every message from before conversations a conversation (idempotent: only rows without one). */
+export function migrateChats() {
+  const pending = () =>
+    db
+      .prepare(`SELECT agent_id, COALESCE(json_extract(meta, '$.origin'), 'hive') AS origin, MIN(id) AS first_id, MAX(created_at) AS last_at
+                FROM messages WHERE chat_id IS NULL GROUP BY agent_id, origin`)
+      .all();
+  if (!pending().length) return;
+  // Take the write lock up front: several processes can start at once, and a transaction that reads
+  // first and writes later fails with "database is locked" instead of waiting (busy_timeout).
+  // Re-read inside the lock, since another process may have done the work meanwhile.
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    migrateChatGroups(pending());
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+function migrateChatGroups(groups) {
+  for (const g of groups) {
+    const firstUser = db
+      .prepare(`SELECT body, meta FROM messages WHERE agent_id = ? AND sender = 'user' AND COALESCE(json_extract(meta, '$.origin'), 'hive') = ? ORDER BY id LIMIT 1`)
+      .get(g.agent_id, g.origin);
+    const firstLine = String(firstUser?.body ?? '').split('\n')[0].trim();
+    const title = (firstLine ? (firstLine.length > 60 ? `${firstLine.slice(0, 57)}…` : firstLine) : 'Earlier conversation').replace(/^/, g.origin.startsWith('slack:') ? 'Slack: ' : '');
+    let createdBy = null;
+    try {
+      createdBy = firstUser?.meta ? JSON.parse(firstUser.meta).email ?? null : null;
+    } catch {
+      /* old rows */
+    }
+    db.prepare(
+      `INSERT INTO chats (agent_id, origin, title, visibility, created_by, created_at, last_message_at) VALUES (?, ?, ?, 'shared', ?, (SELECT created_at FROM messages WHERE id = ?), ?)
+       ON CONFLICT(agent_id, origin) DO UPDATE SET last_message_at = MAX(COALESCE(chats.last_message_at, ''), excluded.last_message_at)`,
+    ).run(g.agent_id, g.origin, title, createdBy, g.first_id, g.last_at);
+    const chat = db.prepare('SELECT id FROM chats WHERE agent_id = ? AND origin = ?').get(g.agent_id, g.origin);
+    db.prepare(`UPDATE messages SET chat_id = ? WHERE agent_id = ? AND chat_id IS NULL AND COALESCE(json_extract(meta, '$.origin'), 'hive') = ?`).run(chat.id, g.agent_id, g.origin);
+  }
+}
+migrateChats();
+
 // ---------------------------------------------------------------- recurring schedules (see schedules.js)
 // A workflow is a recurring schedule: who gets the work (an agent or a person), when (a structured
 // rule in its own time zone), what each task says, and the policies for missed and overlapping runs.
@@ -789,3 +865,34 @@ CREATE TABLE IF NOT EXISTS schedule_events (
 );
 CREATE INDEX IF NOT EXISTS idx_schedule_events ON schedule_events(workflow_id, id);
 `);
+
+db.exec(`
+-- Each agent's own Slack app (a real bot user in Slack), created and installed by Hive.
+-- Secrets stay here and are never sent to the browser.
+CREATE TABLE IF NOT EXISTS agent_slack_apps (
+  agent_id        INTEGER PRIMARY KEY REFERENCES agents(id) ON DELETE CASCADE,
+  app_id          TEXT NOT NULL UNIQUE,
+  client_id       TEXT NOT NULL,
+  client_secret   TEXT NOT NULL,
+  signing_secret  TEXT NOT NULL,
+  bot_token       TEXT,                           -- set once someone installs it
+  bot_user_id     TEXT,
+  team_id         TEXT,
+  profile         TEXT,                           -- what Slack last got (name, title, photo), to know when to update
+  error           TEXT,                           -- the last thing that went wrong, in words
+  created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  installed_at    TEXT,
+  updated_at      TEXT
+);
+-- One-time install links (Slack sends people back here after "Allow").
+CREATE TABLE IF NOT EXISTS slack_oauth_states (
+  state       TEXT PRIMARY KEY,
+  agent_id    INTEGER NOT NULL,
+  user_email  TEXT NOT NULL,
+  next        TEXT NOT NULL DEFAULT '[]',         -- agents still to install after this one ("Install all")
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+`);
+// Which agent's own bot a Slack conversation lives in (NULL: the shared Hive app).
+addColumn('slack_threads', 'bot_agent_id', 'INTEGER');
+addColumn('agent_slack_apps', 'scopes', 'TEXT'); // the bot scopes Slack accepted for this app (asked for again at install)

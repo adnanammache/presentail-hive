@@ -30,20 +30,25 @@ export const listLessons = (agentId) =>
   );
 
 /** A lesson a person wrote: approved straight away. */
-export function addLesson(agentId, text, { source = 'manual', taskId = null, by = null } = {}) {
+export function addLesson(agentId, text, { source = 'manual', taskId = null, by = null, title = '', chatId = null, messageId = null } = {}) {
   const body = String(text ?? '').trim().slice(0, HUMAN_MAX_CHARS);
   if (!body) throw new Error('The lesson is empty');
   const agent = get('SELECT id, name FROM agents WHERE id = ?', agentId);
   if (!agent) throw new Error('Unknown agent');
   const dup = get("SELECT id FROM agent_lessons WHERE agent_id = ? AND lower(text) = lower(?) AND active = 1 AND status = 'approved'", agentId, body);
   if (dup) return byId(dup.id);
-  const id = Number(run('INSERT INTO agent_lessons (agent_id, text, source, task_id, created_by) VALUES (?, ?, ?, ?, ?)', agentId, body, source, taskId, by).lastInsertRowid);
+  const id = Number(
+    run(
+      'INSERT INTO agent_lessons (agent_id, text, source, task_id, created_by, title, chat_id, message_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      agentId, body, source, taskId, by, String(title ?? '').trim().slice(0, 120), chatId, messageId,
+    ).lastInsertRowid,
+  );
   logActivity(agentId, 'agent', `${agent.name} learned: ${body.slice(0, 140)}${by ? ` (from ${by})` : ''}`);
   emit('lesson', { agent_id: agentId });
   return byId(id);
 }
 
-export function updateLesson(id, { text, active }) {
+export function updateLesson(id, { text, active, title }) {
   const l = byId(id);
   if (!l) throw new Error('Lesson not found');
   if (text !== undefined) {
@@ -51,6 +56,7 @@ export function updateLesson(id, { text, active }) {
     run('UPDATE agent_lessons SET text = ? WHERE id = ?', String(text).trim().slice(0, HUMAN_MAX_CHARS), id);
   }
   if (active !== undefined) run('UPDATE agent_lessons SET active = ? WHERE id = ?', active ? 1 : 0, id);
+  if (title !== undefined) run('UPDATE agent_lessons SET title = ? WHERE id = ?', String(title ?? '').trim().slice(0, 120), id);
   emit('lesson', { agent_id: l.agent_id });
   return byId(id);
 }
@@ -115,9 +121,10 @@ export function setTrustLessons(agentId, trust) {
 // ---------------------------------------------------------------- what the agent is told
 
 const inPrompt = (agentId) =>
-  all("SELECT id, text FROM agent_lessons WHERE agent_id = ? AND active = 1 AND status = 'approved' ORDER BY id DESC LIMIT ?", agentId, MAX_IN_PROMPT).reverse();
+  all("SELECT id, title, text FROM agent_lessons WHERE agent_id = ? AND active = 1 AND status = 'approved' ORDER BY id DESC LIMIT ?", agentId, MAX_IN_PROMPT).reverse();
 
-const line = (l) => `- [#${l.id}] ${l.text.replace(/\n+/g, ' ')}`;
+// "- [#12] Title: text": the number lets the agent report which lessons it used; the title is a person's short name for it.
+const line = (l) => `- [#${l.id}] ${l.title ? `${l.title.replace(/\n+/g, ' ')}: ` : ''}${l.text.replace(/\n+/g, ' ')}`;
 
 /** The block added to the agent's instructions (empty when it has no lessons). Pending and rejected lessons never appear. */
 export function lessonsBlock(agentId) {
@@ -362,11 +369,12 @@ export async function proposeLesson(r, input) {
   }
 
   const trusted = Boolean(agent.trust_lessons);
+  const chatId = r.kind === 'chat' ? get('SELECT id FROM chats WHERE agent_id = ? AND origin = ?', r.agent_id, r.origin ?? 'hive')?.id ?? null : null;
   const id = Number(
     run(
-      `INSERT INTO agent_lessons (agent_id, text, source, task_id, run_id, created_by, reason, status, reviewed_by, reviewed_at)
-       VALUES (?, ?, 'agent', ?, ?, ?, ?, ?, ?, ${trusted ? "datetime('now')" : 'NULL'})`,
-      r.agent_id, text, r.task_id ?? null, r.id ?? null, agent.name, reason, trusted ? 'approved' : 'pending_approval', trusted ? 'Trusted (automatic)' : null,
+      `INSERT INTO agent_lessons (agent_id, text, source, task_id, run_id, chat_id, created_by, reason, status, reviewed_by, reviewed_at)
+       VALUES (?, ?, 'agent', ?, ?, ?, ?, ?, ?, ?, ${trusted ? "datetime('now')" : 'NULL'})`,
+      r.agent_id, text, r.task_id ?? null, r.id ?? null, chatId, agent.name, reason, trusted ? 'approved' : 'pending_approval', trusted ? 'Trusted (automatic)' : null,
     ).lastInsertRowid,
   );
   emit('lesson', { agent_id: r.agent_id });

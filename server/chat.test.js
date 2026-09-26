@@ -105,7 +105,7 @@ test('an agent proposes a lesson mid-chat; it waits for approval, then reaches t
     { type: 'session.status_idle', stop_reason: { type: 'requires_action', event_ids: [eid] } },
   ];
   const idle = () => [{ type: 'session.status_idle', stop_reason: { type: 'end_turn' } }];
-  const turn = async (n, what) => waitFor(() => get("SELECT status FROM runs WHERE agent_id = ? AND kind = 'chat'", id)?.status === 'waiting' && fake.calls.sent.length >= n, what);
+  const turn = async (n, what) => waitFor(() => get("SELECT status FROM runs WHERE agent_id = ? AND kind = 'chat' ORDER BY id DESC", id)?.status === 'waiting' && fake.calls.sent.length >= n, what);
   const toolReply = (i) => fake.calls.sent[i].events[0].content[0].text;
   const lastNote = () => get("SELECT body, meta FROM messages WHERE agent_id = ? AND sender = 'system' ORDER BY id DESC", id);
   const count = () => get('SELECT COUNT(*) AS n FROM agent_lessons WHERE agent_id = ?', id).n;
@@ -135,11 +135,16 @@ test('an agent proposes a lesson mid-chat; it waits for approval, then reaches t
   assert.equal((await post(`/lessons/${lesson.id}/approve`)).status, 200);
   assert.equal(get('SELECT status FROM agent_lessons WHERE id = ?', lesson.id).status, 'approved');
 
-  // The running chat started before the approval, so its next message carries the lesson (once).
+  // Approving changed the agent's instructions, so the chat continues in a fresh session that has
+  // the lesson in them (and isn't told it a second time).
+  const sessions = fake.calls.sessions.length;
   fake.script.push(idle);
   await say('ok, redo the revenue check');
   await turn(3, 'next message');
-  assert.match(toolReply(2), new RegExp(`^\\[Hive\\] New lessons were approved[\\s\\S]*\\[#${lesson.id}\\] UAE sales in Wafeq[\\s\\S]*ok, redo the revenue check$`));
+  assert.equal(fake.calls.sessions.length, sessions + 1, 'a new session');
+  assert.match(fake.calls.agentsUpdate.at(-1).system, new RegExp(`\\[#${lesson.id}\\] UAE sales in Wafeq`));
+  assert.match(toolReply(2), /ok, redo the revenue check$/);
+  assert.ok(!toolReply(2).includes('New lessons were approved'));
   fake.script.push(idle);
   await say('thanks');
   await turn(4, 'following message');

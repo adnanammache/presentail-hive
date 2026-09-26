@@ -203,3 +203,44 @@ test('late-picked-up replies keep their time, and Stop re-attaches to a chat Hiv
   await waitFor(() => get("SELECT id FROM messages WHERE agent_id = ? AND body = 'Stopped as asked.'", agentId), 'reply after stop');
   await waitFor(() => get('SELECT status FROM runs WHERE id = ?', r.id).status === 'waiting', 'run settles');
 });
+
+test('a chat moves to a fresh session, with the conversation so far, once its agent has changed', async () => {
+  const fake = fakeAnthropic();
+  managed.setManagedClient(fake);
+  const { sendToAgent } = await import('./dispatch.js');
+  const { addLesson } = await import('./lessons.js');
+  const agentId = Number(
+    run("INSERT INTO agents (name, title, platform, status, approval, api_token) VALUES ('Rami', 'Payroll', 'managed', 'idle', 'every_command', 'agt_ver')").lastInsertRowid,
+  );
+  const reply = (text) => () => [
+    { type: 'agent.message', content: [{ type: 'text', text }] },
+    { type: 'session.status_idle', stop_reason: { type: 'end_turn' } },
+  ];
+  const chat = () => get("SELECT * FROM runs WHERE kind = 'chat' AND agent_id = ? ORDER BY id DESC", agentId);
+  const turn = async (text, answer) => {
+    fake.script.push(reply(answer));
+    await sendToAgent(agentId, text);
+    await waitFor(() => get('SELECT id FROM messages WHERE agent_id = ? AND body = ?', agentId, answer), answer);
+    await waitFor(() => chat().status === 'waiting', 'turn over');
+  };
+
+  await turn('Payroll runs on the 25th', 'Noted.');
+  await turn('And bonuses?', 'Same day.');
+  assert.equal(fake.calls.sessions.length, 1, 'unchanged agent: same session');
+
+  // The agent changes (a new lesson is part of its instructions): the next message starts over.
+  addLesson(agentId, 'Payroll is paid in AED.', { source: 'test' });
+  const before = chat();
+  await turn('What currency?', 'AED.');
+  assert.equal(get('SELECT status FROM runs WHERE id = ?', before.id).status, 'ended');
+  assert.equal(fake.calls.sessions.length, 2);
+  assert.notEqual(chat().id, before.id);
+  assert.equal(chat().agent_version, 2);
+  const first = fake.calls.sent.at(-1).events[0].content[0].text;
+  assert.match(first, /^\[Hive: you have been updated[\s\S]*User: Payroll runs on the 25th\n\nYou: Noted\.\n\nUser: And bonuses\?\n\nYou: Same day\.\n\n\[New message:\]\nWhat currency\?$/);
+
+  // And it stays there while nothing changes.
+  await turn('Thanks', 'Welcome.');
+  assert.equal(fake.calls.sessions.length, 2);
+  assert.equal(fake.calls.sent.at(-1).events[0].content[0].text, 'Thanks');
+});

@@ -13,6 +13,7 @@ import { scheduleBackups } from './backup.js';
 import { scheduleHealthChecks } from './health.js';
 import { startTaskTicker } from './taskSchedule.js';
 import { agentAvatar } from './avatars.js';
+import { scheduleConfigRefresh } from './slackBots.js';
 
 const PORT = Number(process.env.PORT) || 3001;
 
@@ -73,5 +74,6 @@ startTaskTicker(); // scheduled starts, reminders and repeating tasks, every min
 scheduleBrief();
 scheduleBackups();
 scheduleHealthChecks();
+scheduleConfigRefresh(); // keeps the Slack connection for the agents' own bots alive
 resumeRuns();
 app.listen(PORT, () => console.log(`Presentail Hive listening on http://localhost:${PORT} (sign-in: ${authMode()})`));

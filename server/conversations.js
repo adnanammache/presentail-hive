@@ -1,6 +1,7 @@
 // Talking to agents in Slack, and agents talking to each other.
 //
-// People at Presentail DM the Hive app (or @mention it in a channel):
+// Each agent can have its own Slack bot (slackBots.js): DM it, @mention it or add it to a channel,
+// and that agent answers as itself. People can also DM the shared Hive app (or @mention it):
 //   "Ledger: can you do Careem for August?"   → a chat with Ledger, answered in the thread as Ledger
 //   the same with files attached              → a task for Ledger with those files, progress and
 //                                               approvals posted in the thread
@@ -17,8 +18,9 @@ import { emit, onEvent } from './events.js';
 import { logActivity } from './activity.js';
 import { isAllowed } from './auth.js';
 import { askClaude, dispatchTask, sendToAgent } from './dispatch.js';
-import { baseUrl, slackApi, slackConfigured } from './notify.js';
+import { baseUrl, postMessage, slackApi } from './notify.js';
 import { REMEMBER, addLesson } from './lessons.js';
+import { ensureChat } from './chatStore.js';
 import { canApproveFor, knownUser } from './roles.js';
 
 // ---------------------------------------------------------------- directory
@@ -53,18 +55,8 @@ export function directory() {
 
 export const avatarUrl = (agent) => `${baseUrl()}/avatars/${agent.id}.png?v=${encodeURIComponent(`${agent.photo_version ?? ''}${agent.color ?? ''}`)}`;
 
-/** Post in Slack under the agent's name and face (needs the chat:write.customize scope). */
-export function postAsAgent(agent, { channel, thread_ts, text, blocks }) {
-  return slackApi('chat.postMessage', {
-    channel,
-    thread_ts,
-    text: text.slice(0, 3900),
-    blocks,
-    username: agent ? `${agent.name} · ${agent.title || 'Agent'}`.slice(0, 80) : 'Presentail Hive',
-    icon_url: agent ? avatarUrl(agent) : undefined,
-    unfurl_links: false,
-  });
-}
+/** Post in Slack as the agent: from its own bot when it has one, else the Hive app under its name and face. */
+export const postAsAgent = (agent, opts) => postMessage(agent, opts);
 
 // Slack's markdown is not Markdown: bold is *x*, links are <url|text>. Agent text is escaped first,
 // so it can't @channel people or dress up a link; Markdown links are shown with their real address.
@@ -81,11 +73,12 @@ export const toSlack = (md) =>
 
 export const threadFor = (channel, ts) => get('SELECT * FROM slack_threads WHERE channel = ? AND thread_ts = ?', channel, ts);
 export const threadForTask = (taskId) => (taskId ? get('SELECT * FROM slack_threads WHERE task_id = ? ORDER BY created_at DESC LIMIT 1', taskId) : null);
-function remember(channel, ts, agentId, taskId = null) {
+function remember(channel, ts, agentId, taskId = null, botAgentId = null) {
   run(
-    `INSERT INTO slack_threads (channel, thread_ts, agent_id, task_id) VALUES (?, ?, ?, ?)
-     ON CONFLICT(channel, thread_ts) DO UPDATE SET agent_id = excluded.agent_id, task_id = COALESCE(excluded.task_id, slack_threads.task_id)`,
-    channel, ts, agentId, taskId,
+    `INSERT INTO slack_threads (channel, thread_ts, agent_id, task_id, bot_agent_id) VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(channel, thread_ts) DO UPDATE SET agent_id = excluded.agent_id, task_id = COALESCE(excluded.task_id, slack_threads.task_id),
+       bot_agent_id = COALESCE(slack_threads.bot_agent_id, excluded.bot_agent_id)`,
+    channel, ts, agentId, taskId, botAgentId,
   );
 }
 const lastAgentIn = (channel) => get('SELECT agent_id FROM slack_threads WHERE channel = ? ORDER BY created_at DESC, rowid DESC LIMIT 1', channel)?.agent_id;
@@ -93,11 +86,11 @@ const lastAgentIn = (channel) => get('SELECT agent_id FROM slack_threads WHERE c
 // ---------------------------------------------------------------- who is this?
 
 const people = new Map(); // slack user id → { ok, name, email, at }
-export async function slackPerson(userId) {
+export async function slackPerson(userId, { token } = {}) {
   const hit = people.get(userId);
   // Known people for 10 minutes; refusals only for 1, so fixing access takes effect quickly.
   if (hit && Date.now() - hit.at < (hit.ok ? 10 : 1) * 60 * 1000) return hit;
-  const res = await slackApi('users.info', { user: userId });
+  const res = await slackApi('users.info', { user: userId }, { token });
   const u = res?.user;
   const email = u?.profile?.email ?? '';
   const guest = Boolean(u?.is_restricted || u?.is_ultra_restricted || u?.is_stranger);
@@ -117,12 +110,12 @@ export const forgetPeople = () => people.clear(); // tests
 // ---------------------------------------------------------------- files
 
 const MAX_FILE = 50 * 1024 * 1024;
-async function downloadSlackFile(f) {
+async function downloadSlackFile(f, token) {
   const url = new URL(f.url_private_download || f.url_private || 'https://invalid.');
   // The bot token only ever goes to Slack's own file host.
   if (url.protocol !== 'https:' || !/^files(-[a-z]+)?\.slack\.com$/.test(url.hostname)) throw new Error(`${f.name} isn't a Slack file`);
   if (f.size > MAX_FILE) throw new Error(`${f.name} is larger than 50 MB`);
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }, redirect: 'error', signal: AbortSignal.timeout(60_000) });
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${token || process.env.SLACK_BOT_TOKEN}` }, redirect: 'error', signal: AbortSignal.timeout(60_000) });
   if (!res.ok) throw new Error(`Could not download ${f.name} from Slack (${res.status})`);
   // Without the files:read scope Slack answers with its login page instead of the file.
   if (/text\/html/.test(res.headers.get('content-type') || '') && !/\.html?$/i.test(f.name)) {
@@ -149,25 +142,36 @@ export function attachFile(taskId, filename, body) {
 const HELP = () =>
   `Start your message with an agent's name, e.g. *Ledger: can you do Careem for August?* Attach files to give them a task.\n\n${directory()}`;
 
-/** A Slack message from a person. `event` is Slack's message / app_mention event. */
-export async function handleSlackMessage(event) {
+/**
+ * A Slack message from a person. `event` is Slack's message / app_mention event. `bot` is the agent's
+ * own bot that received it (an agent_slack_apps row), or null for the shared Hive app.
+ */
+export async function handleSlackMessage(event, { bot = null } = {}) {
   const channel = event.channel;
-  const reply = (agent, text, extra = {}) => postAsAgent(agent, { channel, thread_ts: event.thread_ts || event.ts, text, ...extra });
-  const person = await slackPerson(event.user);
+  const thread = event.thread_ts ? threadFor(channel, event.thread_ts) : null;
+  // A reply goes out from the bot the conversation lives in (or the one that was just messaged).
+  const via = thread?.bot_agent_id ? null : bot;
+  const reply = (agent, text, extra = {}) => postAsAgent(agent, { channel, thread_ts: event.thread_ts || event.ts, text, bot: via, ...extra });
+  const person = await slackPerson(event.user, { token: bot?.bot_token });
   if (!person.ok) {
     if (person.why === 'no-email') return reply(null, "Hive can't see your email in Slack, so it can't check you're from Presentail. An admin needs to add the users:read.email scope to the Hive app and reinstall it.");
     return reply(null, 'Sorry, Hive only works with Presentail accounts.');
   }
 
   const text = String(event.text ?? '').replace(/<@[A-Z0-9]+>/g, '').trim();
-  const thread = event.thread_ts ? threadFor(channel, event.thread_ts) : null;
   let { agent, rest } = splitAddressee(text);
+  // Messaging an agent's own bot (a DM, or @mentioning it) always talks to that agent.
+  const direct = bot && (event.type === 'app_mention' || event.channel_type === 'im');
+  if (direct && agent?.id !== bot.agent_id) {
+    agent = get('SELECT * FROM agents WHERE id = ?', bot.agent_id);
+    rest = text;
+  }
   agent ??= thread ? get('SELECT * FROM agents WHERE id = ?', thread.agent_id) : null;
   if (!agent && event.channel_type === 'im') {
     const last = lastAgentIn(channel);
     if (last) agent = get('SELECT * FROM agents WHERE id = ?', last);
   }
-  if (!agent || /^(help|\?|who)$/i.test(text)) return reply(null, HELP());
+  if (!agent || (!direct && /^(help|\?|who)$/i.test(text))) return reply(null, HELP());
   if (agent.status === 'paused') return reply(agent, `I'm not set up yet, so I can't help with this. Ask in Hive: ${baseUrl()}/#/agents/${agent.id}`);
 
   // "Ledger: remember: Abu Dhabi fees go to 5104" → a lesson.
@@ -181,7 +185,8 @@ export async function handleSlackMessage(event) {
   }
 
   const ts = event.thread_ts || event.ts;
-  const via = { via: 'slack', channel, thread_ts: ts, user: person.name, email: person.email, by: String(person.email).toLowerCase() };
+  const botId = via?.agent_id ?? null; // the conversation belongs to this bot from now on
+  const origin = { via: 'slack', channel, thread_ts: ts, user: person.name, email: person.email, by: String(person.email).toLowerCase() };
   const files = (event.files ?? []).filter((f) => f.mode !== 'tombstone');
 
   // A reply in a task's thread continues that task.
@@ -205,15 +210,17 @@ export async function handleSlackMessage(event) {
     const taskId = Number(
       run("INSERT INTO tasks (title, description, status, priority, agent_id) VALUES (?, ?, 'ready', 'medium', ?)", firstLine, `${rest}\n\n(Sent by ${person.name} in Slack.)`.trim(), agent.id).lastInsertRowid,
     );
+    // The task belongs to this thread's conversation, so Hive shows it as that conversation's task.
+    run('UPDATE tasks SET source_chat_id = ? WHERE id = ?', ensureChat(agent.id, `slack:${channel}:${ts}`, { createdBy: person.email ?? null, title: firstLine }).id, taskId);
     const names = [];
     for (const f of files) {
       try {
-        names.push(attachFile(taskId, f.name, await downloadSlackFile(f)));
+        names.push(attachFile(taskId, f.name, await downloadSlackFile(f, bot?.bot_token)));
       } catch (err) {
         await reply(agent, `⚠️ ${err.message}`);
       }
     }
-    remember(channel, ts, agent.id, taskId);
+    remember(channel, ts, agent.id, taskId, botId);
     logActivity(agent.id, 'task', `${person.name} gave ${agent.name} a task in Slack: "${firstLine}"`);
     emit('task', { task_id: taskId });
     await reply(agent, `On it: task #${taskId} with ${names.length} file${names.length === 1 ? '' : 's'} (${names.join(', ')}). I'll post progress and anything that needs your approval here. ${baseUrl()}/#/tasks/${taskId}`);
@@ -222,13 +229,18 @@ export async function handleSlackMessage(event) {
   }
 
   // Otherwise: a conversation. The answer comes back through onAgentMessage below.
-  remember(channel, ts, agent.id);
-  await sendToAgent(agent.id, rest || text, via);
+  remember(channel, ts, agent.id, null, botId);
+  // In an agent's own bot, Slack shows "is thinking…" until the answer arrives.
+  const speaking = bot ?? (thread?.bot_agent_id ? { bot_token: get('SELECT bot_token FROM agent_slack_apps WHERE agent_id = ?', thread.bot_agent_id)?.bot_token } : null);
+  if (speaking?.bot_token && String(channel).startsWith('D')) {
+    slackApi('assistant.threads.setStatus', { channel_id: channel, thread_ts: ts, status: 'is thinking…' }, { token: speaking.bot_token }).catch(() => {});
+  }
+  await sendToAgent(agent.id, rest || text, origin);
 }
 
 // Forward an agent's chat reply to the Slack thread its conversation lives in.
 onEvent((type, data) => {
-  if (type !== 'message' || !data?.message || !process.env.SLACK_BOT_TOKEN) return;
+  if (type !== 'message' || !data?.message) return;
   const m = data.message;
   if (m.sender === 'user' || !m.meta) return;
   const meta = JSON.parse(m.meta);
@@ -261,7 +273,7 @@ export const AGENT_DM_TOOL = {
 
 async function mirror(from, to, message) {
   const channel = process.env.SLACK_AGENTS_CHANNEL;
-  if (!channel || !slackConfigured()) return null;
+  if (!channel) return null;
   const res = await postAsAgent(from, { channel, text: `*→ ${to.name}* (${to.title}): ${toSlack(message)}` });
   return res?.ok ? { channel, ts: res.ts } : null;
 }

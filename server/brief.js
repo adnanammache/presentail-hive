@@ -5,6 +5,7 @@
 import { Cron } from 'croner';
 import { all, get, run } from './db.js';
 import { emit } from './events.js';
+import { postMessage } from './dispatch.js';
 import { baseUrl, sendSlack } from './notify.js';
 import { nextRuns } from './scheduler.js';
 import { pushToAll } from './push.js';
@@ -203,8 +204,8 @@ export async function sendBrief({ trigger = 'schedule' } = {}) {
   const id = Number(run('INSERT INTO briefs (data, trigger) VALUES (?, ?)', JSON.stringify(b), trigger).lastInsertRowid);
   const { timezone } = briefConfig();
   if (cos) {
-    run("INSERT INTO messages (agent_id, sender, body, meta) VALUES (?, 'agent', ?, ?)", cos.id, `${b.headline}\n\n${renderBrief(b, { timezone })}`, JSON.stringify({ type: 'brief', brief_id: id }));
-    emit('message', { agent_id: cos.id });
+    // Through postMessage, so it lands in the Chief of Staff's conversation and shows there right away.
+    postMessage(cos.id, 'agent', `${b.headline}\n\n${renderBrief(b, { timezone })}`, { type: 'brief', brief_id: id });
   }
   emit('brief', { id });
   const from = cos ? `${cos.name}, ${cos.title}` : 'Hive';

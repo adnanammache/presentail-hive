@@ -12,6 +12,7 @@ import { canApproveFor, knownUser } from './roles.js';
 import { get, run } from './db.js';
 import { markVerified } from './setup.js';
 import { approveLesson, rejectLesson } from './lessons.js';
+import { appById, forgetInstall, signingSecrets } from './slackBots.js';
 
 export function approvers() {
   const list = (process.env.SLACK_APPROVERS || '').split(',').map((s) => s.trim()).filter(Boolean);
@@ -20,14 +21,15 @@ export function approvers() {
   return /^U[A-Z0-9]+$/.test(channel) ? [channel] : [];
 }
 
-export function verifySlack(rawBody, timestamp, signature, now = Date.now()) {
-  const secret = process.env.SLACK_SIGNING_SECRET;
-  if (!secret || !timestamp || !signature) return false;
+/** Signed by Slack for the Hive app or for one of the agents' own apps. */
+export function verifySlack(rawBody, timestamp, signature, now = Date.now(), secrets = signingSecrets()) {
+  if (!secrets.length || !timestamp || !signature) return false;
   if (Math.abs(now / 1000 - Number(timestamp)) > 60 * 5) return false; // replay protection
-  const expected = 'v0=' + createHmac('sha256', secret).update(`v0:${timestamp}:${rawBody}`).digest('hex');
-  const a = Buffer.from(expected);
   const b = Buffer.from(String(signature));
-  return a.length === b.length && timingSafeEqual(a, b);
+  return secrets.some((secret) => {
+    const a = Buffer.from('v0=' + createHmac('sha256', secret).update(`v0:${timestamp}:${rawBody}`).digest('hex'));
+    return a.length === b.length && timingSafeEqual(a, b);
+  });
 }
 
 async function reply(responseUrl, text) {
@@ -53,7 +55,8 @@ export async function handleAction(payload) {
   const [runId, ids] = String(action.value || '').split(':');
   // Allowed: members listed in SLACK_APPROVERS, or people whose Hive role lets them approve this agent.
   if (!approvers().includes(userId)) {
-    const person = await slackPerson(userId).catch(() => null);
+    const token = appById(payload.api_app_id)?.bot_token;
+    const person = await slackPerson(userId, { token }).catch(() => null);
     const agentId = get('SELECT agent_id FROM runs WHERE id = ?', Number(runId))?.agent_id;
     if (!person?.ok || !canApproveFor(knownUser(person.email), agentId)) {
       return "You can't approve this agent's actions. An owner can make you an approver in Hive (Settings → People).";
@@ -101,13 +104,17 @@ export async function handleEvent(payload) {
   if (payload.type !== 'event_callback' || !firstTime(payload.event_id)) return;
   markVerified('slack-events');
   const ev = payload.event ?? {};
+  // An agent's own bot (null: the shared Hive app, or an app Hive doesn't know).
+  const app = appById(payload.api_app_id);
+  if (app && ['app_uninstalled', 'tokens_revoked'].includes(ev.type)) return forgetInstall(app.app_id);
+  const bot = app?.bot_token ? app : null;
   if (ev.bot_id || ev.app_id || (ev.subtype && ev.subtype !== 'file_share') || !ev.user) return; // our own posts, edits, joins
   const isDm = ev.type === 'message' && ev.channel_type === 'im';
   const isMention = ev.type === 'app_mention';
   const inOurThread = ev.type === 'message' && ev.thread_ts && threadFor(ev.channel, ev.thread_ts);
   if (!isDm && !isMention && !inOurThread) return;
   if (!firstTime(`msg:${ev.channel}:${ev.ts}`)) return;
-  await handleSlackMessage(ev);
+  await handleSlackMessage(ev, { bot });
 }
 
 export function slackRouter() {
