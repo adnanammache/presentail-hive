@@ -18,7 +18,10 @@ export const BOT_SCOPES = [
   'channels:history', 'groups:history', 'im:history', 'im:read', 'im:write', 'mpim:history',
   'chat:write', 'chat:write.public', 'chat:write.customize',
   'files:read', 'users:read', 'users:read.email',
+  'reactions:write', // 👀 on your message while the agent works on its answer
 ];
+// Bumped when the app settings Hive gives Slack change, so every existing app is updated once.
+const MANIFEST_VERSION = 2;
 export const BOT_EVENTS = ['app_mention', 'message.im', 'message.channels', 'message.groups', 'message.mpim', 'assistant_thread_started', 'app_uninstalled', 'tokens_revoked'];
 
 const CONFIG = 'slack_config_token'; // app_meta: { refresh, token, exp, team_id }
@@ -47,9 +50,13 @@ async function slackForm(method, fields, file) {
     let json;
     try {
       res = await fetch(`https://slack.com/api/${method}`, { method: 'POST', body: build(), signal: AbortSignal.timeout(20000) });
-      json = await res.json();
     } catch (err) {
-      return { ok: false, error: err.message };
+      return { ok: false, error: `couldn't reach Slack (${err.message})` };
+    }
+    try {
+      json = await res.json();
+    } catch {
+      return { ok: false, error: `couldn't reach Slack (HTTP ${res.status})` };
     }
     const limited = res.status === 429 || json?.error === 'ratelimited';
     if (!limited || attempt >= 4) return json;
@@ -123,10 +130,22 @@ export async function configToken() {
   return (await rotating).token;
 }
 
-/** Keep the refresh token alive and current even when nobody changes anything for a while. */
+/**
+ * Keep the refresh token alive and current even when nobody changes anything for a while, and shortly
+ * after startup bring every app up to date (e.g. new permissions after an update of Hive).
+ */
 export function scheduleConfigRefresh() {
   const tick = () => connected() && configToken().catch((err) => console.error('[slack bots] token refresh:', err.message));
   setInterval(tick, 6 * 3600 * 1000).unref();
+  setTimeout(() => syncAll().catch((err) => console.error('[slack bots] update:', err.message)), 20_000).unref();
+}
+
+/** Update every agent's app whose settings are out of date, one after another. */
+export async function syncAll() {
+  if (!connected()) return;
+  for (const { agent_id } of all('SELECT agent_id FROM agent_slack_apps ORDER BY agent_id')) {
+    await syncApp(agent_id).catch((err) => noteError(agent_id, err.message));
+  }
 }
 
 // ---------------------------------------------------------------- the app, as Slack sees it
@@ -135,7 +154,7 @@ const clip = (s, n) => String(s ?? '').replace(/\s+/g, ' ').trim().slice(0, n);
 
 /** What Slack is told about the agent; when this changes, the app is updated. */
 function profileOf(agent) {
-  return JSON.stringify({ name: agent.name, title: agent.title, description: agent.description ?? '', color: agent.color ?? '', photo: agent.photo_version ?? '' });
+  return JSON.stringify({ v: MANIFEST_VERSION, name: agent.name, title: agent.title, description: agent.description ?? '', color: agent.color ?? '', photo: agent.photo_version ?? '' });
 }
 
 export function manifestFor(agent, base = origin()) {
@@ -280,7 +299,9 @@ export async function syncApp(agentId, { force = false } = {}) {
   const token = await configToken();
   const before = app.profile ? JSON.parse(app.profile) : {};
   let json;
+  let used;
   for (const manifest of fallbacks(manifestFor(agent))) {
+    used = manifest;
     json = await slackForm('apps.manifest.update', { token, app_id: app.app_id, manifest: JSON.stringify(manifest) });
     if (json.ok || !viewRejected(json)) break;
   }
@@ -288,6 +309,7 @@ export async function syncApp(agentId, { force = false } = {}) {
     noteError(agentId, explain(json));
     return { ok: false, error: explain(json) };
   }
+  run('UPDATE agent_slack_apps SET scopes = ? WHERE agent_id = ?', used.oauth_config.scopes.bot.join(','), agentId);
   let error = null;
   if (force || before.photo !== (agent.photo_version ?? '') || before.color !== (agent.color ?? '') || before.name !== agent.name) {
     const icon = await setIcon(app.app_id, agentId, token);
@@ -333,8 +355,18 @@ export function installUrl(agentId, email, next = []) {
   return `https://slack.com/oauth/v2/authorize?${q}`;
 }
 
-/** Agents whose bot is created but not installed yet. */
-export const notInstalled = () => all('SELECT agent_id FROM agent_slack_apps WHERE bot_token IS NULL ORDER BY agent_id').map((r) => r.agent_id);
+/** Permissions the app asks for that the workspace hasn't allowed yet (all of them before an install). */
+export function missingScopes(app) {
+  const wanted = (app?.scopes || BOT_SCOPES.join(',')).split(',');
+  if (!app?.bot_token || app.granted_scopes == null) return wanted;
+  const granted = app.granted_scopes.split(',');
+  return wanted.filter((s) => !granted.includes(s));
+}
+/** Installed, and allowed to do `scope`. */
+export const canDo = (app, scope) => Boolean(app?.bot_token && app.granted_scopes?.split(',').includes(scope));
+
+/** Agents whose bot needs someone to press Allow: not installed yet, or asking for new permissions. */
+export const notInstalled = () => all('SELECT * FROM agent_slack_apps ORDER BY agent_id').filter((a) => missingScopes(a).length).map((a) => a.agent_id);
 
 /**
  * Slack sent the person back after Allow (or Cancel). Saves the bot token.
@@ -352,16 +384,16 @@ export async function finishInstall({ state, code, error }, email) {
   if (!json.ok) throw new Error(explain(json));
   if (json.app_id && json.app_id !== app.app_id) throw new Error('Slack answered for a different app. Try again.');
   run(
-    "UPDATE agent_slack_apps SET bot_token = ?, bot_user_id = ?, team_id = ?, error = NULL, installed_at = datetime('now'), updated_at = datetime('now') WHERE agent_id = ?",
-    json.access_token, json.bot_user_id ?? null, json.team?.id ?? app.team_id, row.agent_id,
+    "UPDATE agent_slack_apps SET bot_token = ?, bot_user_id = ?, team_id = ?, granted_scopes = ?, error = NULL, installed_at = datetime('now'), updated_at = datetime('now') WHERE agent_id = ?",
+    json.access_token, json.bot_user_id ?? null, json.team?.id ?? app.team_id, json.scope ?? app.scopes ?? null, row.agent_id,
   );
-  const queue = JSON.parse(row.next || '[]').filter((id) => appFor(id) && !appFor(id).bot_token);
+  const queue = JSON.parse(row.next || '[]').filter((id) => appFor(id) && missingScopes(appFor(id)).length);
   return { agent_id: row.agent_id, next: queue.length ? installUrl(queue[0], email, queue.slice(1)) : null };
 }
 
 /** Slack told us the app was removed from the workspace, or its token revoked. */
 export function forgetInstall(appId) {
-  run("UPDATE agent_slack_apps SET bot_token = NULL, bot_user_id = NULL, installed_at = NULL, error = 'Removed from Slack. Install it again to bring it back.' WHERE app_id = ?", appId);
+  run("UPDATE agent_slack_apps SET bot_token = NULL, bot_user_id = NULL, granted_scopes = NULL, installed_at = NULL, error = 'Removed from Slack. Install it again to bring it back.' WHERE app_id = ?", appId);
 }
 
 // ---------------------------------------------------------------- what Settings and agent pages show
@@ -372,16 +404,18 @@ export const slackLink = (app) => (app?.bot_token ? `https://slack.com/app_redir
 export function status() {
   const c = readConfig();
   const agents = all(
-    `SELECT a.id, a.name, a.title, a.color, a.photo_version, a.status, s.app_id, s.team_id, s.bot_token IS NOT NULL AS installed, s.error, s.installed_at
+    `SELECT a.id, a.name, a.title, a.color, a.photo_version, a.status, s.app_id, s.team_id, s.bot_token IS NOT NULL AS installed, s.error, s.installed_at,
+       s.scopes, s.granted_scopes, s.bot_token IS NOT NULL AS has_token
      FROM agents a LEFT JOIN agent_slack_apps s ON s.agent_id = a.id ORDER BY a.name COLLATE NOCASE`,
-  ).map((a) => ({
+  ).map(({ scopes, granted_scopes, has_token, ...a }) => ({ ...a, outdated: Boolean(a.installed && missingScopes({ scopes, granted_scopes, bot_token: has_token }).length) })).map((a) => ({
     agent_id: a.id,
     name: a.name,
     title: a.title,
     color: a.color,
     photo_version: a.photo_version,
     agent_status: a.status,
-    state: !a.app_id ? 'none' : a.installed ? 'installed' : 'created',
+    // outdated: in Slack and working, but Hive now asks for a new permission, which needs one more Allow
+    state: !a.app_id ? 'none' : !a.installed ? 'created' : a.outdated ? 'outdated' : 'installed',
     error: a.error,
     installed_at: a.installed_at,
     slack_url: a.installed ? slackLink({ app_id: a.app_id, team_id: a.team_id, bot_token: true }) : null,
@@ -391,6 +425,6 @@ export function status() {
     team_id: c?.team_id ?? null,
     events_url: `${origin()}/slack/events`,
     agents,
-    counts: { total: agents.length, installed: agents.filter((a) => a.state === 'installed').length, created: agents.filter((a) => a.state !== 'none').length },
+    counts: { total: agents.length, installed: agents.filter((a) => a.state === 'installed' || a.state === 'outdated').length, created: agents.filter((a) => a.state !== 'none').length },
   };
 }

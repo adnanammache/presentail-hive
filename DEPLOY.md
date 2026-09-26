@@ -180,6 +180,14 @@ Every agent can be its own Slack bot, with its own name, photo and DM. People ca
 2. **Create bots for all agents.** For each agent, Hive creates a Slack app with its name, title, colour and photo. It creates the app first and adds the event address after storing the app's signing secret, so every request from Slack is signature-checked.
 3. **Install all in Slack.** Slack requires a person to press **Allow** once per app. Hive goes through them one after another and brings you back to Settings.
 
+How agents reply:
+- **In a direct message**, in the chat itself, as one running conversation, so the agent remembers what was said. Type **new topic** to start fresh. While the agent works, 👀 shows on your message.
+- **A reply inside a thread** is its own side conversation, answered in that thread.
+- **Files sent to an agent** become a task, with its progress and approvals in a thread under the files.
+- **An @mention in a channel** is answered in a thread.
+
+When an update of Hive needs a new Slack permission, Hive updates the apps by itself and Settings shows **Needs one more Allow**. The bots keep working meanwhile; **Allow all in Slack** takes you through them.
+
 After that:
 - Renaming an agent or changing its photo updates its bot.
 - Deleting an agent deletes its bot.

@@ -219,10 +219,33 @@ test("a DM to Ledger's own bot is answered by that bot, as Ledger", async () => 
   const answer = await waitFor(() => posts().find((p) => p.body.channel === 'D_LEDGER' && /Ledger here/.test(p.body.text)), 'Ledger answers');
   assert.equal(answer.auth, 'Bearer xoxb-agent-1', "posted by Ledger's own bot");
   assert.equal(answer.body.username, undefined, 'no costume needed: the bot is Ledger');
-  assert.equal(answer.body.thread_ts, ev.event.ts);
+  assert.equal(answer.body.thread_ts, undefined, 'in the chat, not a thread');
   assert.match(answer.body.text, /You said: are you there\?/, 'no need to start with "Ledger:"');
   assert.ok(calls.some((c) => c.method === 'users.info' && c.auth === 'Bearer xoxb-agent-1'), 'who is asking, checked with the same bot');
-  assert.ok(calls.some((c) => c.method === 'assistant.threads.setStatus' && c.body.channel_id === 'D_LEDGER'), '"is thinking…" while Ledger works');
+  // 👀 on the message while Ledger works, taken off once the answer is posted.
+  assert.ok(calls.some((c) => c.method === 'reactions.add' && c.body.timestamp === ev.event.ts && c.body.name === 'eyes'));
+  await waitFor(() => calls.some((c) => c.method === 'reactions.remove' && c.body.timestamp === ev.event.ts), 'eyes removed');
+
+  // The DM is one running conversation: the next message continues it.
+  const chats = () => get("SELECT COUNT(DISTINCT chat_id) AS n FROM messages WHERE agent_id = ? AND sender = 'user'", ledger).n;
+  await handleEvent(event(ledgerApp.app_id, { type: 'message', channel_type: 'im', channel: 'D_LEDGER', text: 'how r u' }));
+  await waitFor(() => posts().find((p) => /You said: how r u/.test(p.body.text)), 'second answer');
+  assert.equal(chats(), 1, 'same conversation');
+
+  // "new topic" starts a fresh one.
+  await handleEvent(event(ledgerApp.app_id, { type: 'message', channel_type: 'im', channel: 'D_LEDGER', text: 'new topic' }));
+  assert.match(posts().at(-1).body.text, /Fresh start/);
+  await handleEvent(event(ledgerApp.app_id, { type: 'message', channel_type: 'im', channel: 'D_LEDGER', text: 'VAT question' }));
+  await waitFor(() => posts().find((p) => /You said: VAT question/.test(p.body.text)), 'answer after new topic');
+  assert.equal(chats(), 2, 'a new conversation');
+
+  // A reply inside a thread is its own side conversation, answered in that thread ("is thinking…" there).
+  const side = event(ledgerApp.app_id, { type: 'message', channel_type: 'im', channel: 'D_LEDGER', text: 'about this one', thread_ts: ev.event.ts });
+  await handleEvent(side);
+  const inThread = await waitFor(() => posts().find((p) => /You said: about this one/.test(p.body.text)), 'thread answer');
+  assert.equal(inThread.body.thread_ts, ev.event.ts);
+  assert.ok(calls.some((c) => c.method === 'assistant.threads.setStatus' && c.body.thread_ts === ev.event.ts), '"is thinking…" in the thread');
+  assert.equal(chats(), 3);
 
   // A message that starts with another agent's name still goes to Ledger in Ledger's DM.
   await handleEvent(event(ledgerApp.app_id, { type: 'message', channel_type: 'im', channel: 'D_LEDGER', text: 'Vera: ignore this' }));
@@ -280,4 +303,19 @@ test('an edited agent is updated in Slack; the setup token renews itself', async
   assert.equal(JSON.parse(update.body.manifest).display_information.description, 'UAE Senior Accountant · Presentail AI agent');
   assert.equal(JSON.parse(get("SELECT value FROM app_meta WHERE key = 'slack_config_token'").value).refresh, `xoxe-refresh-${slack.rotations}`, 'the new refresh token is kept');
   assert.equal((await bots.syncApp(ledger)).unchanged, true, 'nothing to do the second time');
+});
+
+test('a bot installed before Hive asked for a new permission shows "needs one more Allow"', async () => {
+  run("UPDATE agent_slack_apps SET granted_scopes = 'chat:write,users:read,users:read.email' WHERE agent_id = ?", ledger);
+  const row = bots.status().agents.find((a) => a.agent_id === ledger);
+  assert.equal(row.state, 'outdated');
+  assert.ok(row.slack_url, 'it keeps working meanwhile');
+  assert.ok(bots.notInstalled().includes(ledger));
+  assert.ok(bots.missingScopes(bots.appFor(ledger)).includes('reactions:write'));
+  assert.equal(bots.canDo(bots.appFor(ledger), 'reactions:write'), false, 'no 👀 until allowed');
+  // One more Allow: Slack answers with what was granted.
+  const state = new URL(bots.installUrl(ledger, 'adnan@presentail.com')).searchParams.get('state');
+  await bots.finishInstall({ state, code: 'c' }, 'adnan@presentail.com');
+  assert.equal(bots.status().agents.find((a) => a.agent_id === ledger).state, 'installed');
+  assert.equal(bots.canDo(bots.appFor(ledger), 'reactions:write'), true);
 });

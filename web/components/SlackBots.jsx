@@ -8,6 +8,7 @@ const STATE = {
   none: { tone: 'neutral', label: 'Not in Slack' },
   created: { tone: 'amber', label: 'Waiting for install' },
   installed: { tone: 'green', label: 'In Slack' },
+  outdated: { tone: 'amber', label: 'Needs one more Allow' },
 };
 
 /** Slack sends people back to /?slack=installed (or ?slack_error=…); show it once, then tidy the address. */
@@ -54,7 +55,8 @@ export default function SlackBots() {
   if (!data) return null;
   const notice = msg ?? returned;
   const missing = data.agents.filter((a) => a.state === 'none').length;
-  const waiting = data.agents.filter((a) => a.state === 'created').length;
+  const waiting = data.agents.filter((a) => a.state === 'created' || a.state === 'outdated').length;
+  const onlyOutdated = waiting > 0 && data.agents.every((a) => a.state !== 'created');
 
   return (
     <section className="card settings-note slack-bots" aria-labelledby="slack-bots-title">
@@ -110,12 +112,15 @@ export default function SlackBots() {
             )}
             {waiting > 0 && (
               <button className="btn btn-primary" disabled={Boolean(busy)} onClick={() => install(null)}>
-                {waiting === 1 ? 'Install in Slack' : `Install all ${waiting} in Slack`}
+                {onlyOutdated ? (waiting === 1 ? 'Allow in Slack' : `Allow all ${waiting} in Slack`) : waiting === 1 ? 'Install in Slack' : `Install all ${waiting} in Slack`}
               </button>
             )}
           </div>
           {waiting > 0 && (
-            <p className="muted small">Slack asks you to press <b>Allow</b> once per agent. Hive takes you from one to the next and brings you back here at the end.</p>
+            <p className="muted small">
+              {onlyOutdated && 'The bots work as they are, but they need one new permission to show 👀 while they work on your message. '}
+              Slack asks you to press <b>Allow</b> once per agent. Hive takes you from one to the next and brings you back here at the end.
+            </p>
           )}
           <ul className="slack-bot-list">
             {data.agents.map((a) => {
@@ -139,9 +144,9 @@ export default function SlackBots() {
                         {busy === `create-${a.agent_id}` ? 'Creating…' : 'Create'}
                       </button>
                     )}
-                    {a.state === 'created' && (
+                    {(a.state === 'created' || a.state === 'outdated') && (
                       <button className="btn btn-sm" disabled={Boolean(busy)} onClick={() => install(a.agent_id)}>
-                        Install
+                        {a.state === 'outdated' ? 'Allow' : 'Install'}
                       </button>
                     )}
                     {a.slack_url && (

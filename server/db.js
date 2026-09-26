@@ -896,3 +896,16 @@ CREATE TABLE IF NOT EXISTS slack_oauth_states (
 // Which agent's own bot a Slack conversation lives in (NULL: the shared Hive app).
 addColumn('slack_threads', 'bot_agent_id', 'INTEGER');
 addColumn('agent_slack_apps', 'scopes', 'TEXT'); // the bot scopes Slack accepted for this app (asked for again at install)
+addColumn('agent_slack_apps', 'granted_scopes', 'TEXT'); // what the workspace allowed at install (Slack's answer)
+addColumn('slack_threads', 'pending_ts', 'TEXT'); // the message showing 👀 until the agent answers
+db.exec(`
+-- A direct message with an agent is one running conversation (replies in the chat, not threads) until
+-- someone says "new topic". topic is its key, "dm-<ts of its first message>", used as the thread key elsewhere.
+CREATE TABLE IF NOT EXISTS slack_dm_topics (
+  channel     TEXT NOT NULL,
+  agent_id    INTEGER NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  topic       TEXT NOT NULL,
+  updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (channel, agent_id)
+);
+`);

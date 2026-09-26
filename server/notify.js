@@ -64,6 +64,9 @@ const dressedAs = (agent) =>
 export const agentBot = (agentId) =>
   agentId ? get('SELECT agent_id, app_id, bot_token, bot_user_id, team_id FROM agent_slack_apps WHERE agent_id = ? AND bot_token IS NOT NULL', agentId) ?? null : null;
 
+/** A DM's running conversation (replies in the chat) rather than a Slack thread. */
+export const isDmTopic = (key) => String(key ?? '').startsWith('dm-');
+
 /** The bot a Slack conversation lives in: an agent's own bot, or null for the shared Hive app. */
 export function conversationBot(channel, thread_ts) {
   const row = thread_ts ? get('SELECT bot_agent_id FROM slack_threads WHERE channel = ? AND thread_ts = ?', channel, thread_ts) : null;
@@ -80,7 +83,8 @@ export function conversationBot(channel, thread_ts) {
  * Returns Slack's answer plus `bot_agent_id` (who posted), so the message can be updated later.
  */
 export async function postMessage(agent, { channel, thread_ts, text, blocks, bot } = {}) {
-  const body = { channel, thread_ts, text: String(text ?? '').slice(0, 3900), blocks, unfurl_links: false };
+  // A DM's running conversation is keyed "dm-<ts>" (see conversations.js): its messages go in the chat itself, not a thread.
+  const body = { channel, thread_ts: isDmTopic(thread_ts) ? undefined : thread_ts, text: String(text ?? '').slice(0, 3900), blocks, unfurl_links: false };
   const owner = bot ?? conversationBot(channel, thread_ts);
   const dm = String(channel).startsWith('D'); // only the bot in a DM can post in it
   const own = agent && !dm ? agentBot(agent.id) : null;

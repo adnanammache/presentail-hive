@@ -97,12 +97,12 @@ test('only Presentail people are served', async () => {
   assert.equal(get('SELECT COUNT(*) AS n FROM messages').n, 0);
 });
 
-test('a DM to an agent is answered in the thread, as the agent', async () => {
+test('a DM to an agent is answered in the chat, as the agent', async () => {
   const ev = dm('Ledger: are you there?');
   await handleEvent(ev);
   const answer = await waitFor(() => posts.find((p) => p.username?.startsWith('Ledger') && /Hi Adnan/.test(p.text)), 'Ledger answers');
   assert.equal(answer.channel, 'D_ADNAN');
-  assert.equal(answer.thread_ts, ev.event.ts);
+  assert.equal(answer.thread_ts, undefined, 'in the chat, not a thread');
   assert.equal(answer.username, 'Ledger · UAE Accountant');
   assert.match(answer.icon_url, new RegExp(`^https://hive.presentail.com/avatars/${ledger}\\.png`));
   assert.match(answer.text, /^\*Hi Adnan\*/, 'Markdown bold becomes Slack bold');
