@@ -75,6 +75,13 @@ const Bubble = memo(function Bubble({ m, agent }) {
   );
 });
 
+/** Add a message where it belongs in time: a reply picked up late sits where it was said. */
+export function addMessage(ms, m) {
+  if (!ms || ms.some((x) => x.id === m.id)) return ms;
+  const i = ms.findIndex((x) => x.created_at > m.created_at); // "YYYY-MM-DD HH:MM:SS" sorts as text
+  return i < 0 ? [...ms, m] : [...ms.slice(0, i), m, ...ms.slice(i)];
+}
+
 /** Upload one file for the chat; it is sent with the next message. */
 async function uploadChatFile(agentId, blob, name, voice = false) {
   const res = await fetch(`/api/agents/${agentId}/chat-files`, {
@@ -169,7 +176,7 @@ export default function Chat({ agent, claudeReady }) {
   // A managed agent's turn can span several messages (and tool calls between them): keep showing
   // it's typing until its chat run actually stops, not just until the first message arrives.
   const managed = agent.platform === 'managed';
-  const { data: chatRun } = useApi(managed ? `/agents/${agent.id}/chat-run` : null, ['run']);
+  const { data: chatRun, reload: reloadChatRun } = useApi(managed ? `/agents/${agent.id}/chat-run` : null);
   const working = managed && ['starting', 'running'].includes(chatRun?.status);
   const live = useContext(LiveContext);
   const [draft, setDraft] = useState('');
@@ -179,15 +186,26 @@ export default function Chat({ agent, claudeReady }) {
     if (!working) setStopping(false);
   }, [working]);
 
-  useEffect(
-    () =>
-      live?.on((e) => {
-        if (e.type !== 'message' || e.agent_id !== agent.id) return;
-        setData((ms) => (ms && !ms.some((m) => m.id === e.message.id) ? [...ms, e.message] : ms));
-        if (e.message.sender !== 'user') setWaiting(false);
-      }),
-    [live, agent.id, setData],
-  );
+  useEffect(() => {
+    let timer;
+    const off = live?.on((e) => {
+      if (e.agent_id !== agent.id) return;
+      // Only this agent's runs matter here, not every run in Hive (and a burst of tool calls is one check).
+      if (e.type === 'run') {
+        if (!managed) return;
+        clearTimeout(timer);
+        timer = setTimeout(reloadChatRun, 150);
+        return;
+      }
+      if (e.type !== 'message') return;
+      setData((ms) => addMessage(ms, e.message));
+      if (e.message.sender !== 'user') setWaiting(false);
+    });
+    return () => {
+      clearTimeout(timer);
+      off?.();
+    };
+  }, [live, agent.id, setData, managed, reloadChatRun]);
   // Follows new messages only while you're at the bottom; reading further up, you stay put.
   const typing = waiting || working;
   const scroll = useStickToBottom(messages ? `${messages.length}:${typing}` : null, agent.id);
@@ -210,7 +228,7 @@ export default function Chat({ agent, claudeReady }) {
 
   const post = async (body, fileIds = [], extra = {}) => {
     const m = await api(`/agents/${agent.id}/messages`, { method: 'POST', body: { body, file_ids: fileIds, ...extra } });
-    setData((ms) => (ms.some((x) => x.id === m.id) ? ms : [...ms, m]));
+    setData((ms) => addMessage(ms, m));
     if (willReply) setWaiting(true);
   };
 

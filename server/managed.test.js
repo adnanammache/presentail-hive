@@ -175,14 +175,21 @@ test('late-picked-up replies keep their time, and Stop re-attaches to a chat Hiv
   const agentId = Number(
     run("INSERT INTO agents (name, title, platform, status, approval, api_token) VALUES ('Nour', 'Auditor', 'managed', 'idle', 'every_command', 'agt_stop')").lastInsertRowid,
   );
+  const sql = (d) => d.toISOString().replace('T', ' ').slice(0, 19);
+  const earlier = new Date(Date.now() - 2 * 60 * 1000); // picked up two minutes late
+  const started = new Date(Math.floor(Date.now() / 1000) * 1000);
+  const justNow = new Date(started.getTime() - 2000); // live, but Anthropic's clock may differ from ours
   fake.script.push(() => [
     { type: 'session.status_running' },
-    { type: 'agent.message', content: [{ type: 'text', text: 'Written earlier' }], processed_at: '2026-09-26T12:47:05.123Z' },
+    { type: 'agent.message', content: [{ type: 'text', text: 'Written earlier' }], processed_at: earlier.toISOString() },
+    { type: 'agent.message', content: [{ type: 'text', text: 'Written live' }], processed_at: justNow.toISOString() },
     { type: 'session.status_idle', stop_reason: { type: 'end_turn' } },
   ]);
   await managed.chatWithManagedAgent(agentId, 'Hi');
-  const m = await waitFor(() => get("SELECT * FROM messages WHERE agent_id = ? AND sender = 'agent'", agentId), 'reply');
-  assert.equal(m.created_at, '2026-09-26 12:47:05');
+  const said = (body) => waitFor(() => get('SELECT * FROM messages WHERE agent_id = ? AND body = ?', agentId, body), body);
+  assert.equal((await said('Written earlier')).created_at, sql(earlier));
+  // Fresh replies get Hive's own time, so clock drift can't put an answer above its question.
+  assert.ok((await said('Written live')).created_at >= sql(started), 'stamped now, not 2 s ago');
 
   // The stream was lost mid-turn: the run says "running" but nobody is listening.
   const r = get("SELECT * FROM runs WHERE kind = 'chat' AND agent_id = ?", agentId);
