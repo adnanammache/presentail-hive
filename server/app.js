@@ -24,16 +24,18 @@ import { confirmTool, downloadOutput, interruptRun, managedReady, replyToRun, ru
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { finishRun, nextRuns, runWorkflow, schedule, unschedule, validateSchedule } from './scheduler.js';
+import { applyToFuture, cleanSchedule, spawnNext, startSeries } from './taskSchedule.js';
+import { describeRule, startReached } from './recurrence.js';
 
 const PLATFORMS = ['managed', 'claude', 'make', 'replit', 'n8n', 'custom', 'human'];
 const APPROVALS = ['agent_asks', 'every_command', 'autonomous'];
 const AGENT_STATUSES = ['active', 'idle', 'paused', 'error'];
-const TASK_STATUSES = ['backlog', 'todo', 'in_progress', 'review', 'done', 'blocked'];
+const TASK_STATUSES = ['scheduled', 'backlog', 'todo', 'in_progress', 'review', 'waiting_approval', 'done', 'blocked'];
 const PRIORITIES = ['low', 'medium', 'high', 'urgent'];
 const RUN_STATUSES = ['running', 'success', 'failed'];
 
 const AGENT_FIELDS = ['name', 'title', 'team_id', 'description', 'platform', 'status', 'model', 'system_prompt', 'webhook_url', 'color', 'skills', 'integrations', 'approval', 'reviewer_id', 'budget_cents'];
-const TASK_FIELDS = ['title', 'description', 'status', 'priority', 'agent_id', 'due_date', 'result', 'handoff_agent_id'];
+const TASK_FIELDS = ['title', 'description', 'status', 'priority', 'agent_id', 'due_date', 'result', 'handoff_agent_id', 'entity_id', 'done_definition', 'needs_approval', 'remind_days', 'start_on'];
 const TEAM_FIELDS = ['name', 'description', 'color', 'budget_cents'];
 const WORKFLOW_FIELDS = ['name', 'description', 'agent_id', 'schedule', 'timezone', 'instructions', 'enabled'];
 
@@ -56,29 +58,59 @@ const publicAgent = ({ api_token, ...a }) => a;
 const withNext = (wf) => ({ ...wf, enabled: Boolean(wf.enabled), next_run_at: wf.enabled ? nextRuns(wf.schedule, wf.timezone)[0] ?? null : null });
 
 function getTask(id) {
-  return get(
+  const task = get(
     `SELECT t.*, a.name AS agent_name, a.color AS agent_color, a.platform AS agent_platform, w.name AS workflow_name,
        COALESCE(t.handoff_agent_id, CASE WHEN t.parent_task_id IS NULL THEN a.reviewer_id END) AS reviewer_id,
-       rv.name AS reviewer_name, p.title AS parent_title, h.status AS handoff_status, ha.name AS handoff_agent_name
+       rv.name AS reviewer_name, p.title AS parent_title, h.status AS handoff_status, ha.name AS handoff_agent_name,
+       e.name AS entity_name, s.rule AS series_rule, s.ends_on AS series_ends_on, s.ended_at AS series_ended_at
      FROM tasks t LEFT JOIN agents a ON a.id = t.agent_id LEFT JOIN workflows w ON w.id = t.workflow_id
+     LEFT JOIN entities e ON e.id = t.entity_id LEFT JOIN task_series s ON s.id = t.series_id
      LEFT JOIN agents rv ON rv.id = COALESCE(t.handoff_agent_id, CASE WHEN t.parent_task_id IS NULL THEN a.reviewer_id END)
      LEFT JOIN tasks p ON p.id = t.parent_task_id
      LEFT JOIN tasks h ON h.id = t.handoff_task_id LEFT JOIN agents ha ON ha.id = h.agent_id
      WHERE t.id = ?`,
     id,
   );
+  return task && withRepeat(task);
+}
+
+function withRepeat(task) {
+  const rule = task.series_rule ? JSON.parse(task.series_rule) : null;
+  return { ...task, repeat: task.series_ended_at ? null : rule, repeat_label: rule && !task.series_ended_at ? describeRule(rule) : null };
 }
 
 /** Shared by the dashboard and the Agent API: apply a patch to a task, with side effects. */
-function patchTask(id, patch, actor) {
+function patchTask(id, patch, actor, { scope = 'this' } = {}) {
   const before = get('SELECT * FROM tasks WHERE id = ?', id);
   if (!before) throw notFound('Task');
   check(patch.status, TASK_STATUSES, 'status');
+  let sched;
+  try {
+    sched = cleanSchedule(patch);
+  } catch (err) {
+    throw bad(err.message);
+  }
+  Object.assign(patch, sched);
+  if (patch.needs_approval !== undefined) patch.needs_approval = patch.needs_approval ? 1 : 0;
+  // A new start date in the future puts a task that hasn't started back to Scheduled.
+  if (patch.start_on !== undefined && patch.status === undefined && ['scheduled', 'todo', 'backlog'].includes(before.status) && !get("SELECT id FROM runs WHERE task_id = ?", id))
+    patch.status = startReached(patch.start_on) ? (before.status === 'scheduled' ? 'todo' : before.status) : 'scheduled';
   check(patch.priority, PRIORITIES, 'priority');
   if (patch.agent_id !== undefined && patch.agent_id !== null && !get('SELECT id FROM agents WHERE id = ?', patch.agent_id)) throw bad('Unknown agent_id');
   if (patch.handoff_agent_id !== undefined && patch.handoff_agent_id !== null && !get('SELECT id FROM agents WHERE id = ?', patch.handoff_agent_id)) throw bad('Unknown reviewer');
   update('tasks', id, patch, TASK_FIELDS);
   run("UPDATE tasks SET updated_at = datetime('now') WHERE id = ?", id);
+  if ((patch.due_date !== undefined && patch.due_date !== before.due_date) || (patch.remind_days !== undefined && patch.remind_days !== before.remind_days))
+    run('UPDATE tasks SET reminded_at = NULL WHERE id = ?', id);
+
+  // Repeat: turn it on, change it for this and future ones, or stop it.
+  try {
+    if (!before.series_id && sched.repeat) startSeries(id, sched.repeat, { ends_on: sched.ends_on ?? null });
+    else if (before.series_id && (scope === 'future' || sched.repeat === null || sched.repeat || sched.ends_on !== undefined))
+      applyToFuture(id, { repeat: sched.repeat, ends_on: sched.ends_on });
+  } catch (err) {
+    throw bad(err.message);
+  }
 
   if (patch.status && patch.status !== before.status) {
     run(`UPDATE tasks SET completed_at = ${patch.status === 'done' ? "datetime('now')" : 'NULL'} WHERE id = ?`, id);
@@ -87,6 +119,8 @@ function patchTask(id, patch, actor) {
     const openRun = get("SELECT id FROM workflow_runs WHERE task_id = ? AND status = 'running'", id);
     if (openRun && patch.status === 'done') finishRun(openRun.id, 'success', patch.result ?? before.result);
     if (openRun && patch.status === 'blocked') finishRun(openRun.id, 'failed', patch.result ?? 'Task blocked');
+    // A repeating task is done: its next one is created now.
+    if (patch.status === 'done' && before.series_id) spawnNext(before.series_id);
   }
   emit('task', { task_id: id });
   return getTask(id);
@@ -99,22 +133,88 @@ function createTask(body, actor) {
   if (body.handoff_agent_id && !get('SELECT id FROM agents WHERE id = ?', body.handoff_agent_id)) throw bad('Unknown reviewer');
   if (body.close_item_id && !get('SELECT id FROM close_items WHERE id = ?', body.close_item_id)) throw bad('Unknown close item');
   if (body.period && !/^\d{4}-(0[1-9]|1[0-2])$/.test(body.period)) throw bad('period must be YYYY-MM');
+  let sched;
+  try {
+    sched = cleanSchedule(body);
+  } catch (err) {
+    throw bad(err.message);
+  }
+  if (sched.repeat && !sched.due_date) throw bad('Set a due date to make a task repeat');
+  if (sched.repeat && sched.ends_on && sched.ends_on < sched.due_date) throw bad('"Ends on" is before the first due date');
+  // A future start date (and not "Create & start now") waits in Scheduled.
+  const startOn = body.start_now ? null : sched.start_on ?? null;
+  const status = startOn && !startReached(startOn) ? 'scheduled' : body.status ?? 'todo';
   const { lastInsertRowid } = run(
-    'INSERT INTO tasks (title, description, status, priority, agent_id, due_date, handoff_agent_id, close_item_id, period) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    `INSERT INTO tasks (title, description, status, priority, agent_id, due_date, handoff_agent_id, close_item_id, period,
+       entity_id, done_definition, needs_approval, remind_days, start_on)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     body.title.trim(),
     body.description ?? '',
-    body.status ?? 'todo',
+    status,
     body.priority ?? 'medium',
     body.agent_id ?? null,
-    body.due_date ?? null,
+    sched.due_date ?? null,
     body.handoff_agent_id ?? null,
     body.close_item_id ?? null,
     body.close_item_id ? body.period ?? null : null,
+    sched.entity_id ?? null,
+    body.done_definition ?? '',
+    body.needs_approval ? 1 : 0,
+    sched.remind_days ?? null,
+    // Kept even for "start now", so a repeating task's later instances start as far ahead of their due date.
+    sched.start_on ?? null,
   );
   const id = Number(lastInsertRowid);
+  if (sched.repeat) startSeries(id, sched.repeat, { ends_on: sched.ends_on ?? null });
   logActivity(body.agent_id, 'task', `${actor} created task "${body.title.trim()}"`);
   emit('task', { task_id: id });
   return id;
+}
+
+/** Approve or send back a task that is waiting for approval, and tell the agent. */
+async function decideTask(req, approve) {
+  const t = get('SELECT * FROM tasks WHERE id = ?', req.params.id);
+  if (!t) throw notFound('Task');
+  if (!canApproveFor(req.hive, t.agent_id)) throw forbidden("You can't approve this agent's work. Ask an approver or an owner.");
+  if (t.status !== 'waiting_approval') throw bad('This task is not waiting for approval');
+  const note = String(req.body?.note ?? '').trim().slice(0, 4000);
+  if (!approve && !note) throw bad('Say what needs changing');
+  const by = req.hive?.name || req.user?.name || 'You';
+  run(
+    "UPDATE tasks SET status = 'in_progress', approved_at = ?, approved_by = ?, updated_at = datetime('now') WHERE id = ?",
+    approve ? new Date().toISOString() : null, approve ? by : null, t.id,
+  );
+  const text = approve
+    ? `${by} approved "${t.title}". Go ahead: submit, file or pay exactly what you prepared, nothing more. Then report back with the confirmation or reference numbers and call task_complete.${note ? `\n\nNote from ${by}: ${note}` : ''}`
+    : `${by} sent "${t.title}" back:\n${note}\n\nFix this, then stop again and ask for approval (call task_complete). Do not submit or pay anything yet.`;
+  logActivity(t.agent_id, 'task', `${by} ${approve ? 'approved' : 'sent back'} "${t.title}"`);
+  emit('task', { task_id: t.id });
+  try {
+    await resumeTaskAgent(t, text);
+  } catch (err) {
+    run("UPDATE tasks SET status = 'waiting_approval', approved_at = NULL, approved_by = NULL WHERE id = ?", t.id);
+    emit('task', { task_id: t.id });
+    throw bad(`Couldn't reach the agent: ${err.message}`);
+  }
+  return getTask(t.id);
+}
+
+/** Continue the agent's work on a task with a message: its run if it's still open, else a new run. */
+async function resumeTaskAgent(task, text) {
+  const agent = task.agent_id && get('SELECT * FROM agents WHERE id = ?', task.agent_id);
+  if (!agent) throw new Error('No agent is assigned');
+  if (agent.platform !== 'managed') return sendToAgent(agent.id, `[Task #${task.id}] ${text}`);
+  const last = get("SELECT id, status FROM runs WHERE task_id = ? AND kind = 'task' ORDER BY id DESC LIMIT 1", task.id);
+  if (last && !['failed', 'ended'].includes(last.status)) return replyToRun(last.id, text);
+  return startTaskRun(task.id, { note: text });
+}
+
+const TEMPLATE_FIELDS = ['name', 'title', 'description', 'done_definition', 'priority', 'agent_id', 'entity_id', 'start_offset_days', 'remind_days', 'needs_approval'];
+function listTemplates() {
+  return all(
+    `SELECT t.*, COALESCE(t.agent_id, (SELECT id FROM agents a WHERE a.name = t.agent_name)) AS agent_id
+     FROM task_templates t ORDER BY t.name COLLATE NOCASE`,
+  ).map((t) => ({ ...t, repeat: t.rule ? JSON.parse(t.rule) : null, needs_approval: Boolean(t.needs_approval) }));
 }
 
 // ---------- dashboard API ----------
@@ -124,6 +224,7 @@ const OWNER_ONLY = [
   ['post', '/teams'], ['patch', '/teams/:id'], ['delete', '/teams/:id'],
   ['post', '/agents'], ['patch', '/agents/:id'], ['delete', '/agents/:id'], ['post', '/agents/:id/photo'], ['delete', '/agents/:id/photo'], ['post', '/agents/:id/rotate-token'], ['post', '/agents/:id/sync'],
   ['post', '/workflows'], ['patch', '/workflows/:id'], ['delete', '/workflows/:id'],
+  ['post', '/entities'], ['put', '/org/layout'],
   ['post', '/close/items'], ['patch', '/close/items/:id'], ['delete', '/close/items/:id'],
   ['put', '/brief/config'], ['post', '/setup'],
   ['get', '/backups'], ['post', '/backups'], ['get', '/backups/:name'],
@@ -182,7 +283,7 @@ export function dashboardRouter() {
         agents_active: count("SELECT COUNT(*) n FROM agents WHERE status = 'active'"),
         agents_error: count("SELECT COUNT(*) n FROM agents WHERE status = 'error'"),
         tasks_open: count("SELECT COUNT(*) n FROM tasks WHERE status NOT IN ('done')"),
-        tasks_review: count("SELECT COUNT(*) n FROM tasks WHERE status = 'review'"),
+        tasks_review: count("SELECT COUNT(*) n FROM tasks WHERE status IN ('review', 'waiting_approval')"),
         tasks_blocked: count("SELECT COUNT(*) n FROM tasks WHERE status = 'blocked'"),
         tasks_done_week: count("SELECT COUNT(*) n FROM tasks WHERE status = 'done' AND completed_at >= datetime('now', '-7 days')"),
         workflows_enabled: workflows.length,
@@ -191,7 +292,7 @@ export function dashboardRouter() {
       upcoming: workflows.filter((w) => w.next_run_at).sort((a, b) => a.next_run_at.localeCompare(b.next_run_at)).slice(0, 6),
       attention: all(
         `SELECT t.*, a.name AS agent_name, a.color AS agent_color FROM tasks t LEFT JOIN agents a ON a.id = t.agent_id
-         WHERE t.status IN ('review', 'blocked') ORDER BY t.updated_at DESC LIMIT 8`,
+         WHERE t.status IN ('review', 'waiting_approval', 'blocked') ORDER BY t.updated_at DESC LIMIT 8`,
       ),
       runs: all(
         `SELECT r.*, w.name AS workflow_name FROM workflow_runs r JOIN workflows w ON w.id = r.workflow_id ORDER BY r.id DESC LIMIT 8`,
@@ -369,6 +470,25 @@ export function dashboardRouter() {
     update('agents', req.params.id, b, AGENT_FIELDS);
     emit('agent', { agent_id: Number(req.params.id) });
     return getAgent(req.params.id);
+  }));
+
+  // Org chart layout: each team's agents, top to bottom. Moving someone to another team changes their team.
+  r.put('/org/layout', wrap((req) => {
+    const columns = req.body?.teams;
+    if (!Array.isArray(columns)) throw bad('teams must be a list');
+    const seen = new Set();
+    for (const c of columns) {
+      if (c.team_id !== null) checkTeam(c.team_id);
+      if (!Array.isArray(c.ids)) throw bad('ids must be a list');
+      for (const id of c.ids) {
+        if (seen.has(Number(id))) throw bad('An agent appears twice');
+        seen.add(Number(id));
+        if (!get('SELECT id FROM agents WHERE id = ?', id)) throw bad('Unknown agent');
+      }
+    }
+    for (const c of columns) c.ids.forEach((id, i) => run('UPDATE agents SET team_id = ?, sort_order = ? WHERE id = ?', c.team_id, i, id));
+    emit('agent');
+    return { ok: true };
   }));
 
   r.post('/agents/:id/rotate-token', wrap((req) => {
@@ -590,32 +710,106 @@ export function dashboardRouter() {
 
   // Tasks
   r.get('/tasks', wrap((req) => {
-    const filters = { agent_id: 't.agent_id = ?', status: 't.status = ?', workflow_id: 't.workflow_id = ?' };
+    const filters = { agent_id: 't.agent_id = ?', status: 't.status = ?', workflow_id: 't.workflow_id = ?', entity_id: 't.entity_id = ?', series_id: 't.series_id = ?' };
     const keys = Object.keys(filters).filter((k) => req.query[k]);
     const where = keys.map((k) => filters[k]);
     const params = keys.map((k) => req.query[k]);
+    // "none" = tasks for all entities / not entity-specific
+    if (req.query.entity_id === 'none') {
+      where.splice(keys.indexOf('entity_id'), 1, 't.entity_id IS NULL');
+      params.splice(keys.indexOf('entity_id'), 1);
+    }
     return all(
-      `SELECT t.*, a.name AS agent_name, a.color AS agent_color, a.platform AS agent_platform, w.name AS workflow_name
+      `SELECT t.*, a.name AS agent_name, a.color AS agent_color, a.platform AS agent_platform, w.name AS workflow_name, e.name AS entity_name,
+         s.rule AS series_rule, s.ends_on AS series_ends_on, s.ended_at AS series_ended_at
        FROM tasks t LEFT JOIN agents a ON a.id = t.agent_id LEFT JOIN workflows w ON w.id = t.workflow_id
+       LEFT JOIN entities e ON e.id = t.entity_id LEFT JOIN task_series s ON s.id = t.series_id
        ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
        ORDER BY CASE t.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END, t.updated_at DESC
        LIMIT 500`,
       ...params,
-    );
+    ).map(withRepeat);
   }));
 
   r.post('/tasks', wrap(async (req) => {
-    const id = createTask(req.body, 'You');
-    if (req.body.agent_id && req.body.dispatch !== false) dispatchTask(id).catch(() => {});
-    return getTask(id);
+    const id = createTask(req.body, req.user?.name || 'You');
+    const task = getTask(id);
+    if (req.body.agent_id && req.body.dispatch !== false && task.status !== 'scheduled') dispatchTask(id).catch(() => {});
+    return task;
   }));
 
   r.patch('/tasks/:id', wrap((req) => {
     const before = get('SELECT agent_id FROM tasks WHERE id = ?', req.params.id);
-    const task = patchTask(Number(req.params.id), req.body, 'You');
-    if (req.body.agent_id && before && req.body.agent_id !== before.agent_id) dispatchTask(task.id).catch(() => {});
+    const { scope, ...patch } = req.body ?? {};
+    const task = patchTask(Number(req.params.id), patch, req.user?.name || 'You', { scope });
+    if (patch.agent_id && before && patch.agent_id !== before.agent_id && task.status !== 'scheduled') dispatchTask(task.id).catch(() => {});
     return task;
   }));
+
+  // Templates for the New task panel
+  r.get('/task-templates', wrap(() => listTemplates()));
+  r.post('/task-templates', wrap((req) => {
+    const b = req.body ?? {};
+    if (!b.name?.trim()) throw bad('Give the template a name');
+    check(b.priority, PRIORITIES, 'priority');
+    let sched;
+    try {
+      sched = cleanSchedule({ repeat: b.repeat ?? null, remind_days: b.remind_days ?? null, entity_id: b.entity_id ?? null });
+    } catch (err) {
+      throw bad(err.message);
+    }
+    const offset = b.start_offset_days === null || b.start_offset_days === undefined || b.start_offset_days === '' ? null : Number(b.start_offset_days);
+    if (offset !== null && (!Number.isInteger(offset) || offset < 0 || offset > 366)) throw bad('Start offset must be 0 to 366 days');
+    const values = {
+      name: b.name.trim().slice(0, 120), title: String(b.title ?? '').slice(0, 200), description: String(b.description ?? ''), done_definition: String(b.done_definition ?? ''),
+      priority: b.priority ?? 'medium', agent_id: b.agent_id ? Number(b.agent_id) : null, entity_id: sched.entity_id, start_offset_days: offset,
+      remind_days: sched.remind_days, needs_approval: b.needs_approval ? 1 : 0,
+    };
+    if (values.agent_id && !get('SELECT id FROM agents WHERE id = ?', values.agent_id)) throw bad('Unknown agent');
+    const id = Number(
+      run(
+        `INSERT INTO task_templates (${TEMPLATE_FIELDS.join(', ')}, rule) VALUES (${TEMPLATE_FIELDS.map(() => '?').join(', ')}, ?)`,
+        ...TEMPLATE_FIELDS.map((f) => values[f]), sched.repeat ? JSON.stringify(sched.repeat) : null,
+      ).lastInsertRowid,
+    );
+    emit('template');
+    return listTemplates().find((t) => t.id === id);
+  }));
+  r.delete('/task-templates/:id', wrap((req) => {
+    run('DELETE FROM task_templates WHERE id = ?', req.params.id);
+    emit('template');
+    return { ok: true };
+  }));
+
+  // Entities (companies) a task can be for
+  r.get('/entities', wrap(() => all('SELECT id, code, name FROM entities ORDER BY sort, id')));
+  r.post('/entities', wrap((req) => {
+    const name = String(req.body?.name ?? '').trim().slice(0, 120);
+    if (!name) throw bad('name is required');
+    if (get('SELECT id FROM entities WHERE name = ?', name)) throw bad('That entity already exists');
+    const code = name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 40) + '_' + Date.now().toString(36);
+    const sort = (get('SELECT MAX(sort) AS s FROM entities')?.s ?? 0) + 10;
+    const id = run('INSERT INTO entities (code, name, sort) VALUES (?, ?, ?)', code, name, sort).lastInsertRowid;
+    emit('entity');
+    return get('SELECT id, code, name FROM entities WHERE id = ?', id);
+  }));
+
+  // Due-date reminders (top of the Inbox)
+  r.get('/reminders', wrap(() =>
+    all(
+      `SELECT r.*, t.title, t.due_date, t.status FROM reminders r LEFT JOIN tasks t ON t.id = r.task_id
+       WHERE r.read_at IS NULL ORDER BY r.id DESC LIMIT 50`,
+    ),
+  ));
+  r.post('/reminders/:id/read', wrap((req) => {
+    run("UPDATE reminders SET read_at = datetime('now') WHERE id = ?", req.params.id);
+    emit('reminder');
+    return { ok: true };
+  }));
+
+  // Waiting for approval: approve (the agent goes ahead and submits) or send back with a note.
+  r.post('/tasks/:id/approve', wrap(async (req) => decideTask(req, true)));
+  r.post('/tasks/:id/send-back', wrap(async (req) => decideTask(req, false)));
 
   r.post('/tasks/:id/dispatch', wrap(async (req) => {
     if (!getTask(req.params.id)) throw notFound('Task');
@@ -635,6 +829,8 @@ export function dashboardRouter() {
   }));
 
   r.delete('/tasks/:id', wrap((req) => {
+    const t = get('SELECT series_id FROM tasks WHERE id = ?', req.params.id);
+    if (t?.series_id && req.query.stop_series) run("UPDATE task_series SET ended_at = datetime('now') WHERE id = ?", t.series_id);
     run('DELETE FROM tasks WHERE id = ?', req.params.id);
     emit('task');
     return { ok: true };
@@ -828,7 +1024,7 @@ export function agentRouter() {
     if (!task || task.agent_id !== req.agent.id) throw notFound('Task');
     const { status, result, description } = req.body;
     // An agent marking its work done goes through review first, if it has a reviewer (or is a review).
-    if (status === 'done' && (task.parent_task_id || (!task.handoff_task_id && reviewerFor(task)))) {
+    if (status === 'done' && (task.parent_task_id || (!task.handoff_task_id && reviewerFor(task)) || (task.needs_approval && !task.approved_at))) {
       if (description !== undefined) patchTask(task.id, { description }, req.agent.name);
       await finishTask(task.id, { summary: result ?? task.result });
       return getTask(task.id);

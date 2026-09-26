@@ -1,10 +1,13 @@
 import { useEffect, useState } from 'react';
-import { ago, api, toDate, useApi } from '../api.js';
+import { ago, api, dubaiToday, fmtDay, useApi } from '../api.js';
 import { Avatar, Badge, Icon, Loading, PageHeader, TASK_COLUMNS, priorityTone } from '../components/ui.jsx';
 import { TaskForm } from '../components/forms.jsx';
 
+/** "Presentail SAL (Lebanon)" → "Lebanon", "… – Dubai" → "Dubai": short enough for a card. */
+const entityShort = (name) => (/Dubai \+ Abu Dhabi/.test(name) ? 'UAE' : /\(([^)]+)\)\s*$/.exec(name)?.[1] ?? name.split(/\s[–-]\s/).pop());
+
 export function TaskCard({ task, onOpen, draggable }) {
-  const overdue = task.due_date && task.status !== 'done' && toDate(task.due_date + ' 23:59:59') < new Date();
+  const overdue = task.due_date && task.status !== 'done' && task.due_date < dubaiToday();
   return (
     <article
       className="task-card"
@@ -17,13 +20,29 @@ export function TaskCard({ task, onOpen, draggable }) {
       <footer className="task-meta">
         {task.agent_name ? <Avatar name={task.agent_name} color={task.agent_color} size={20} /> : <span className="muted small">Unassigned</span>}
         <Badge tone={priorityTone[task.priority]}>{task.priority}</Badge>
+        {task.series_id && (
+          <span className="muted small" title="Repeats">
+            <Icon name="repeat" size={13} />
+          </span>
+        )}
+        {task.entity_name && (
+          <span className="entity-tag" title={task.entity_name}>
+            {entityShort(task.entity_name)}
+          </span>
+        )}
         {task.workflow_name && (
           <span className="muted small" title={`From workflow ${task.workflow_name}`}>
             <Icon name="repeat" size={13} />
           </span>
         )}
         <span className="spacer" />
-        {task.due_date ? <span className={`small ${overdue ? 'text-red' : 'muted'}`}>due {task.due_date.slice(5)}</span> : <span className="muted small">{ago(task.updated_at)}</span>}
+        {task.status === 'scheduled' && task.start_on ? (
+          <span className="muted small">starts {fmtDay(task.start_on)}</span>
+        ) : task.due_date ? (
+          <span className={`small ${overdue ? 'text-red' : 'muted'}`}>due {fmtDay(task.due_date)}</span>
+        ) : (
+          <span className="muted small">{ago(task.updated_at)}</span>
+        )}
       </footer>
     </article>
   );
@@ -31,8 +50,11 @@ export function TaskCard({ task, onOpen, draggable }) {
 
 export default function Tasks({ openId }) {
   const [agentFilter, setAgentFilter] = useState('');
-  const { data: tasks, setData } = useApi(`/tasks${agentFilter ? `?agent_id=${agentFilter}` : ''}`, ['task']);
+  const [entityFilter, setEntityFilter] = useState('');
+  const query = new URLSearchParams({ ...(agentFilter ? { agent_id: agentFilter } : {}), ...(entityFilter ? { entity_id: entityFilter } : {}) }).toString();
+  const { data: tasks, setData } = useApi(`/tasks${query ? `?${query}` : ''}`, ['task']);
   const { data: agents } = useApi('/agents', ['agent']);
+  const { data: entities } = useApi('/entities', ['entity']);
   const [editing, setEditing] = useState(null);
   const [creating, setCreating] = useState(null);
   const [over, setOver] = useState(null);
@@ -64,7 +86,16 @@ export default function Tasks({ openId }) {
             </option>
           ))}
         </select>
-        <button className="btn btn-primary" onClick={() => setCreating({ agent_id: agentFilter })}>
+        <select value={entityFilter} onChange={(e) => setEntityFilter(e.target.value)} aria-label="Filter by entity">
+          <option value="">All entities</option>
+          {entities?.map((en) => (
+            <option key={en.id} value={en.id}>
+              {en.name}
+            </option>
+          ))}
+          <option value="none">Not entity-specific</option>
+        </select>
+        <button className="btn btn-primary" onClick={() => setCreating({ agent_id: agentFilter, ...(entityFilter && entityFilter !== 'none' ? { entity_id: entityFilter } : {}) })}>
           <Icon name="plus" size={16} /> New task
         </button>
       </PageHeader>

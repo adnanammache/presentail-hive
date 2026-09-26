@@ -11,6 +11,7 @@ import { wafeqGateway } from './wafeq.js';
 import { scheduleBrief } from './brief.js';
 import { scheduleBackups } from './backup.js';
 import { scheduleHealthChecks } from './health.js';
+import { startTaskTicker } from './taskSchedule.js';
 import { agentAvatar } from './avatars.js';
 
 const PORT = Number(process.env.PORT) || 3001;
@@ -68,6 +69,7 @@ if (existsSync(dist)) {
 
 seedIfEmpty();
 startScheduler();
+startTaskTicker(); // scheduled starts, reminders and repeating tasks, every minute (Dubai time)
 scheduleBrief();
 scheduleBackups();
 scheduleHealthChecks();

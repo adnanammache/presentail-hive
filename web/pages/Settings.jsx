@@ -46,6 +46,43 @@ function OdooLog() {
   );
 }
 
+/** The companies a task can be for (the Entity field and filter on Tasks). */
+function EntitySettings({ canEdit }) {
+  const { data: entities } = useApi('/entities', ['entity']);
+  const [name, setName] = useState('');
+  const [msg, setMsg] = useState('');
+  const add = async (e) => {
+    e.preventDefault();
+    setMsg('');
+    try {
+      await api('/entities', { method: 'POST', body: { name } });
+      setName('');
+    } catch (err) {
+      setMsg(err.message);
+    }
+  };
+  return (
+    <section className="card settings-note">
+      <h2>Entities</h2>
+      <p className="muted small">The companies a task can be for. The agent is told which one, and you can filter Tasks by it.</p>
+      <ul className="muted">
+        {entities?.map((en) => (
+          <li key={en.id}>{en.name}</li>
+        ))}
+      </ul>
+      {canEdit && (
+        <form onSubmit={add} className="field-pair">
+          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Presentail KSA" aria-label="New entity" />
+          <button className="btn" disabled={!name.trim()}>
+            Add entity
+          </button>
+        </form>
+      )}
+      {msg && <p className="small" style={{ color: 'var(--red)' }}>{msg}</p>}
+    </section>
+  );
+}
+
 export default function Settings() {
   const { data } = useApi('/settings');
   const { data: setup } = useApi('/setup', ['setup']);
@@ -129,6 +166,7 @@ export default function Settings() {
       <BriefSettings />
       {me?.role === 'owner' && <BackupSettings />}
       <PeopleSettings me={me} />
+      <EntitySettings canEdit={me?.role === 'owner'} />
       <section className="card settings-note">
         <h2>Odoo changes by agents</h2>
         <p className="muted small">Reads aren't listed. Hover a row to see what Odoo returned.</p>

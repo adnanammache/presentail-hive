@@ -15,6 +15,7 @@ import { dispatchTask } from './dispatch.js';
 import { downloadOutput, syncOutputs } from './managed.js';
 import { pushToAll } from './push.js';
 import { sendSlack, baseUrl } from './notify.js';
+import { readyStatus } from './taskSchedule.js';
 
 const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
@@ -136,7 +137,7 @@ export async function finishTask(taskId, { summary = '', check = '' } = {}) {
     run("UPDATE tasks SET status = 'done', result = ?, completed_at = datetime('now'), updated_at = datetime('now') WHERE id = ?", summary, task.id);
     if (parent) {
       const verdict = `\n\n✔ ${author?.name ?? 'Reviewer'}'s review:\n${summary}${check ? `\n\nFor you to decide: ${check}` : ''}`;
-      run("UPDATE tasks SET status = 'review', result = result || ?, updated_at = datetime('now') WHERE id = ?", verdict, parent.id);
+      run("UPDATE tasks SET status = ?, result = result || ?, updated_at = datetime('now') WHERE id = ?", readyStatus(parent.id), verdict, parent.id);
       emit('task', { task_id: parent.id });
       const url = `/#/tasks/${parent.id}`;
       pushToAll({ title: `${author?.name ?? 'Reviewer'} reviewed "${parent.title}"`, body: summary.slice(0, 200), url, tag: `task-${parent.id}` }).catch(() => {});
@@ -152,7 +153,14 @@ export async function finishTask(taskId, { summary = '', check = '' } = {}) {
     await handOff(task.id, reviewer.id, { summary, check });
     return `Recorded. Handed to ${reviewer.name} (${reviewer.title}) for review; the user sees both. You can stop here.`;
   }
-  run("UPDATE tasks SET status = 'review', result = ?, updated_at = datetime('now') WHERE id = ?", `${summary}${check ? `\n\nTo check: ${check}` : ''}`, task.id);
+  const status = readyStatus(task.id);
+  run("UPDATE tasks SET status = ?, result = ?, updated_at = datetime('now') WHERE id = ?", status, `${summary}${check ? `\n\nTo check: ${check}` : ''}`, task.id);
   emit('task', { task_id: task.id });
+  if (status === 'waiting_approval') {
+    const url = `/#/tasks/${task.id}`;
+    pushToAll({ title: `${author?.name ?? 'An agent'} needs your approval`, body: `${task.title}: ${summary}`.slice(0, 200), url, tag: `task-${task.id}` }).catch(() => {});
+    sendSlack({ text: `✋ *${esc(author?.name ?? 'An agent')}* prepared *${esc(task.title)}* and is waiting for your approval before submitting or paying anything`, detail: `>${esc(summary.slice(0, 600)).replace(/\n/g, '\n>')}`, link: `${baseUrl()}${url}`, linkLabel: 'Approve or send back in Hive' });
+    return 'Recorded. Adnan will approve it or send it back; do not submit or pay anything until you hear back. You can stop here.';
+  }
   return 'Recorded. The user will review it. You can stop here.';
 }

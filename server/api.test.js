@@ -137,3 +137,23 @@ test('agents are created with a name, title and team', async () => {
   assert.equal(after.team_id, null);
   assert.equal(after.name, 'Ledger');
 });
+
+test('org chart layout: put someone at the top of a team, or move them to another team', async () => {
+  const { body: acc } = await call('/teams', { method: 'POST', body: { name: 'Accounting layout' } });
+  const { body: other } = await call('/teams', { method: 'POST', body: { name: 'Other layout' } });
+  const mk = async (name) => (await call('/agents', { method: 'POST', body: { name, title: 'Accountant', team_id: acc.id } })).body;
+  const ananya = await mk('Ananya');
+  const karim = await mk('Karim');
+  const maya = await mk('Maya');
+
+  const order = async (team) => (await call('/agents')).body.filter((a) => a.team_id === team).sort((a, b) => a.sort_order - b.sort_order).map((a) => a.name);
+  assert.equal((await call('/org/layout', { method: 'PUT', body: { teams: [{ team_id: acc.id, ids: [karim.id, ananya.id, maya.id] }] } })).status, 200);
+  assert.deepEqual(await order(acc.id), ['Karim', 'Ananya', 'Maya']);
+
+  await call('/org/layout', { method: 'PUT', body: { teams: [{ team_id: acc.id, ids: [karim.id, ananya.id] }, { team_id: other.id, ids: [maya.id] }] } });
+  assert.deepEqual(await order(acc.id), ['Karim', 'Ananya']);
+  assert.deepEqual(await order(other.id), ['Maya']);
+
+  assert.equal((await call('/org/layout', { method: 'PUT', body: { teams: [{ team_id: acc.id, ids: [karim.id, karim.id] }] } })).status, 400);
+  assert.equal((await call('/org/layout', { method: 'PUT', body: { teams: [{ team_id: 99999, ids: [karim.id] }] } })).status, 400);
+});
