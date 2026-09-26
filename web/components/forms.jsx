@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { api, fmtDateTime, useApi } from '../api.js';
 import { Field, Icon, Modal, PLATFORM_LABELS, TASK_COLUMNS } from './ui.jsx';
 import TaskRun, { uploadFiles } from './TaskRun.jsx';
+import { recommendModel } from '../../shared/modelAdvice.js';
 
 const COLORS = ['#6366f1', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#3b82f6', '#ec4899', '#14b8a6'];
 
@@ -119,6 +120,7 @@ export function AgentForm({ agent, defaults = {}, onClose, onSaved }) {
     ...agent,
     budget: agent?.budget_cents != null ? agent.budget_cents / 100 : '',
   });
+  const rec = recommendModel({ title: values.title, description: values.description, integrations: values.integrations });
   const save = submit(async (v) => {
     let teamId = v.team_id;
     if (teamId === NEW_TEAM) {
@@ -203,8 +205,8 @@ export function AgentForm({ agent, defaults = {}, onClose, onSaved }) {
         </Field>
         {['claude', 'managed'].includes(values.platform) ? (
           <>
-            <Field label="Model" hint={modelHint(models, values.model)}>
-              <ModelSelect models={models} value={values.model} onChange={set('model')} />
+            <Field label="Model" hint={<ModelHint models={models} value={values.model} rec={rec} onUse={() => set('model')(rec.model)} />}>
+              <ModelSelect models={models} value={values.model} onChange={set('model')} recommended={rec.model} />
             </Field>
             <Field label="System prompt">
               <textarea rows={4} value={values.system_prompt} onChange={set('system_prompt')} placeholder="You are … Your job is …" />
@@ -225,23 +227,45 @@ export function AgentForm({ agent, defaults = {}, onClose, onSaved }) {
 }
 
 // ---------------- Models ----------------
-const modelHint = (models, value) => {
-  const m = models.find((x) => x.id === value) ?? models.find((x) => x.default);
-  if (!m) return 'The Claude model this agent thinks with.';
-  return [m.note, m.price && `${m.price} per million tokens (in / out)`].filter(Boolean).join(' · ');
-};
+const effectiveModel = (models, value) => models.find((x) => x.id === value) ?? models.find((x) => x.default);
+
+/** What the chosen model is for, and which one suits this agent (with a one-click switch). */
+function ModelHint({ models, value, rec, onUse }) {
+  const m = effectiveModel(models, value);
+  const recName = models.find((x) => x.id === rec.model)?.name ?? rec.model;
+  const usingRec = (m?.id ?? '') === rec.model;
+  return (
+    <>
+      {m && [m.note, m.price && `${m.price} per million tokens (in / out)`].filter(Boolean).join(' · ')}
+      <span className={`model-rec ${usingRec ? 'ok' : ''}`}>
+        {usingRec ? '★ Recommended for this agent: ' : `★ Recommended for this agent: ${recName}, `}
+        {rec.why}.
+        {!usingRec && (
+          <button type="button" className="linkish model-use" onClick={onUse}>
+            Use {recName}
+          </button>
+        )}
+      </span>
+    </>
+  );
+}
 
 /** Claude models from Anthropic's live list; "Default" follows Hive's default model. */
-function ModelSelect({ models, value, onChange }) {
+function ModelSelect({ models, value, onChange, recommended }) {
   const def = models.find((m) => m.default);
   const known = !value || models.some((m) => m.id === value);
+  const star = (id) => (id === recommended ? ' · ★ Recommended' : '');
   return (
     <select value={value ?? ''} onChange={onChange}>
-      <option value="">Default{def ? ` (${def.name})` : ''}</option>
+      <option value="">
+        Default{def ? ` (${def.name})` : ''}
+        {def ? star(def.id) : ''}
+      </option>
       {models.map((m) => (
         <option key={m.id} value={m.id}>
           {m.name}
           {m.price ? ` · ${m.price}` : ''}
+          {star(m.id)}
         </option>
       ))}
       {!known && <option value={value}>{value} (current)</option>}

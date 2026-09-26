@@ -710,3 +710,6 @@ button.link { background: none; border: 0; padding: 0; cursor: pointer; font: in
 .people-teams { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 6px; }
 .role-help { margin: 10px 0 0; padding-left: 18px; }
 .approval-preview { max-height: 360px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
+.model-rec { display: block; margin-top: 4px; color: var(--amber); }
+.model-rec.ok { color: var(--green); }
+.model-use { margin-left: 6px; color: var(--accent); font-weight: 600; text-decoration: underline; }
