@@ -722,12 +722,26 @@ CREATE INDEX IF NOT EXISTS idx_tasks_source_chat ON tasks(source_chat_id);
 
 /** Give every message from before conversations a conversation (idempotent: only rows without one). */
 export function migrateChats() {
-  const groups = db
-    .prepare(`SELECT agent_id, COALESCE(json_extract(meta, '$.origin'), 'hive') AS origin, MIN(id) AS first_id, MAX(created_at) AS last_at
-              FROM messages WHERE chat_id IS NULL GROUP BY agent_id, origin`)
-    .all();
-  if (!groups.length) return;
-  db.exec('BEGIN');
+  const pending = () =>
+    db
+      .prepare(`SELECT agent_id, COALESCE(json_extract(meta, '$.origin'), 'hive') AS origin, MIN(id) AS first_id, MAX(created_at) AS last_at
+                FROM messages WHERE chat_id IS NULL GROUP BY agent_id, origin`)
+      .all();
+  if (!pending().length) return;
+  // Take the write lock up front: several processes can start at once, and a transaction that reads
+  // first and writes later fails with "database is locked" instead of waiting (busy_timeout).
+  // Re-read inside the lock, since another process may have done the work meanwhile.
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    migrateChatGroups(pending());
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+}
+
+function migrateChatGroups(groups) {
   for (const g of groups) {
     const firstUser = db
       .prepare(`SELECT body, meta FROM messages WHERE agent_id = ? AND sender = 'user' AND COALESCE(json_extract(meta, '$.origin'), 'hive') = ? ORDER BY id LIMIT 1`)
@@ -747,7 +761,6 @@ export function migrateChats() {
     const chat = db.prepare('SELECT id FROM chats WHERE agent_id = ? AND origin = ?').get(g.agent_id, g.origin);
     db.prepare(`UPDATE messages SET chat_id = ? WHERE agent_id = ? AND chat_id IS NULL AND COALESCE(json_extract(meta, '$.origin'), 'hive') = ?`).run(chat.id, g.agent_id, g.origin);
   }
-  db.exec('COMMIT');
 }
 migrateChats();
 
