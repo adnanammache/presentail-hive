@@ -745,11 +745,16 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_workflows_client_key ON workflows(client_k
 CREATE INDEX IF NOT EXISTS idx_workflows_due ON workflows(status, next_run_at);
 CREATE INDEX IF NOT EXISTS idx_runs_delivery ON workflow_runs(state, dispatch_status);
 `);
-// Older workflows: their cron expression becomes a "cron" rule, and enabled becomes the status.
-db.exec(`UPDATE workflows SET rule = json_object('freq', 'cron', 'expr', schedule) WHERE rule IS NULL`);
-db.exec(`UPDATE workflows SET status = CASE WHEN enabled = 1 THEN 'active' ELSE 'paused' END WHERE status IS NULL`);
-db.exec(`UPDATE workflows SET overlap_policy = CASE WHEN assignee_email IS NOT NULL THEN 'always_create' ELSE 'skip_if_running' END WHERE overlap_policy IS NULL`);
-db.exec(`UPDATE workflow_runs SET state = 'created' WHERE state IS NULL`);
+// Older workflows (and rows older code still inserts, e.g. the seed): their cron expression becomes a
+// "cron" rule and enabled becomes the status. They were created by owners before authorization was
+// recorded, so until an owner edits, runs or resumes one, they count as authorized by the owners.
+export function normalizeLegacyWorkflows() {
+  db.exec(`UPDATE workflows SET rule = json_object('freq', 'cron', 'expr', schedule) WHERE rule IS NULL`);
+  db.exec(`UPDATE workflows SET status = CASE WHEN enabled = 1 THEN 'active' ELSE 'paused' END WHERE status IS NULL`);
+  db.exec(`UPDATE workflows SET overlap_policy = CASE WHEN assignee_email IS NOT NULL THEN 'always_create' ELSE 'skip_if_running' END WHERE overlap_policy IS NULL`);
+  db.exec(`UPDATE workflow_runs SET state = 'created' WHERE state IS NULL`);
+}
+normalizeLegacyWorkflows();
 db.exec(`
 -- What happened to a schedule and who did it: created, edited, paused, suspended, failed dispatches…
 CREATE TABLE IF NOT EXISTS schedule_events (

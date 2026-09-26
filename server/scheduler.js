@@ -1,7 +1,7 @@
 // Recurring workflows: starting the durable schedule ticker, finishing runs, cron helpers for
 // older workflows. The scheduling itself lives in schedules.js.
 import { Cron } from 'croner';
-import { all, get, run } from './db.js';
+import { all, get, normalizeLegacyWorkflows, run } from './db.js';
 import { emit } from './events.js';
 import { occurrencesAfter } from './recurring.js';
 import { startScheduleTicker, stopScheduleTicker } from './schedules.js';
@@ -32,6 +32,7 @@ export function nextRuns(schedule, timezone = 'UTC', count = 1) {
 // Schedules used to be in-memory cron jobs; they're now stored and claimed by a durable ticker
 // (schedules.js), so they survive restarts and several workers can share the database.
 export function startScheduler() {
+  normalizeLegacyWorkflows();
   const n = all("SELECT COUNT(*) AS n FROM workflows WHERE status = 'active'")[0].n;
   // Schedules from before the durable ticker have no stored next run yet: give them one.
   for (const wf of all("SELECT * FROM workflows WHERE status = 'active' AND next_run_at IS NULL")) {

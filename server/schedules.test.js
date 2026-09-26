@@ -627,6 +627,30 @@ test('who can see and change schedules: explicit checks, not ownership by creati
   assert.match(tool(taskRun, 'schedule_recurring_task', { user_request: 'gen', title: 'Loop', instructions: 'x', recurrence: { frequency: 'daily' } }, T0).error, /created by a recurring schedule/);
 });
 
+test('workflows from before this change keep working: cron rule, status, owner authorization', async () => {
+  const { normalizeLegacyWorkflows } = await import('./db.js');
+  const id = Number(run("INSERT INTO workflows (name, schedule, timezone, enabled, agent_id, instructions) VALUES ('Old Talabat month-end', '0 9 2 * *', 'Asia/Dubai', 1, ?, 'Do Talabat.')", POLLER).lastInsertRowid);
+  normalizeLegacyWorkflows();
+  const legacy = wf(id);
+  assert.equal(legacy.status, 'active');
+  assert.deepEqual(JSON.parse(legacy.rule), { freq: 'cron', expr: '0 9 2 * *' });
+  assert.equal(legacy.authorized_by, null);
+  assert.equal(S.scheduleDetails(id, knownUser('adnan@presentail.com')).recurrence, 'Custom schedule (cron: 0 9 2 * *)');
+  // Set up by owners before authorization was recorded: members can't run it, owners can (and adopt it).
+  assert.equal((await call(`/workflows/${id}/run`, { method: 'POST', as: 'omar@presentail.com', body: { key: 'k' } })).status, 403);
+  const ran = await call(`/workflows/${id}/run`, { method: 'POST', body: { key: 'k' } });
+  assert.equal(ran.status, 200, JSON.stringify(ran.body));
+  assert.equal(ran.body.state, 'created');
+  assert.equal(wf(id).authorized_by, 'adnan@presentail.com');
+  // An un-adopted one due on its schedule is delivered as authorized by the first owner.
+  const other = Number(run("INSERT INTO workflows (name, schedule, timezone, enabled, agent_id) VALUES ('Old weekly', '0 9 * * 1', 'Asia/Dubai', 1, ?)", POLLER).lastInsertRowid);
+  normalizeLegacyWorkflows();
+  run("UPDATE workflows SET next_run_at = '2026-10-05T05:00:00.000Z' WHERE id = ?", other);
+  await S.tickSchedules(T('2026-10-05T05:00:30Z'));
+  const [task] = tasksOf(other);
+  assert.equal(task.created_by, 'adnan@presentail.com');
+});
+
 // ---------------------------------------------------------------- HTTP API (people)
 
 test('people create, preview, edit and inspect recurring tasks in Hive', async () => {

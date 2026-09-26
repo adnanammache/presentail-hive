@@ -198,7 +198,7 @@ export function dashboardRouter() {
 
   r.get('/overview', wrap((req) => {
     const count = (sql, ...p) => get(sql, ...p).n;
-    const workflows = all("SELECT w.*, a.name AS agent_name, a.color AS agent_color FROM workflows w LEFT JOIN agents a ON a.id = w.agent_id WHERE w.status = 'active'")
+    const workflows = all("SELECT w.*, COALESCE(a.name, u.name, w.assignee_email) AS agent_name, a.color AS agent_color FROM workflows w LEFT JOIN agents a ON a.id = w.agent_id LEFT JOIN users u ON u.email = w.assignee_email WHERE w.status = 'active'")
       .filter((w) => canViewSchedule(req.hive, w))
       .map(withNext);
     return {

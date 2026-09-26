@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api, fmtDateTime, useApi, useReloadPhotos } from '../api.js';
+import { api, useApi, useReloadPhotos } from '../api.js';
 import { Field, Icon, Modal, PLATFORM_LABELS } from './ui.jsx';
 import { recommendModel } from '../../shared/modelAdvice.js';
 import BotAvatar from './BotAvatar.jsx';
@@ -430,84 +430,3 @@ export function HandoffBar({ taskId }) {
 }
 
 // ---------------- Workflow ----------------
-const PRESETS = [
-  { label: 'Every weekday 8:00', value: '0 8 * * 1-5' },
-  { label: 'Every day 9:00', value: '0 9 * * *' },
-  { label: 'Every Monday 9:00', value: '0 9 * * 1' },
-  { label: '1st of month 9:00', value: '0 9 1 * *' },
-  { label: 'Every hour', value: '0 * * * *' },
-  { label: 'Every 15 min', value: '*/15 * * * *' },
-];
-const TIMEZONES = ['Asia/Dubai', 'Asia/Beirut', 'Europe/Nicosia', 'Europe/London', 'UTC', 'America/New_York'];
-
-export function WorkflowForm({ workflow, defaults = {}, onClose }) {
-  const { values, set, submit, error, saving } = useForm({
-    name: '', description: '', agent_id: '', schedule: '0 9 * * 1-5', timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC', instructions: '', enabled: true,
-    ...defaults,
-    ...workflow,
-  });
-  const [preview, setPreview] = useState(null);
-  useEffect(() => {
-    const t = setTimeout(() => api('/schedule/preview', { method: 'POST', body: { schedule: values.schedule, timezone: values.timezone } }).then(setPreview, () => {}), 250);
-    return () => clearTimeout(t);
-  }, [values.schedule, values.timezone]);
-
-  const save = submit(async (v) => {
-    const body = { name: v.name, description: v.description, agent_id: numOrNull(v.agent_id), schedule: v.schedule.trim(), timezone: v.timezone, instructions: v.instructions, enabled: Boolean(v.enabled) };
-    if (workflow) await api(`/workflows/${workflow.id}`, { method: 'PATCH', body });
-    else await api('/workflows', { method: 'POST', body });
-    onClose();
-  });
-  const remove = async () => {
-    if (!confirm('Delete this workflow and its run history?')) return;
-    await api(`/workflows/${workflow.id}`, { method: 'DELETE' });
-    onClose();
-  };
-  const tzs = TIMEZONES.includes(values.timezone) ? TIMEZONES : [values.timezone, ...TIMEZONES];
-  return (
-    <Modal title={workflow ? `Edit “${workflow.name}”` : 'New recurring workflow'} onClose={onClose} wide>
-      <form onSubmit={save} className="form">
-        <div className="grid-2">
-          <Field label="Name">
-            <input value={values.name} onChange={set('name')} required autoFocus={!workflow} placeholder="e.g. Talabat month-end" />
-          </Field>
-          <Field label="Agent">
-            <AgentSelect value={values.agent_id} onChange={set('agent_id')} />
-          </Field>
-        </div>
-        <Field label="Short description">
-          <input value={values.description} onChange={set('description')} />
-        </Field>
-        <Field label="Instructions sent on every run" hint="Each run creates a task with these instructions and sends it to the agent.">
-          <textarea rows={4} value={values.instructions} onChange={set('instructions')} />
-        </Field>
-        <div className="grid-2">
-          <Field label="Schedule (cron)" hint="minute hour day-of-month month day-of-week">
-            <input value={values.schedule} onChange={set('schedule')} className="mono" required />
-          </Field>
-          <Field label="Timezone">
-            <select value={values.timezone} onChange={set('timezone')}>
-              {tzs.map((t) => (
-                <option key={t}>{t}</option>
-              ))}
-            </select>
-          </Field>
-        </div>
-        <div className="chips">
-          {PRESETS.map((p) => (
-            <button type="button" key={p.value} className={`chip ${values.schedule === p.value ? 'on' : ''}`} onClick={() => set('schedule')(p.value)}>
-              {p.label}
-            </button>
-          ))}
-        </div>
-        <div className={`schedule-preview ${preview?.ok === false ? 'bad' : ''}`}>
-          {preview?.ok === false ? preview.error : preview?.next?.length ? <>Next runs ({values.timezone}): {preview.next.map((d) => fmtDateTime(d, values.timezone)).join(' · ')}</> : '…'}
-        </div>
-        <label className="toggle-row">
-          <input type="checkbox" checked={Boolean(values.enabled)} onChange={set('enabled')} /> Enabled
-        </label>
-        <Actions saving={saving} error={error} label={workflow ? 'Save' : 'Create workflow'} onDelete={workflow ? remove : null} />
-      </form>
-    </Modal>
-  );
-}

@@ -43,7 +43,7 @@ Saving the variables triggers a redeploy. When it's green, open the temporary `*
 
 ## 5. First login
 
-Open https://hive.presentail.com and sign in with `APP_PASSWORD`. Production starts with **template** agents and workflows based on the Presentail month-end routines. All workflows are **switched off** until you've reviewed them. Edit, delete or enable them from the Workflows page.
+Open https://hive.presentail.com and sign in with `APP_PASSWORD`. Production starts with **template** agents and workflows based on the Presentail month-end routines. All workflows are **switched off** (Paused) until you've reviewed them. Edit, delete or resume them from the Recurring page.
 
 ## Updating
 
@@ -137,6 +137,32 @@ Work is shared by people and AI agents: **My tasks**, **All tasks** and **Projec
 
 ### Adding or changing skills
 Skills are folders in `agent-skills/<name>/` with a `SKILL.md` (plus `scripts/` and `references/`). Commit a change and redeploy. The next time an agent using that skill is synced, Hive uploads the new version automatically.
+
+## Recurring tasks
+
+A recurring task creates a normal Hive task every time it comes round: for an AI agent (**Create & start**, or **Create only**) or for a person (they get the task and a notification; people are never started). They're listed under **Recurring** in the sidebar, in each agent's **Tasks → Recurring**, and in **My tasks → My recurring tasks**. Every task made by one links back to it (**View schedule**).
+
+**Agents schedule them from a chat.** Ask a Claude Managed Agent, e.g. *"Every Monday at 9 AM Dubai time, check outstanding supplier invoices and prepare a summary"*. It calls its `schedule_recurring_task` tool, Hive saves the schedule, and the agent replies with the schedule, time zone, next run and a link. Agents also have `list_`, `get_`, `update_`, `pause_`, `resume_` and `cancel_recurring_task` and `find_assignees`. The tools are registered on every managed agent automatically (the next time it's synced, i.e. its next chat or task).
+
+- **Who is asking** comes from Hive, never from the model: the agent is the run's agent, and the person is whoever sent the chat message (Hive or Slack), or created the task. Every change quotes that person's own words, and Hive checks them against what they actually wrote, so a document, email or the agent's own idea can't set up or change a schedule. Tasks made by a schedule, and questions from other agents, can only look.
+- **Permissions**: anyone can schedule work for themselves, any agent or any member, as with tasks; inside a project only its members, and only for people in it. Changing, pausing, resuming, cancelling or running one: the person who set it up, the project owner, or a workspace owner. Assignees can see the schedule behind their tasks but not change it. The same rules apply when an agent acts for someone.
+- **Before every occurrence** Hive checks again that the assignee still exists, isn't paused and still has access, and that the person who authorized it is still a member. If not, the schedule is **suspended** (status *Error*) with the reason, nothing is sent to anyone else, and someone must fix it and **Resume**. Deleting an agent suspends its schedules at once.
+
+**How scheduling behaves**
+- Times are local calendar times in the schedule's own IANA time zone (default `Asia/Dubai`). A time the clocks skip (spring forward) runs the same number of minutes later (02:30 → 03:30); a time that happens twice (fall back) runs once, the first time.
+- Days some months don't have (31st, 29 Feb) use the month's last day, or are skipped, as chosen; the choice is shown with the schedule.
+- A start date in the past is never backdated. **Run now** makes one extra occurrence and doesn't move the regular schedule.
+- **Scheduled start, due date and reporting period are separate.** A period rule (previous week, month, quarter or year; the previous n months; or fixed n-month periods, e.g. Dec–Feb, Mar–May, Jun–Aug, Sep–Nov) is resolved for each occurrence and saved on its task, and kept if a start is retried later.
+- **Missed runs**: if Hive was down when runs were due, only the latest missed one is created (marked *late*); earlier ones are recorded as skipped. Nothing missed while paused is caught up.
+- **Overlap**: an agent's occurrence is skipped while its previous run is still going (the reason is recorded). People get every occurrence, unless *skip while the previous task is open* is chosen.
+- **Starting the agent** uses the agent's own settings, tools and approval rules; a schedule never bypasses an approval. If a start fails, the same task is retried after 1, 5 and 15 minutes, then marked failed and the person who set it up is notified. Work an agent already started is never re-run automatically.
+- **Pause** stops new occurrences; **Cancel** ends them for good. Neither stops work already running; stop that on the task. Edits apply to future occurrences; tasks already created keep their instructions and dates.
+
+**The scheduler** runs inside the Hive server, every minute and at startup, from what's stored in the database (no browser needed, and it survives restarts). Each occurrence is created once even with several servers sharing one database (claims are transactional and each occurrence has a unique key). Optional variables:
+- `HIVE_TIMEZONE`: the workspace's default time zone for new schedules (default `Asia/Dubai`).
+- `HIVE_SCHEDULER=off`: don't run schedules in this process (e.g. a second instance).
+
+**What the update migrates (automatically, once).** Existing workflows keep their cron expression (shown as *Custom (cron)*) and their on/off state (on = Active, off = Paused), and their run history. They were set up by owners, so they count as authorized by the workspace owners until an owner edits, runs or resumes one. New columns on `workflows`, `workflow_runs` and `tasks`, and a `schedule_events` table, are added on startup.
 
 ## Odoo (Lebanon, Cyprus and UAE books)
 

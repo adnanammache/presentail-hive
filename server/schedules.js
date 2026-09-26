@@ -99,6 +99,15 @@ const userRow = (email) => (email ? get('SELECT * FROM users WHERE email = ?', S
 const agentRow = (id) => (id ? get('SELECT * FROM agents WHERE id = ?', id) : null);
 const projectRow = (id) => (id ? get('SELECT * FROM projects WHERE id = ?', id) : null);
 const withTeams = (u) => (u ? { ...u, teams: JSON.parse(u.teams || '[]') } : null);
+/** Who authorizes a schedule. Workflows from before this was recorded were set up by owners: the first owner. */
+const authorizerOf = (email) => withTeams(email ? userRow(email) : get("SELECT * FROM users WHERE role = 'owner' ORDER BY created_at, email LIMIT 1"));
+/** An owner acting on a workflow from before authorization was recorded becomes its authorizer. */
+function adopt(wf, ctx) {
+  if (!wf.authorized_by && ctx.user?.email) {
+    run('UPDATE workflows SET authorized_by = ? WHERE id = ? AND authorized_by IS NULL', ctx.user.email, wf.id);
+    wf.authorized_by = ctx.user.email;
+  }
+}
 
 /** A person may be given work in a project if they can contribute to it or are its member. */
 function personInProject(email, project) {
@@ -148,8 +157,8 @@ function assignmentProblem(user, { agent_id, assignee_email, project_id }) {
 
 /** Why the next occurrence can't be delivered as authorized, or null. Checked before every occurrence. */
 export function eligibilityProblem(wf, snap = wf) {
-  const authorizer = withTeams(userRow(wf.authorized_by));
-  if (!authorizer) return `${wf.authorized_by || 'The person who set this up'} is no longer a member of this workspace, so the schedule has no one authorizing it`;
+  const authorizer = authorizerOf(wf.authorized_by);
+  if (!authorizer) return wf.authorized_by ? `${wf.authorized_by} is no longer a member of this workspace, so the schedule has no one authorizing it` : 'No workspace owner can authorize this older workflow';
   if (snap.agent_id) {
     const a = agentRow(snap.agent_id);
     if (!a) return 'The assigned agent was removed';
@@ -493,6 +502,7 @@ export function createSchedule(input, ctx, { now = new Date(), dedupe = false } 
 export function updateSchedule(id, input, ctx, { now = new Date() } = {}) {
   const current = scheduleFor(id, ctx.user);
   if (!canManageSchedule(ctx.user, current)) throw forbidden("You can't change this recurring task. Ask the person who set it up, or a workspace owner.");
+  adopt(current, ctx);
   if (current.status === 'ended') throw bad('This recurring task has ended. Create a new one instead.');
   const { cols, notes } = cleanSchedule(input, current, { now });
   const reassigned = cols.agent_id !== current.agent_id || cols.assignee_email !== current.assignee_email || cols.project_id !== current.project_id;
@@ -529,6 +539,7 @@ export function updateSchedule(id, input, ctx, { now = new Date() } = {}) {
 function setStatus(id, ctx, { from, to, reason, verb, now = new Date() }) {
   const current = scheduleFor(id, ctx.user);
   if (!canManageSchedule(ctx.user, current)) throw forbidden(`You can't ${verb} this recurring task. Ask the person who set it up, or a workspace owner.`);
+  if (to === 'active') adopt(current, ctx);
   if (!from.includes(current.status)) {
     if (current.status === to) return scheduleView(current, ctx.user);
     throw conflict(`This recurring task is ${current.status}, so it can't be ${verb === 'cancel' ? 'cancelled' : `${verb}d`}`);
@@ -674,7 +685,7 @@ function taskBody(occ, snap) {
 }
 /** Create the occurrence's task (once), in the same transaction that marks the occurrence created. */
 function createOccurrenceTask(occ, snap) {
-  const authorizer = withTeams(userRow(snap.authorized_by));
+  const authorizer = authorizerOf(snap.authorized_by);
   const actor = { ...personActor(authorizer), name: `${snap.created_by_name || authorizer.name || authorizer.email} (recurring)` };
   const body = taskBody(occ, snap);
   return tx(() => {
@@ -807,6 +818,7 @@ export async function runNow(id, ctx, { key, now = new Date() } = {}) {
   const wf = scheduleFor(id, ctx.user);
   if (!canManageSchedule(ctx.user, wf)) throw forbidden("You can't run this recurring task. Ask the person who set it up, or a workspace owner.");
   if (wf.status === 'ended') throw conflict('This recurring task has ended');
+  adopt(wf, ctx);
   const problem = eligibilityProblem(wf);
   if (problem) throw conflict(`Can't run it: ${problem}`);
   const occKey = `${wf.id}:manual:${key ? clip(key, 60) : now.getTime()}`;
