@@ -14,7 +14,8 @@ import { backupNow, backupPath, listBackups } from './backup.js';
 import { healthReport, runChecks } from './health.js';
 import { listModels } from './models.js';
 import { canApproveFor, isOwner, listUsers, setUserRole, userFor } from './roles.js';
-import { addLesson, deleteLesson, listLessons, updateLesson } from './lessons.js';
+import { REMEMBER, addLesson, deleteLesson, listLessons, updateLesson } from './lessons.js';
+import { saveChatFile, unsentFiles } from './chatFiles.js';
 import { closeBoard, dueDate, itemInstructions, monthLabel, saveCloseItem } from './close.js';
 import { briefConfig, latestBrief, nextBriefAt, sendBrief, setBriefConfig } from './brief.js';
 import { pushToAll, removeSubscription, saveSubscription, subscriptionCount, vapidKeys } from './push.js';
@@ -588,11 +589,58 @@ export function dashboardRouter() {
   r.get('/agents/:id/messages', wrap((req) =>
     all('SELECT * FROM (SELECT * FROM messages WHERE agent_id = ? ORDER BY id DESC LIMIT 200) ORDER BY id', req.params.id),
   ));
+  // Send a message, with files uploaded beforehand (file_ids). voice: the text is a voice note's
+  // transcript and one of the files is its recording. "remember: …" also saves a lesson.
   r.post('/agents/:id/messages', wrap(async (req) => {
-    if (!req.body.body?.trim()) throw bad('body is required');
-    if (!get('SELECT id FROM agents WHERE id = ?', req.params.id)) throw notFound('Agent');
-    return sendToAgent(Number(req.params.id), req.body.body.trim());
+    const agentId = Number(req.params.id);
+    const agent = get('SELECT id, name FROM agents WHERE id = ?', agentId);
+    if (!agent) throw notFound('Agent');
+    const body = String(req.body.body ?? '').trim();
+    let files;
+    try {
+      files = unsentFiles(agentId, req.body.file_ids);
+    } catch (err) {
+      throw bad(err.message);
+    }
+    const voice = Boolean(req.body.voice) && files.some((f) => f.voice);
+    if (voice && !body) throw bad("Couldn't make out any words in that voice note. Try again a little closer to the mic.");
+    if (!body && !files.length) throw bad('Write a message or attach a file');
+    const text = body || `Sent ${files.length === 1 ? 'a file' : `${files.length} files`}.`;
+    const meta = voice ? { voice: true } : null;
+    let agentText = voice ? `(Voice note, transcribed automatically)\n${text}` : text;
+
+    const lesson = REMEMBER.test(body) ? body.replace(REMEMBER, '').trim() : '';
+    if (lesson) {
+      if (!canApproveFor(req.hive, agentId)) throw forbidden(`Only approvers and owners can teach ${agent.name}. Send it without "remember", or ask one of them.`);
+      addLesson(agentId, lesson, { source: 'chat', by: req.user?.name || req.user?.email || null });
+      // The running chat was set up before this lesson, so tell the agent now as well.
+      agentText = `${voice ? '(Voice note, transcribed automatically) ' : ''}Remember this from now on. It is saved in your lessons, so it applies to every future chat and task too: ${lesson}`;
+    }
+    const message = await sendToAgent(agentId, text, meta, { files, agentText });
+    if (lesson) postMessage(agentId, 'system', `🧠 Saved as a lesson. ${agent.name} will follow it in every chat and task from now on. Edit it in the Lessons tab.`);
+    return message;
   }));
+  r.post('/agents/:id/chat-files', express.raw({ type: () => true, limit: '50mb' }), wrap((req) => {
+    if (!get('SELECT id FROM agents WHERE id = ?', req.params.id)) throw notFound('Agent');
+    let name;
+    try {
+      name = decodeURIComponent(req.get('x-filename') || '');
+    } catch {
+      throw bad('Please give the file a normal name');
+    }
+    try {
+      return saveChatFile(Number(req.params.id), name, req.body, { mime: req.get('content-type') || null, voice: req.get('x-voice') === '1', by: req.user?.email ?? null });
+    } catch (err) {
+      throw bad(err.message);
+    }
+  }));
+  r.get('/chat-files/:id', (req, res, next) => {
+    const f = get('SELECT * FROM chat_files WHERE id = ?', Number(req.params.id));
+    if (!f) return next(notFound('File'));
+    // Voice notes play in the page; everything else downloads.
+    if (f.voice) return res.type(f.mime?.split(';')[0] || 'audio/webm').sendFile(f.path, (err) => err && next(notFound('File')));
+    res.download(f.path, f.filename, (err) => err && !res.headersSent && next(notFound('File')));
+  });
 
   // Tasks
   const me = (req) => personActor(req.hive);
