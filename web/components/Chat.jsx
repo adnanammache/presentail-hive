@@ -45,6 +45,18 @@ const firstLine = (text, n = 80) => {
   const line = String(text ?? '').split('\n').map((l) => l.replace(/^[#>*\-\s]+/, '').trim()).find(Boolean) ?? '';
   return line.length > n ? `${line.slice(0, n - 1)}…` : line;
 };
+/**
+ * Add a message that arrived live: at the end, or, if it was said earlier (a reply picked up late),
+ * where it belongs by time (after others from the same second). Duplicates are ignored.
+ */
+export function addMessage(list, m) {
+  if (!list) return list;
+  if (list.some((x) => x.id === m.id)) return list;
+  let i = list.length;
+  while (i > 0 && list[i - 1].created_at > m.created_at) i--;
+  return [...list.slice(0, i), m, ...list.slice(i)];
+}
+
 const parseMeta = (m) => {
   try {
     return m.meta ? JSON.parse(m.meta) : null;
@@ -552,7 +564,7 @@ export default function Chat({ agent, claudeReady, chatId: selectedProp, onSelec
         const known = new Set(t.messages.map((m) => m.id));
         const fresh = page.messages.filter((m) => !known.has(m.id));
         if (!atBottom.current) setUnseen((n) => n + fresh.filter((m) => m.sender !== 'user').length);
-        return { ...t, messages: [...t.messages, ...fresh] };
+        return { ...t, messages: fresh.reduce(addMessage, t.messages) };
       });
     } catch {
       /* the next event or a reload catches up */
@@ -664,7 +676,7 @@ export default function Chat({ agent, claudeReady, chatId: selectedProp, onSelec
       }
       const m = await api(`/chats/${id}/messages`, { method: 'POST', body: { body, file_ids: ids } });
       atBottom.current = true;
-      setThread((t) => (t.chatId === id && !t.messages.some((x) => x.id === m.id) ? { ...t, messages: [...t.messages, m] } : t));
+      setThread((t) => (t.chatId === id ? { ...t, messages: addMessage(t.messages, m) } : t));
       setDraft('');
       store.set(draftKey(agent.id, id), null);
       setFiles([]);
@@ -707,7 +719,7 @@ export default function Chat({ agent, claudeReady, chatId: selectedProp, onSelec
       const audio = await uploadChatFile(agent.id, note.blob, `Voice note ${stamp}.${ext}`, true);
       const m = await api(`/chats/${id}/messages`, { method: 'POST', body: { body: note.text, file_ids: [audio.id], voice: true } });
       atBottom.current = true;
-      setThread((t) => (t.chatId === id && !t.messages.some((x) => x.id === m.id) ? { ...t, messages: [...t.messages, m] } : t));
+      setThread((t) => (t.chatId === id ? { ...t, messages: addMessage(t.messages, m) } : t));
     } catch (err) {
       setError({ text: err.message });
     } finally {

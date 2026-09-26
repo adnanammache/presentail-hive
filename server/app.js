@@ -325,8 +325,8 @@ export function dashboardRouter() {
       `SELECT a.*, tm.name AS team_name, tm.color AS team_color,
         (SELECT COUNT(*) FROM tasks t WHERE t.agent_id = a.id AND t.status != 'done') AS open_tasks,
         (SELECT COUNT(*) FROM workflows w WHERE w.agent_id = a.id AND w.enabled = 1) AS workflows,
-        (SELECT m.body FROM messages m JOIN chats c ON c.id = m.chat_id WHERE m.agent_id = a.id AND ${visibleChatSql('c')} ORDER BY m.id DESC LIMIT 1) AS last_message,
-        (SELECT m.created_at FROM messages m JOIN chats c ON c.id = m.chat_id WHERE m.agent_id = a.id AND ${visibleChatSql('c')} ORDER BY m.id DESC LIMIT 1) AS last_message_at,
+        (SELECT m.body FROM messages m LEFT JOIN chats c ON c.id = m.chat_id WHERE m.agent_id = a.id AND (c.id IS NULL OR ${visibleChatSql('c')}) ORDER BY m.created_at DESC, m.id DESC LIMIT 1) AS last_message,
+        (SELECT m.created_at FROM messages m LEFT JOIN chats c ON c.id = m.chat_id WHERE m.agent_id = a.id AND (c.id IS NULL OR ${visibleChatSql('c')}) ORDER BY m.created_at DESC, m.id DESC LIMIT 1) AS last_message_at,
         (SELECT COALESCE(SUM(cost_cents), 0) FROM runs r WHERE r.agent_id = a.id AND r.created_at >= date('now', 'start of month')) AS month_cents,
         (SELECT COUNT(*) FROM runs r WHERE r.agent_id = a.id AND r.status = 'needs_approval') AS pending_approvals,
         (SELECT COUNT(*) FROM runs r WHERE r.agent_id = a.id AND r.status IN ('starting', 'running')) AS running_runs
@@ -707,7 +707,7 @@ export function dashboardRouter() {
   // person may see; writes go to the shared thread (or chat_id).
   r.get('/agents/:id/messages', wrap((req) =>
     all(
-      `SELECT * FROM (SELECT m.* FROM messages m JOIN chats c ON c.id = m.chat_id WHERE m.agent_id = ? AND ${visibleChatSql('c')} ORDER BY m.id DESC LIMIT 200) ORDER BY id`,
+      `SELECT * FROM (SELECT m.* FROM messages m LEFT JOIN chats c ON c.id = m.chat_id WHERE m.agent_id = ? AND (c.id IS NULL OR ${visibleChatSql('c')}) ORDER BY m.created_at DESC, m.id DESC LIMIT 200) ORDER BY created_at, id`,
       Number(req.params.id), ...visibleChatParams(req.hive),
     ),
   ));
