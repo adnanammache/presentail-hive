@@ -30,7 +30,10 @@ globalThis.fetch = async (url, init = {}) => {
   let body;
   if (init.body instanceof URLSearchParams) body = Object.fromEntries(init.body);
   else if (init.body instanceof FormData) body = Object.fromEntries([...init.body.entries()].map(([k, v]) => [k, typeof v === 'string' ? v : { file: v.name, type: v.type, size: v.size }]));
+  else if (/x-www-form-urlencoded/.test(init.headers?.['Content-Type'] ?? '')) body = Object.fromEntries(new URLSearchParams(init.body));
   else body = JSON.parse(init.body);
+  // Like Slack: read methods ignore a JSON body.
+  if (method === 'users.info' && !/x-www-form-urlencoded/.test(init.headers?.['Content-Type'] ?? '')) return Response.json({ ok: false, error: 'user_not_found' });
   calls.push({ method, auth, body });
   const ok = (x = {}) => Response.json({ ok: true, ...x });
   switch (method) {
@@ -39,6 +42,10 @@ globalThis.fetch = async (url, init = {}) => {
       slack.rotations++;
       return ok({ token: `xoxe.xoxp-access-${slack.rotations}`, refresh_token: `xoxe-refresh-${slack.rotations}`, team_id: 'T0PRESENTAIL', exp: Math.floor(Date.now() / 1000) + 12 * 3600 });
     case 'apps.manifest.create': {
+      if (slack.limitNext) {
+        slack.limitNext--;
+        return new Response(JSON.stringify({ ok: false, error: 'ratelimited' }), { status: 429, headers: { 'Retry-After': '7' } });
+      }
       const m = JSON.parse(body.manifest);
       if (slack.rejectAgentView && m.features.agent_view) return Response.json({ ok: false, error: 'invalid_manifest', errors: [{ message: 'unknown field', pointer: '/features/agent_view' }] });
       slack.apps++;
@@ -103,9 +110,14 @@ test('connecting needs the refresh token, and Slack must accept it', async () =>
 });
 
 test('Hive creates a bot for every agent: created first, then given its addresses, with its photo', async () => {
+  // Slack's speed limit: Hive waits as long as Slack asks, then carries on.
+  const waits = [];
+  bots.setPause(async (ms) => waits.push(ms));
+  slack.limitNext = 2;
   const { created, failed } = await bots.createAll();
   assert.equal(created, 2);
   assert.deepEqual(failed, []);
+  assert.deepEqual(waits, [7000, 7000]);
 
   const creates = calls.filter((c) => c.method === 'apps.manifest.create').map((c) => JSON.parse(c.body.manifest));
   const ledgerApp = creates.find((m) => m.display_information.name === 'Ledger');
