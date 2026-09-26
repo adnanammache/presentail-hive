@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ago, api, useApi } from '../api.js';
+import { ago, api, photoUrl, useApi } from '../api.js';
 import { Badge, Icon, Loading, PLATFORM_LABELS, agentTone } from '../components/ui.jsx';
 import BotAvatar, { BotFace } from '../components/BotAvatar.jsx';
 import { TaskForm } from '../components/forms.jsx';
@@ -91,9 +91,18 @@ function AgentToken({ a, x, y, selected, dim, onSelect, ghost }) {
     >
       <polygon points={hexPoints(TOKEN)} className="map-cell" style={{ '--c': a.color }} />
       {m === 'working' && <polygon points={hexPoints(TOKEN)} className="map-pulse" style={{ '--c': a.color }} />}
-      <g transform="translate(-22 -24) scale(0.44)">
-        <BotFace name={a.name} color={a.color} mood={m === 'paused' ? 'paused' : m} />
-      </g>
+      {photoUrl(a) ? (
+        <>
+          <clipPath id={`photo-${a.id}`}>
+            <circle r="21" />
+          </clipPath>
+          <image href={photoUrl(a)} x="-21" y="-21" width="42" height="42" clipPath={`url(#photo-${a.id})`} preserveAspectRatio="xMidYMid slice" />
+        </>
+      ) : (
+        <g transform="translate(-22 -24) scale(0.44)">
+          <BotFace name={a.name} color={a.color} mood={m === 'paused' ? 'paused' : m} />
+        </g>
+      )}
       {m === 'waiting' && (
         <g transform="translate(20 -23)">
           <circle r="8" className="map-flag" />

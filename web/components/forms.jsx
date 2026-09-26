@@ -3,6 +3,7 @@ import { api, fmtDateTime, useApi } from '../api.js';
 import { Field, Icon, Modal, PLATFORM_LABELS, TASK_COLUMNS } from './ui.jsx';
 import TaskRun, { uploadFiles } from './TaskRun.jsx';
 import { recommendModel } from '../../shared/modelAdvice.js';
+import BotAvatar from './BotAvatar.jsx';
 
 const COLORS = ['#6366f1', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#3b82f6', '#ec4899', '#14b8a6'];
 
@@ -137,9 +138,18 @@ export function AgentForm({ agent, defaults = {}, onClose, onSaved }) {
     onSaved?.(saved);
     onClose();
   });
+  const [current, setCurrent] = useState(agent);
   return (
     <Modal title={agent ? `Edit ${agent.name}` : 'New agent'} onClose={onClose} wide>
       <form onSubmit={save} className="form">
+        {current ? (
+          <div className="field">
+            <span className="field-label">Photo</span>
+            <PhotoField agent={current} onChange={(a) => (setCurrent(a), onSaved?.(a))} />
+          </div>
+        ) : (
+          <p className="muted small">You can add a photo once the agent is created.</p>
+        )}
         <div className="grid-2">
           <Field label="Name">
             <input value={values.name} onChange={set('name')} required autoFocus placeholder="e.g. Ledger" />
@@ -223,6 +233,69 @@ export function AgentForm({ agent, defaults = {}, onClose, onSaved }) {
         <Actions saving={saving} error={error} label={agent ? 'Save' : 'Add agent'} />
       </form>
     </Modal>
+  );
+}
+
+// ---------------- Photo ----------------
+/** Centre-crop to a square and shrink to 512px in the browser, so uploads are small and uniform. */
+async function squarePhoto(file) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((resolve, reject) => {
+      const i = new Image();
+      i.onload = () => resolve(i);
+      i.onerror = () => reject(new Error("That file isn't an image this browser can read"));
+      i.src = url;
+    });
+    const side = Math.min(img.naturalWidth, img.naturalHeight);
+    const out = Math.min(512, side);
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = out;
+    canvas.getContext('2d').drawImage(img, (img.naturalWidth - side) / 2, (img.naturalHeight - side) / 2, side, side, 0, 0, out, out);
+    const type = file.type === 'image/jpeg' ? 'image/jpeg' : 'image/png'; // PNG keeps transparency
+    return await new Promise((resolve) => canvas.toBlob(resolve, type, 0.88));
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+/** Upload or remove the agent's photo; it replaces the robot face everywhere, Slack included. */
+function PhotoField({ agent, onChange }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const pick = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setError('');
+    setBusy(true);
+    try {
+      const blob = await squarePhoto(file);
+      onChange(await api(`/agents/${agent.id}/photo`, { method: 'POST', raw: blob }));
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const remove = async () => onChange(await api(`/agents/${agent.id}/photo`, { method: 'DELETE' }));
+  return (
+    <div className="photo-field">
+      <BotAvatar id={agent.id} name={agent.name} color={agent.color} size={64} />
+      <div className="photo-actions">
+        <label className={`btn btn-sm ${busy ? 'disabled' : ''}`}>
+          {busy ? 'Uploading…' : agent.photo_version ? 'Change photo' : 'Upload photo'}
+          <input type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={pick} disabled={busy} />
+        </label>
+        {agent.photo_version ? (
+          <button type="button" className="btn btn-sm btn-danger-ghost" onClick={remove}>
+            Remove
+          </button>
+        ) : null}
+        <span className="muted small">PNG, JPEG or WebP. Cropped to a square. Shown in Hive and Slack.</span>
+        {error && <span className="small" style={{ color: 'var(--red)' }}>{error}</span>}
+      </div>
+    </div>
   );
 }
 

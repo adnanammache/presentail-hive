@@ -1,10 +1,11 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 
-export async function api(path, { method = 'GET', body } = {}) {
+export async function api(path, { method = 'GET', body, raw, type } = {}) {
+  // `raw` sends a file (Blob) as-is with its content type; `body` sends JSON.
   const res = await fetch(`/api${path}`, {
     method,
-    headers: body ? { 'Content-Type': 'application/json' } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
+    headers: raw ? { 'Content-Type': type || raw.type || 'application/octet-stream' } : body ? { 'Content-Type': 'application/json' } : undefined,
+    body: raw ?? (body ? JSON.stringify(body) : undefined),
   });
   const data = await res.json().catch(() => ({}));
   if (res.status === 401 && data.login) {
@@ -17,6 +18,15 @@ export async function api(path, { method = 'GET', body } = {}) {
 
 // ---- live updates over SSE ----
 export const LiveContext = createContext(null);
+
+/** Uploaded agent photos, looked up by agent id or name (every avatar in the app uses this). */
+export const PhotosContext = createContext(null);
+export const photoUrl = (a) => (a?.photo_version ? `/avatars/${a.id}.png?v=${a.photo_version}` : null);
+export function usePhoto({ id, name } = {}) {
+  const photos = useContext(PhotosContext);
+  if (!photos) return null;
+  return (id != null && photos.byId.get(Number(id))) || (name && photos.byName.get(name)) || null;
+}
 
 export function useLiveSource() {
   const listeners = useRef(new Set());

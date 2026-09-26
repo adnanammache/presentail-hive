@@ -213,6 +213,8 @@ CREATE TABLE IF NOT EXISTS close_items (
 addColumn('tasks', 'close_item_id', 'INTEGER REFERENCES close_items(id) ON DELETE SET NULL');
 addColumn('tasks', 'period', 'TEXT'); // YYYY-MM the close task is for
 addColumn('agents', 'budget_cents', 'INTEGER'); // monthly AI budget; NULL = no limit
+addColumn('agents', 'photo_type', 'TEXT'); // uploaded photo's image type (the file is DATA_DIR/agent-photos/<id>.img)
+addColumn('agents', 'photo_version', 'INTEGER'); // changes on each upload, for cache-busting
 addColumn('teams', 'budget_cents', 'INTEGER');
 
 db.exec(`

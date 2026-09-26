@@ -10,7 +10,7 @@ import { slackRouter } from './slack.js';
 import { scheduleBrief } from './brief.js';
 import { scheduleBackups } from './backup.js';
 import { scheduleHealthChecks } from './health.js';
-import { agentAvatarPng } from './avatars.js';
+import { agentAvatar } from './avatars.js';
 
 const PORT = Number(process.env.PORT) || 3001;
 
@@ -42,11 +42,13 @@ for (const file of ['manifest.webmanifest', 'sw.js', 'icon.svg', 'icon-192.png',
 // Brand artwork for the sign-in page (public: it's shown before sign-in).
 app.use('/brand', express.static(join(dist, 'brand'), { maxAge: '7d', fallthrough: false }));
 
-// Agent faces as PNGs, for Slack to show next to each agent's messages (public: no names in them).
+// Agent pictures (uploaded photo or robot face), for the app and for Slack next to each agent's
+// messages. Public: Slack fetches them, and they carry no names.
 app.get('/avatars/:file', async (req, res) => {
-  const png = await agentAvatarPng(Number.parseInt(req.params.file, 10));
-  if (!png) return res.status(404).end();
-  res.type('png').set('Cache-Control', 'public, max-age=86400').send(png);
+  const img = await agentAvatar(Number.parseInt(req.params.file, 10));
+  if (!img) return res.status(404).end();
+  // URLs carry ?v=<version>, so a changed photo is a new URL; the file itself can be cached.
+  res.type(img.type).set({ 'Cache-Control': 'public, max-age=86400', 'X-Content-Type-Options': 'nosniff' }).send(img.body);
 });
 
 // Sign-in pages (/login, /auth/*) are public; everything after requireAuth needs a signed-in user.

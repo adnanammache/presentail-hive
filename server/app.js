@@ -8,6 +8,7 @@ import { sendSlack, slackButtonsEnabled, slackConfigured } from './notify.js';
 import { approvers } from './slack.js';
 import { finishTask, handOff, reviewerFor } from './handoff.js';
 import { agentSpend, parseBudget, teamSpend } from './budget.js';
+import { removeAgentPhoto, saveAgentPhoto } from './avatars.js';
 import { backupNow, backupPath, listBackups } from './backup.js';
 import { healthReport, runChecks } from './health.js';
 import { listModels } from './models.js';
@@ -121,7 +122,7 @@ function createTask(body, actor) {
 // agents' actions and teaching them lessons (approvers, checked in those routes).
 const OWNER_ONLY = [
   ['post', '/teams'], ['patch', '/teams/:id'], ['delete', '/teams/:id'],
-  ['post', '/agents'], ['patch', '/agents/:id'], ['delete', '/agents/:id'], ['post', '/agents/:id/rotate-token'], ['post', '/agents/:id/sync'],
+  ['post', '/agents'], ['patch', '/agents/:id'], ['delete', '/agents/:id'], ['post', '/agents/:id/photo'], ['delete', '/agents/:id/photo'], ['post', '/agents/:id/rotate-token'], ['post', '/agents/:id/sync'],
   ['post', '/workflows'], ['patch', '/workflows/:id'], ['delete', '/workflows/:id'],
   ['post', '/close/items'], ['patch', '/close/items/:id'], ['delete', '/close/items/:id'],
   ['put', '/brief/config'], ['post', '/setup'],
@@ -376,6 +377,7 @@ export function dashboardRouter() {
   }));
 
   r.delete('/agents/:id', wrap((req) => {
+    removeAgentPhoto(Number(req.params.id));
     run('DELETE FROM agents WHERE id = ?', req.params.id);
     emit('agent');
     return { ok: true };
@@ -524,6 +526,23 @@ export function dashboardRouter() {
 
   // Capabilities: what agents can be given
   r.get('/capabilities', wrap(() => ({ skills: skillLibrary(), integrations: integrationList(), managed: managedReady() })));
+
+  // Agent photos (owners). The body is the image itself; it's checked by its bytes, not its name.
+  r.post('/agents/:id/photo', express.raw({ type: () => true, limit: '4mb' }), wrap((req) => {
+    if (!get('SELECT id FROM agents WHERE id = ?', req.params.id)) throw notFound('Agent');
+    try {
+      saveAgentPhoto(Number(req.params.id), req.body);
+    } catch (err) {
+      throw bad(err.message);
+    }
+    emit('agent', { agent_id: Number(req.params.id) });
+    return getAgent(req.params.id);
+  }));
+  r.delete('/agents/:id/photo', wrap((req) => {
+    removeAgentPhoto(Number(req.params.id));
+    emit('agent', { agent_id: Number(req.params.id) });
+    return getAgent(req.params.id);
+  }));
 
   // Lessons each agent has learned from corrections
   r.get('/agents/:id/lessons', wrap((req) => listLessons(req.params.id)));
