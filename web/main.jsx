@@ -1,4 +1,4 @@
-import { StrictMode, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import { StrictMode, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { LiveContext, PhotosContext, photoUrl, useApi, useLiveSource } from './api.js';
 import { Icon } from './components/ui.jsx';
@@ -11,7 +11,8 @@ import Projects from './pages/Projects.jsx';
 import Project from './pages/Project.jsx';
 import Composer from './components/Composer.jsx';
 import TaskPanel from './components/TaskPanel.jsx';
-import { TaskUIContext } from './components/work.jsx';
+import { PeopleUIContext, PersonAvatar, TaskUIContext, usePeopleUI } from './components/work.jsx';
+import { PreferencesPanel, ProfilePanel } from './components/Profile.jsx';
 import Workflows from './pages/Workflows.jsx';
 import Inbox from './pages/Inbox.jsx';
 import OrgChart from './pages/OrgChart.jsx';
@@ -47,6 +48,100 @@ const MORE = [
   ['settings', 'key', 'Settings'],
 ];
 
+/** Your name and photo in the sidebar: a menu with My profile, Preferences and Sign out. */
+function ProfileMenu({ me }) {
+  const { openPerson, openPreferences } = usePeopleUI();
+  const [open, setOpen] = useState(false);
+  const box = useRef(null);
+  const trigger = useRef(null);
+  const items = () => [...(box.current?.querySelectorAll('[role=menuitem]') ?? [])];
+  useEffect(() => {
+    if (!open) return;
+    items()[0]?.focus();
+    const away = (e) => !box.current?.contains(e.target) && setOpen(false);
+    document.addEventListener('mousedown', away);
+    return () => document.removeEventListener('mousedown', away);
+  }, [open]);
+  const onKey = (e) => {
+    const list = items();
+    const i = list.indexOf(document.activeElement);
+    if (e.key === 'ArrowDown') (e.preventDefault(), list[(i + 1) % list.length]?.focus());
+    else if (e.key === 'ArrowUp') (e.preventDefault(), list[(i - 1 + list.length) % list.length]?.focus());
+    else if (e.key === 'Home') (e.preventDefault(), list[0]?.focus());
+    else if (e.key === 'End') (e.preventDefault(), list.at(-1)?.focus());
+    else if (e.key === 'Escape' || e.key === 'Tab') {
+      if (e.key === 'Escape') e.preventDefault();
+      setOpen(false);
+      trigger.current?.focus();
+    }
+  };
+  const choose = (fn) => () => {
+    setOpen(false);
+    fn(trigger.current);
+  };
+  return (
+    <div className="me-menu" ref={box} onKeyDown={onKey}>
+      <button
+        ref={trigger}
+        type="button"
+        className="me"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+        onKeyDown={(e) => e.key === 'ArrowUp' && (e.preventDefault(), setOpen(true))}
+      >
+        <PersonAvatar name={me.name} photo={me.avatar_url} size={32} />
+        <span className="grow me-text">
+          <span className="me-name clamp-1">{me.name}</span>
+          {me.title && <span className="me-sub clamp-1">{me.title}</span>}
+        </span>
+        <Icon name="chevron" size={14} />
+      </button>
+      {open && (
+        <div className="menu me-pop" role="menu" aria-label="Your account">
+          <button type="button" role="menuitem" onClick={choose((t) => openPerson(null, t))}>
+            <Icon name="user" size={15} /> My profile
+          </button>
+          <button type="button" role="menuitem" onClick={choose((t) => openPreferences(t))}>
+            <Icon name="key" size={15} /> Preferences
+          </button>
+          {me.auth === 'google' && (
+            <a role="menuitem" href="/auth/logout" className="menu-link">
+              <Icon name="x" size={15} /> Sign out
+            </a>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Profile and preferences panels, above every page. Focus goes back to what opened them. */
+function PeopleUI({ children }) {
+  const [panel, setPanel] = useState(null); // { kind: 'person', email } | { kind: 'prefs' }
+  const returnTo = useRef(null);
+  const openPerson = useCallback((email, from) => {
+    returnTo.current = from ?? document.activeElement;
+    setPanel({ kind: 'person', email: email ?? null });
+  }, []);
+  const openPreferences = useCallback((from) => {
+    returnTo.current = from ?? document.activeElement;
+    setPanel({ kind: 'prefs' });
+  }, []);
+  const close = useCallback(() => {
+    setPanel(null);
+    setTimeout(() => returnTo.current?.focus?.(), 0);
+  }, []);
+  const value = useMemo(() => ({ openPerson, openPreferences }), [openPerson, openPreferences]);
+  return (
+    <PeopleUIContext.Provider value={value}>
+      {children}
+      {panel?.kind === 'person' && <ProfilePanel key={panel.email ?? 'me'} email={panel.email} onClose={close} />}
+      {panel?.kind === 'prefs' && <PreferencesPanel onClose={close} />}
+    </PeopleUIContext.Provider>
+  );
+}
+
 function Favorites({ section, id }) {
   const { data: favs } = useApi('/projects?favorites=1', ['project']);
   if (!favs?.length) return null;
@@ -66,7 +161,7 @@ function Favorites({ section, id }) {
 function Shell() {
   const [section = '', id, sub] = useHashRoute();
   const { data: meta } = useApi('/meta');
-  const { data: me } = useApi('/me');
+  const { data: me } = useApi('/me', ['user']);
   const { data: overview } = useApi('/overview', ['task']);
   const [navOpen, setNavOpen] = useState(false);
   const live = useContext(LiveContext);
@@ -118,17 +213,7 @@ function Shell() {
           </div>
         </nav>
         <div className="sidebar-foot">
-          {me?.auth === 'google' && (
-            <div className="me">
-              {me.picture ? <img src={me.picture} alt="" referrerPolicy="no-referrer" /> : <span className="me-initial">{me.name[0]}</span>}
-              <div className="grow">
-                <div className="me-name clamp-1">{me.name}</div>
-                <a href="/auth/logout" className="link small">
-                  Sign out
-                </a>
-              </div>
-            </div>
-          )}
+          {me && <ProfileMenu me={me} />}
           <span className={`live ${live.connected ? 'on' : ''}`} /> {live.connected ? 'Live' : 'Reconnecting…'}
           {meta && !meta.claude && <div className="warn-note">Claude API key not set — Claude agents can’t reply yet.</div>}
         </div>
@@ -219,7 +304,9 @@ function App() {
     <LiveContext.Provider value={live}>
       <Photos>
         <TaskUI>
-          <Shell />
+          <PeopleUI>
+            <Shell />
+          </PeopleUI>
         </TaskUI>
       </Photos>
     </LiveContext.Provider>

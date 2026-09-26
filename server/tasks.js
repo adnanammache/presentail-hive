@@ -22,6 +22,7 @@ import { describeRule, dubaiNow, addDays, startReached } from './recurrence.js';
 import { canApproveFor } from './roles.js';
 import { pushToUser } from './push.js';
 import { finishRun } from './scheduler.js';
+import { avatarUrl } from './people.js';
 import { dispatchTask } from './dispatch.js';
 
 export const STAGES = ['backlog', 'ready', 'in_progress', 'review', 'done'];
@@ -43,14 +44,16 @@ export const agentActor = (agent) => ({ type: 'agent', ref: String(agent.id), na
 // ---------------------------------------------------------------- history
 
 export function taskEvent(taskId, actor, kind, text) {
-  run('INSERT INTO task_events (task_id, actor, kind, text) VALUES (?, ?, ?, ?)', taskId, typeof actor === 'string' ? actor : actor?.name ?? 'Hive', kind, text);
+  const ref = actor?.type === 'user' ? `user:${actor.ref}` : actor?.type === 'agent' ? `agent:${actor.ref}` : null;
+  run('INSERT INTO task_events (task_id, actor, kind, text, actor_ref) VALUES (?, ?, ?, ?, ?)', taskId, typeof actor === 'string' ? actor : actor?.name ?? 'Hive', kind, text, ref);
 }
 
 // ---------------------------------------------------------------- reading
 
 const SELECT = `
   SELECT t.*, a.name AS agent_name, a.color AS agent_color, a.platform AS agent_platform, a.title AS agent_title, a.status AS agent_status,
-    u.name AS assignee_name, ru.name AS reviewer_person_name, pr.name AS project_name, pr.color AS project_color, pr.status AS project_status,
+    u.name AS assignee_name, u.photo_source AS a_photo_source, u.photo_version AS a_photo_version, u.provider_photo AS a_provider_photo,
+    ru.name AS reviewer_person_name, ru.photo_source AS r_photo_source, ru.photo_version AS r_photo_version, ru.provider_photo AS r_provider_photo, pr.name AS project_name, pr.color AS project_color, pr.status AS project_status,
     w.name AS workflow_name, e.name AS entity_name, s.rule AS series_rule, s.ends_on AS series_ends_on, s.ended_at AS series_ended_at,
     COALESCE(t.handoff_agent_id, CASE WHEN t.parent_task_id IS NULL THEN a.reviewer_id END) AS reviewer_id,
     rv.name AS reviewer_name, p.title AS parent_title, h.status AS handoff_status, ha.name AS handoff_agent_name,
@@ -79,10 +82,16 @@ export function decorate(t) {
   const assignee = t.agent_id
     ? { type: 'agent', ref: `agent:${t.agent_id}`, id: t.agent_id, name: t.agent_name, detail: t.agent_title, color: t.agent_color }
     : t.assignee_email
-      ? { type: 'user', ref: `user:${t.assignee_email}`, email: t.assignee_email, name: t.assignee_name || t.assignee_email }
+      ? {
+          type: 'user', ref: `user:${t.assignee_email}`, email: t.assignee_email, name: t.assignee_name || t.assignee_email,
+          avatar_url: avatarUrl({ email: t.assignee_email, photo_source: t.a_photo_source, photo_version: t.a_photo_version, provider_photo: t.a_provider_photo }),
+        }
       : null;
   const reviewer = t.reviewer_email
-    ? { type: 'user', ref: `user:${t.reviewer_email}`, email: t.reviewer_email, name: t.reviewer_person_name || t.reviewer_email }
+    ? {
+        type: 'user', ref: `user:${t.reviewer_email}`, email: t.reviewer_email, name: t.reviewer_person_name || t.reviewer_email,
+        avatar_url: avatarUrl({ email: t.reviewer_email, photo_source: t.r_photo_source, photo_version: t.r_photo_version, provider_photo: t.r_provider_photo }),
+      }
     : t.reviewer_id
       ? { type: 'agent', ref: `agent:${t.reviewer_id}`, id: t.reviewer_id, name: t.reviewer_name }
       : null;
@@ -199,14 +208,19 @@ export function parseAssignee(value) {
   }
   if (v?.type === 'user') {
     const email = String(v.email ?? '').toLowerCase();
-    if (!get('SELECT email FROM users WHERE email = ?', email)) throw bad('That person is not a member of this workspace');
+    const u = get('SELECT email, status FROM users WHERE email = ?', email);
+    if (!u) throw bad('That person is not a member of this workspace');
+    if (u.status !== 'active') throw bad(`${email}'s access is turned off, so they can't be given work. Reassign it to someone else.`);
     return { agent_id: null, assignee_email: email };
   }
   throw bad('assignee must be a person or an AI agent');
 }
 
 function checkPerson(email, what) {
-  if (email && !get('SELECT email FROM users WHERE email = ?', String(email).toLowerCase())) throw bad(`${what} is not a member of this workspace`);
+  if (!email) return;
+  const u = get('SELECT status FROM users WHERE email = ?', String(email).toLowerCase());
+  if (!u) throw bad(`${what} is not a member of this workspace`);
+  if (u.status !== 'active') throw bad(`${what}'s access is turned off`);
 }
 
 /** Can this person put tasks in (or take them out of) this project? */

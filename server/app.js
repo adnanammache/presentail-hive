@@ -36,6 +36,11 @@ import {
   removeResource, resourceFile, saveDraft, setFavorite, updateProject,
 } from './projects.js';
 import { cleanFilename } from './http.js';
+import {
+  addTeamMembers, createInvite, deactivate, directory, getPerson, listInvites, listPeople, photoFile, publicPerson, reactivate, removePhoto,
+  removeTeamMember, resendInvite, revokeInvite, savePhoto, setMembership, setTeamRole, updateProfile, useAccountPhoto, avatarUrl,
+} from './people.js';
+import { mailConfigured } from './mail.js';
 
 const PLATFORMS = ['managed', 'claude', 'make', 'replit', 'n8n', 'custom', 'human'];
 const APPROVALS = ['agent_asks', 'every_command', 'autonomous'];
@@ -110,6 +115,7 @@ const OWNER_ONLY = [
   ['get', '/backups'], ['post', '/backups'], ['get', '/backups/:name'],
   ['post', '/settings/slack/test'], ['post', '/settings/odoo/test'],
   ['get', '/users'], ['patch', '/users/:email'],
+  ['get', '/invitations'], ['post', '/invitations'], ['post', '/invitations/:id/resend'], ['delete', '/invitations/:id'],
 ];
 
 /** Webhooks go out to the internet over https only, never to Hive's own network. */
@@ -146,9 +152,38 @@ export function dashboardRouter() {
   const ownerOnly = (req, res, next) => (isOwner(req.hive) ? next() : next(forbidden('Only a Hive owner can do this. Ask an owner.')));
   for (const [method, path] of OWNER_ONLY) r[method](path, ownerOnly);
 
-  r.get('/me', (req, res) => res.json({ ...req.user, email: req.hive.email, name: req.user?.name || req.hive.name, auth: authMode(), role: req.hive.role, teams: req.hive.teams }));
-  // Everyone in the workspace, for assigning work (names and roles only).
-  r.get('/people', wrap(() => all("SELECT email, name, role FROM users ORDER BY CASE WHEN email = 'admin@local' THEN 1 ELSE 0 END, name COLLATE NOCASE")));
+  r.get('/me', (req, res) => {
+    const profile = publicPerson(get('SELECT * FROM users WHERE email = ?', req.hive.email)) ?? {};
+    res.json({ ...req.user, ...profile, email: req.hive.email, name: profile.name || req.user?.name || req.hive.name, auth: authMode(), role: req.hive.role, teams: req.hive.teams });
+  });
+
+  // People: everyone active in the workspace (owners can ask for deactivated ones too).
+  r.get('/people', wrap((req) => listPeople({ includeInactive: req.query.all === '1' && isOwner(req.hive) })));
+  r.get('/people/:email', wrap((req) => getPerson(req.params.email, req.hive)));
+  r.patch('/people/:email', wrap((req) => updateProfile(req.params.email, req.body ?? {}, req.hive)));
+  r.get('/people/:email/photo', (req, res, next) => {
+    const f = photoFile(req.params.email);
+    if (!f) return next(notFound('Photo'));
+    res.set('Cache-Control', 'private, max-age=31536000, immutable').type(f.type).send(f.body);
+  });
+  r.put('/people/:email/photo', express.raw({ type: () => true, limit: '4mb' }), wrap((req) => savePhoto(req.params.email, req.body, req.hive)));
+  r.delete('/people/:email/photo', wrap((req) => removePhoto(req.params.email, req.hive)));
+  r.post('/people/:email/photo/account', wrap((req) => useAccountPhoto(req.params.email, req.hive)));
+  r.patch('/people/:email/membership', wrap((req) => setMembership(req.params.email, req.body ?? {}, req.hive)));
+  r.post('/people/:email/deactivate', wrap((req) => deactivate(req.params.email, req.hive)));
+  r.post('/people/:email/reactivate', wrap((req) => reactivate(req.params.email, req.hive)));
+
+  // Team & agents: teams with their people and agents; membership changes.
+  r.get('/directory', wrap((req) => directory(req.hive)));
+  r.post('/teams/:id/members', wrap((req) => addTeamMembers(req.params.id, req.body?.members, req.hive)));
+  r.delete('/teams/:id/members/:type/:ref', wrap((req) => removeTeamMember(req.params.id, req.params.type, req.params.ref, req.hive)));
+  r.patch('/teams/:id/members/user/:email', wrap((req) => setTeamRole(req.params.id, req.params.email, req.body?.role, req.hive)));
+
+  // Invitations (owners)
+  r.get('/invitations', wrap(() => ({ invitations: listInvites(), email_configured: mailConfigured(), google: authMode() === 'google' })));
+  r.post('/invitations', wrap((req) => createInvite(req.body ?? {}, req.hive)));
+  r.post('/invitations/:id/resend', wrap((req) => resendInvite(req.params.id, req.hive)));
+  r.delete('/invitations/:id', wrap((req) => revokeInvite(req.params.id, req.hive)));
   r.get('/users', wrap(() => listUsers()));
   r.patch('/users/:email', wrap((req) => {
     try {
@@ -719,7 +754,10 @@ export function dashboardRouter() {
     return getTask(t.id);
   }));
 
-  r.get('/tasks/:id/comments', wrap((req) => all('SELECT * FROM task_comments WHERE task_id = ? ORDER BY id', Number(taskOr404(req.params.id).id))));
+  const withAvatar = (row, email) => ({ ...row, avatar_url: email ? avatarUrl(get('SELECT email, photo_source, photo_version, provider_photo FROM users WHERE email = ?', email)) : null });
+  r.get('/tasks/:id/comments', wrap((req) =>
+    all('SELECT * FROM task_comments WHERE task_id = ? ORDER BY id', Number(taskOr404(req.params.id).id)).map((c) => withAvatar(c, c.author_type === 'user' ? c.author_ref : null)),
+  ));
   r.post('/tasks/:id/comments', wrap((req) => {
     const t = taskOr404(req.params.id);
     const body = String(req.body?.body ?? '').trim().slice(0, 8000);
@@ -728,7 +766,9 @@ export function dashboardRouter() {
     emit('task', { task_id: t.id });
     return get('SELECT * FROM task_comments WHERE id = ?', id);
   }));
-  r.get('/tasks/:id/events', wrap((req) => all('SELECT * FROM task_events WHERE task_id = ? ORDER BY id DESC LIMIT 200', Number(taskOr404(req.params.id).id))));
+  r.get('/tasks/:id/events', wrap((req) =>
+    all('SELECT * FROM task_events WHERE task_id = ? ORDER BY id DESC LIMIT 200', Number(taskOr404(req.params.id).id)).map((e) => withAvatar(e, e.actor_ref?.startsWith('user:') ? e.actor_ref.slice(5) : null)),
+  ));
   r.get('/tasks/:id/links', wrap((req) => all('SELECT * FROM task_links WHERE task_id = ? ORDER BY id', Number(taskOr404(req.params.id).id))));
   r.post('/tasks/:id/links', wrap((req) => {
     const t = editable(req);
