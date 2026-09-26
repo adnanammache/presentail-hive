@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { api, fmtDateTime, useApi } from '../api.js';
-import { Field, Icon, Modal, PLATFORM_LABELS, TASK_COLUMNS } from './ui.jsx';
+import { addDaysISO, api, daysBetweenISO, dubaiToday, fmtDateTime, fmtDay, useApi } from '../api.js';
+import { DateInput, Field, Icon, Modal, PLATFORM_LABELS, TASK_COLUMNS } from './ui.jsx';
 import TaskRun, { uploadFiles } from './TaskRun.jsx';
 import { recommendModel } from '../../shared/modelAdvice.js';
 import BotAvatar from './BotAvatar.jsx';
@@ -24,7 +24,7 @@ function useForm(initial) {
       setSaving(false);
     }
   };
-  return { values, set, submit, error, saving };
+  return { values, set, submit, error, saving, setValues, setError };
 }
 
 function Actions({ saving, error, label = 'Save', onDelete }) {
@@ -347,59 +347,223 @@ function ModelSelect({ models, value, onChange, recommended }) {
 }
 
 // ---------------- Task ----------------
+const REMIND_OPTIONS = [
+  ['none', 'None'],
+  ['0', 'On the day'],
+  ['7', '1 week before'],
+  ['14', '2 weeks before'],
+  ['custom', 'Custom…'],
+];
+const REPEAT_OPTIONS = [
+  ['none', 'Does not repeat'],
+  ['monthly', 'Monthly'],
+  ['quarterly', 'Quarterly'],
+  ['yearly', 'Yearly'],
+  ['custom', 'Custom…'],
+];
+const repeatLabel = (r) => (!r ? '' : r.freq === 'custom' ? (r.every === 1 ? `every ${r.unit}` : `every ${r.every} ${r.unit}s`) : r.freq);
+
+/** The panel's form state for a task (or template) → what the API takes. */
+function scheduleBody(v) {
+  const due = v.due_date || null;
+  const remind =
+    v.remind === 'auto' ? (due ? 14 : null) : v.remind === 'none' ? null : v.remind === 'custom' ? (v.remind_custom === '' ? null : Number(v.remind_custom)) : Number(v.remind);
+  const repeat = v.repeat_freq === 'none' ? null : v.repeat_freq === 'custom' ? { freq: 'custom', every: Number(v.repeat_every) || 1, unit: v.repeat_unit } : { freq: v.repeat_freq };
+  return {
+    due_date: due,
+    start_on: v.start_mode === 'date' ? v.start_on || null : null,
+    remind_days: remind,
+    repeat,
+    ends_on: repeat ? v.ends_on || null : null,
+  };
+}
+
+function formFromTask(task) {
+  if (!task) return {};
+  const r = task.repeat;
+  const remind = task.remind_days == null ? 'none' : ['0', '7', '14'].includes(String(task.remind_days)) ? String(task.remind_days) : 'custom';
+  return {
+    start_mode: task.start_on && task.status === 'scheduled' ? 'date' : task.start_on ? 'date' : 'now',
+    remind,
+    remind_custom: remind === 'custom' ? String(task.remind_days) : '',
+    repeat_freq: r ? r.freq : 'none',
+    repeat_every: r?.every ?? 2,
+    repeat_unit: r?.unit ?? 'week',
+    ends_on: task.series_ends_on ?? '',
+    needs_approval: Boolean(task.needs_approval),
+    entity_id: task.entity_id ?? '',
+  };
+}
+
+function formFromTemplate(t, v) {
+  return {
+    ...v,
+    template_id: String(t.id),
+    title: t.title || t.name,
+    description: t.description ?? '',
+    done_definition: t.done_definition ?? '',
+    agent_id: t.agent_id ?? '',
+    entity_id: t.entity_id ?? '',
+    priority: t.priority ?? 'medium',
+    repeat_freq: t.repeat ? t.repeat.freq : 'none',
+    repeat_every: t.repeat?.every ?? 2,
+    repeat_unit: t.repeat?.unit ?? 'week',
+    remind: t.remind_days == null ? 'none' : ['0', '7', '14'].includes(String(t.remind_days)) ? String(t.remind_days) : 'custom',
+    remind_custom: t.remind_days != null && !['0', '7', '14'].includes(String(t.remind_days)) ? String(t.remind_days) : '',
+    needs_approval: Boolean(t.needs_approval),
+    start_offset: t.start_offset_days,
+    start_mode: t.start_offset_days != null ? 'date' : 'now',
+    start_on: t.start_offset_days != null && v.due_date ? addDaysISO(v.due_date, -t.start_offset_days) : '',
+  };
+}
+
 export function TaskForm({ task, defaults = {}, onClose }) {
   const { data: agents } = useApi('/agents', ['agent']);
+  const { data: entities } = useApi('/entities', ['entity']);
+  const { data: templates, reload: reloadTemplates } = useApi(task ? null : '/task-templates', ['template']);
   const [newFiles, setNewFiles] = useState([]);
-  const { values, set, submit, error, saving } = useForm({
-    title: '', description: '', status: 'todo', priority: 'medium', agent_id: '', due_date: '', result: '', handoff_agent_id: '',
+  const [askScope, setAskScope] = useState(null); // the changes waiting for "Only this one" / "This and future ones"
+  const [note, setNote] = useState('');
+  const { values, set, submit, error, saving, setValues, setError } = useForm({
+    title: '', description: '', done_definition: '', status: 'todo', priority: 'medium', agent_id: '', due_date: '', result: '', handoff_agent_id: '',
+    entity_id: '', start_mode: 'now', start_on: '', remind: 'auto', remind_custom: '', repeat_freq: 'none', repeat_every: 2, repeat_unit: 'week',
+    ends_on: '', needs_approval: true, start_offset: null, template_id: '',
     ...defaults,
     ...task,
+    ...formFromTask(task),
   });
+  const put = (key, value) => setValues((v) => ({ ...v, [key]: value }));
   const agent = agents?.find((a) => a.id === Number(values.agent_id));
   const defaultReviewer = agents?.find((a) => a.id === agent?.reviewer_id);
   const managed = agent?.platform === 'managed';
-  const save = submit(async (v) => {
-    const body = {
-      title: v.title, description: v.description, status: v.status, priority: v.priority, agent_id: numOrNull(v.agent_id), due_date: v.due_date || null, result: v.result,
-      handoff_agent_id: numOrNull(v.handoff_agent_id),
-      ...(v.close_item_id && !task ? { close_item_id: v.close_item_id, period: v.period } : {}),
-    };
-    if (task) {
-      // Only send what you changed: an agent may have updated status/result while this was open.
-      const ids = ['agent_id', 'handoff_agent_id'];
-      const changed = Object.fromEntries(Object.entries(body).filter(([k, v]) => v !== (ids.includes(k) ? numOrNull(task[k]) : task[k] ?? (k === 'due_date' ? null : ''))));
-      if (Object.keys(changed).length) await api(`/tasks/${task.id}`, { method: 'PATCH', body: changed });
-    } else if (managed) {
-      // Managed agents need their files before they start.
-      const created = await api('/tasks', { method: 'POST', body: { ...body, dispatch: false } });
-      if (newFiles.length) await uploadFiles(created.id, newFiles);
-      if (agent.status !== 'paused') await api(`/tasks/${created.id}/runs`, { method: 'POST' });
-    } else await api('/tasks', { method: 'POST', body });
-    onClose();
+  const sched = scheduleBody(values);
+  const repeating = Boolean(sched.repeat);
+
+  // A template's start offset follows the due date: "start 18 days before it's due".
+  const setDue = (due) =>
+    setValues((v) => ({ ...v, due_date: due ?? '', ...(v.start_offset != null && due ? { start_mode: 'date', start_on: addDaysISO(due, -v.start_offset) } : {}) }));
+  const setStart = (d) => setValues((v) => ({ ...v, start_on: d ?? '', start_offset: null }));
+
+  const body = (v) => ({
+    title: v.title, description: v.description, done_definition: v.done_definition, priority: v.priority, agent_id: numOrNull(v.agent_id),
+    handoff_agent_id: numOrNull(v.handoff_agent_id), entity_id: numOrNull(v.entity_id), needs_approval: Boolean(v.needs_approval),
+    ...scheduleBody(v),
   });
-  const remove = async () => {
-    if (!confirm('Delete this task?')) return;
-    await api(`/tasks/${task.id}`, { method: 'DELETE' });
+
+  const create = async (v, startNow) => {
+    if (v.start_mode === 'date' && !v.start_on && !startNow) throw new Error('Pick the start date, or set Start to Now');
+    const b = { ...body(v), status: v.status, start_now: startNow, ...(v.close_item_id ? { close_item_id: v.close_item_id, period: v.period } : {}) };
+    if (managed) {
+      // Managed agents need their files before they start.
+      const created = await api('/tasks', { method: 'POST', body: { ...b, dispatch: false } });
+      if (newFiles.length) await uploadFiles(created.id, newFiles);
+      if (created.status !== 'scheduled' && agent.status !== 'paused') await api(`/tasks/${created.id}/runs`, { method: 'POST' });
+    } else await api('/tasks', { method: 'POST', body: b });
     onClose();
   };
+
+  const original = task ? { ...body({ ...values, ...task, ...formFromTask(task) }), status: task.status, result: task.result ?? '' } : null;
+  const changes = (v) => {
+    const now = { ...body(v), status: v.status, result: v.result ?? '' };
+    return Object.fromEntries(Object.entries(now).filter(([k, x]) => JSON.stringify(x ?? null) !== JSON.stringify(original[k] ?? null)));
+  };
+  const saveEdit = async (changed, scope) => {
+    if (Object.keys(changed).length) await api(`/tasks/${task.id}`, { method: 'PATCH', body: { ...changed, ...(scope ? { scope } : {}) } });
+    onClose();
+  };
+  const save = submit(async (v) => {
+    if (!task) return create(v, false);
+    const changed = changes(v);
+    // Only send what you changed: an agent may have updated status/result while this was open.
+    const seriesChange = Object.keys(changed).some((k) => !['status', 'result'].includes(k));
+    if (task.series_id && task.repeat && seriesChange && !('repeat' in changed)) return setAskScope(changed);
+    return saveEdit(changed, 'repeat' in changed ? 'future' : undefined);
+  });
+  const startNow = submit((v) => create(v, true));
+
+  const remove = async () => {
+    if (!confirm('Delete this task?')) return;
+    const stop = task.series_id && task.repeat && confirm('This task repeats. Stop the repeats too?\n\nOK: no more new ones.\nCancel: delete only this one; the next one is still created on schedule.');
+    await api(`/tasks/${task.id}${stop ? '?stop_series=1' : ''}`, { method: 'DELETE' });
+    onClose();
+  };
+
+  const saveTemplate = async () => {
+    const name = prompt('Name this template', values.title || '');
+    if (!name?.trim()) return;
+    const v = values;
+    const s = scheduleBody(v);
+    const offset = v.start_mode === 'date' && v.start_on && v.due_date ? daysBetweenISO(v.start_on, v.due_date) : v.start_offset ?? null;
+    try {
+      const t = await api('/task-templates', {
+        method: 'POST',
+        body: {
+          name, title: v.title, description: v.description, done_definition: v.done_definition, priority: v.priority, agent_id: numOrNull(v.agent_id),
+          entity_id: numOrNull(v.entity_id), repeat: s.repeat, start_offset_days: offset != null && offset >= 0 ? offset : null, remind_days: s.remind_days, needs_approval: Boolean(v.needs_approval),
+        },
+      });
+      await reloadTemplates();
+      put('template_id', String(t.id));
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  // What happens when you press Create (Dubai time: a start date today means 8:00 today).
+  const dubaiHour = Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Dubai', hour: 'numeric', hourCycle: 'h23' }).format(new Date()));
+  const waits = values.start_mode === 'date' && sched.start_on && (sched.start_on > dubaiToday() || (sched.start_on === dubaiToday() && dubaiHour < 8));
+  const startText =
+    !task &&
+    (!agent
+      ? waits
+        ? `No agent yet: the task waits in Scheduled until ${fmtDay(sched.start_on)}.`
+        : 'No agent yet: the task waits in To do.'
+      : waits
+        ? `${agent.name} will start on ${fmtDay(sched.start_on)} (8:00 Dubai time). "Create & start now" starts right away.`
+        : `${agent.name} starts as soon as you create the task.`);
+  const offsetNow = sched.due_date && (sched.start_on || !task) ? daysBetweenISO(sched.start_on || dubaiToday(), sched.due_date) : null;
+
   return (
     <Modal title={task ? `Task #${task.id}` : 'New task'} onClose={onClose} wide>
-      <form onSubmit={save} className="form">
+      <form onSubmit={save} className="form task-form">
+        {!task && templates?.length > 0 && (
+          <Field label="Start from template">
+            <select
+              value={values.template_id}
+              onChange={(e) => {
+                const t = templates.find((x) => String(x.id) === e.target.value);
+                if (t) setValues((v) => formFromTemplate(t, v));
+                else put('template_id', '');
+              }}
+            >
+              <option value="">Blank task</option>
+              {templates.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+        )}
         <Field label="Title">
           <input value={values.title} onChange={set('title')} required autoFocus={!task} />
         </Field>
         <Field label="Instructions">
           <textarea rows={4} value={values.description} onChange={set('description')} placeholder="What should the agent do? Include links, amounts, deadlines…" />
         </Field>
-        <div className="grid-4">
+        <Field label="Definition of done (optional)">
+          <input value={values.done_definition} onChange={set('done_definition')} placeholder="e.g. Return drafted in Wafeq, summary sent to me." />
+        </Field>
+        <div className={task ? 'grid-4' : 'grid-3'}>
           <Field label="Agent">
             <AgentSelect value={values.agent_id} onChange={set('agent_id')} />
           </Field>
-          <Field label="Status">
-            <select value={values.status} onChange={set('status')}>
-              {TASK_COLUMNS.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.label}
+          <Field label="Entity">
+            <select value={values.entity_id ?? ''} onChange={set('entity_id')}>
+              <option value="">All / not entity-specific</option>
+              {entities?.map((e) => (
+                <option key={e.id} value={e.id}>
+                  {e.name}
                 </option>
               ))}
             </select>
@@ -413,9 +577,17 @@ export function TaskForm({ task, defaults = {}, onClose }) {
               ))}
             </select>
           </Field>
-          <Field label="Due">
-            <input type="date" value={values.due_date ?? ''} onChange={set('due_date')} />
-          </Field>
+          {task && (
+            <Field label="Status">
+              <select value={values.status} onChange={set('status')}>
+                {TASK_COLUMNS.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.label}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          )}
         </div>
         {values.agent_id && !task?.parent_task_id && (
           <Field label="Reviewed by" hint="When the agent says it's finished, this agent checks the work before it comes back to you.">
@@ -431,6 +603,117 @@ export function TaskForm({ task, defaults = {}, onClose }) {
             </select>
           </Field>
         )}
+
+        {!task?.parent_task_id && (
+          <fieldset className="form-section">
+            <legend>Schedule</legend>
+            <div className="grid-3">
+              <div className="field">
+                <span className="field-label">Start</span>
+                <div className="field-pair">
+                  <select value={values.start_mode} onChange={set('start_mode')} aria-label="Start">
+                    <option value="now">Now</option>
+                    <option value="date">On a date</option>
+                  </select>
+                  {values.start_mode === 'date' && <DateInput value={values.start_on} onChange={setStart} label="Start date" />}
+                </div>
+              </div>
+              <div className="field">
+                <span className="field-label">Due</span>
+                <DateInput value={values.due_date} onChange={setDue} label="Due date" placeholder="No due date" clearable />
+              </div>
+              <div className="field">
+                <span className="field-label">Remind me</span>
+                <div className="field-pair">
+                  <select
+                    value={values.remind === 'auto' ? (values.due_date ? '14' : 'none') : values.remind}
+                    onChange={set('remind')}
+                    aria-label="Remind me"
+                    disabled={!values.due_date}
+                    title={values.due_date ? undefined : 'Set a due date first'}
+                  >
+                    {REMIND_OPTIONS.map(([k, l]) => (
+                      <option key={k} value={k}>
+                        {l}
+                      </option>
+                    ))}
+                  </select>
+                  {values.remind === 'custom' && (
+                    <span className="inline-num">
+                      <input type="number" min="0" max="365" value={values.remind_custom} onChange={set('remind_custom')} aria-label="Days before" /> days before
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+            <div className="grid-3">
+              <div className="field">
+                <span className="field-label">Repeat</span>
+                <div className="field-pair">
+                  <select value={values.repeat_freq} onChange={set('repeat_freq')} aria-label="Repeat">
+                    {REPEAT_OPTIONS.map(([k, l]) => (
+                      <option key={k} value={k}>
+                        {l}
+                      </option>
+                    ))}
+                  </select>
+                  {values.repeat_freq === 'custom' && (
+                    <span className="inline-num">
+                      every <input type="number" min="1" max="366" value={values.repeat_every} onChange={set('repeat_every')} aria-label="Repeat every" />
+                      <select value={values.repeat_unit} onChange={set('repeat_unit')} aria-label="Repeat unit">
+                        <option value="day">days</option>
+                        <option value="week">weeks</option>
+                        <option value="month">months</option>
+                      </select>
+                    </span>
+                  )}
+                </div>
+              </div>
+              {repeating && (
+                <div className="field">
+                  <span className="field-label">Ends on (optional)</span>
+                  <DateInput value={values.ends_on} onChange={(d) => put('ends_on', d ?? '')} label="Ends on" placeholder="Never" clearable />
+                </div>
+              )}
+            </div>
+            {repeating && (
+              <p className="field-hint">
+                {!values.due_date
+                  ? 'Set a due date: it decides when each repeat is due.'
+                  : `Repeats ${repeatLabel(sched.repeat)}. When this one is done, or its due date passes, the next one is created${
+                      offsetNow != null && (values.start_mode === 'date' || !task) ? `, starting ${offsetNow === 0 ? 'on its due date' : `${offsetNow} day${offsetNow === 1 ? '' : 's'} before it's due`}` : ''
+                    }.`}
+              </p>
+            )}
+            {values.start_offset != null && !values.due_date && <p className="field-hint">This template starts {values.start_offset} days before the due date. Set the due date to fill in the start.</p>}
+            <label className="check">
+              <input type="checkbox" checked={Boolean(values.needs_approval)} onChange={set('needs_approval')} />
+              Needs my approval before submitting or paying anything
+            </label>
+          </fieldset>
+        )}
+
+        {task?.series_id && <SeriesBar task={task} />}
+        {task?.status === 'waiting_approval' && (
+          <div className="approval task-approval">
+            <div className="small strong">{task.agent_name ?? 'The agent'} is waiting for your approval before submitting or paying anything.</div>
+            <textarea rows={2} value={note} onChange={(e) => setNote(e.target.value)} placeholder="Note for the agent (needed to send back)" />
+            <div className="approval-actions">
+              <button
+                type="button"
+                className="btn btn-sm btn-danger-ghost"
+                disabled={!note.trim()}
+                onClick={() => api(`/tasks/${task.id}/send-back`, { method: 'POST', body: { note } }).then(onClose, (e) => setError(e.message))}
+              >
+                Send back
+              </button>
+              <button type="button" className="btn btn-sm btn-primary" onClick={() => api(`/tasks/${task.id}/approve`, { method: 'POST', body: { note } }).then(onClose, (e) => setError(e.message))}>
+                <Icon name="check" size={13} /> Approve
+              </button>
+            </div>
+          </div>
+        )}
+        {task?.approved_at && <p className="muted small">✓ Approved by {task.approved_by} on {fmtDateTime(task.approved_at, 'Asia/Dubai')}.</p>}
         {task && <HandoffBar taskId={task.id} />}
         {task && agent && <TeachBar agent={agent} taskId={task.id} />}
         {task && (
@@ -457,15 +740,74 @@ export function TaskForm({ task, defaults = {}, onClose }) {
           </Field>
         )}
         {task?.workflow_name && <p className="muted small">Created by workflow “{task.workflow_name}”.</p>}
-        {!task && (
-          <p className="muted small">
-            {managed ? `${agent.name} starts working as soon as you create the task.` : 'Assigning an agent sends the task to it right away.'}
-          </p>
+        {task?.status === 'scheduled' && task.start_on && <p className="muted small">Scheduled: {task.agent_name ?? 'the agent'} starts on {fmtDay(task.start_on)} at 8:00 Dubai time.</p>}
+        {startText && <p className="muted small">{startText}</p>}
+
+        {error && <div className="form-error">{error}</div>}
+        {askScope ? (
+          <div className="form-actions scope-ask">
+            <span className="small strong">This task repeats. Apply your changes to:</span>
+            <span className="spacer" />
+            <button type="button" className="btn" disabled={saving} onClick={() => saveEdit(askScope, 'this').catch((e) => setError(e.message))}>
+              Only this one
+            </button>
+            <button type="button" className="btn btn-primary" disabled={saving} onClick={() => saveEdit(askScope, 'future').catch((e) => setError(e.message))}>
+              This and future ones
+            </button>
+          </div>
+        ) : (
+          <div className="form-actions">
+            {task ? (
+              <button type="button" className="btn btn-danger-ghost" onClick={remove}>
+                Delete
+              </button>
+            ) : (
+              <button type="button" className="btn btn-ghost" onClick={saveTemplate}>
+                Save as template
+              </button>
+            )}
+            <span className="spacer" />
+            {!task && (
+              <button type="button" className="btn" disabled={saving} onClick={startNow}>
+                Create &amp; start now
+              </button>
+            )}
+            <button className="btn btn-primary" disabled={saving}>
+              {saving ? 'Saving…' : task ? 'Save' : 'Create'}
+            </button>
+          </div>
         )}
-        <Actions saving={saving} error={error} label={task ? 'Save' : managed ? `Create & start ${agent.name}` : 'Create task'} onDelete={task ? remove : null} />
       </form>
       {task && managed && Number(task.agent_id) === agent.id && <TaskRun task={task} agentName={agent.name} />}
     </Modal>
+  );
+}
+
+/** Where this task sits in its repeating series, with links to the others. */
+function SeriesBar({ task }) {
+  const { data: siblings } = useApi(`/tasks?series_id=${task.series_id}`, ['task']);
+  const list = (siblings ?? []).slice().sort((a, b) => a.series_index - b.series_index);
+  return (
+    <div className="handoff-bar series-bar">
+      <Icon name="repeat" size={14} />
+      <span>
+        {task.repeat ? `Repeats ${repeatLabel(task.repeat)}` : 'Was a repeating task (stopped)'} · #{task.series_index}
+        {task.series_ends_on ? ` · until ${fmtDay(task.series_ends_on)}` : ''}
+      </span>
+      {list.length > 1 && (
+        <span className="series-links">
+          {list.map((t) =>
+            t.id === task.id ? (
+              <b key={t.id}>{fmtDay(t.due_date)}</b>
+            ) : (
+              <a key={t.id} href={`#/tasks/${t.id}`} title={t.status}>
+                {fmtDay(t.due_date)}
+              </a>
+            ),
+          )}
+        </span>
+      )}
+    </div>
   );
 }
 
